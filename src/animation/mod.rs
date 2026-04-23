@@ -32,9 +32,33 @@
 //! — the code that reads those shapes and pushes values into a
 //! [`Skeleton`][crate::skeleton::Skeleton].
 
+pub mod apply;
 pub mod curve;
 
 pub use curve::{bezier_value, curve_value1, curve_value2, search};
+
+use crate::data::EventId;
+
+/// Runtime event firing — one per animation frame that tripped since the
+/// previous `apply` call. Carries a copy of the frame's int/float/string
+/// values so downstream consumers can read them without chasing back to
+/// [`AnimationEvent`][crate::data::AnimationEvent].
+///
+/// Pushed into the `events` out-param by [`Timeline::Event`][crate::data::Timeline::Event]
+/// during `Animation::apply`. Phase 4 wires these into `AnimationState`'s
+/// listener queue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Event {
+    /// Index into [`SkeletonData::events`][crate::data::SkeletonData::events].
+    pub data: EventId,
+    /// Time along the animation (in seconds) when this event fired.
+    pub time: f32,
+    pub int_value: i32,
+    pub float_value: f32,
+    pub string_value: Option<String>,
+    pub volume: f32,
+    pub balance: f32,
+}
 
 /// How a timeline blends with the existing pose when applied.
 ///

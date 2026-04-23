@@ -47,7 +47,10 @@ use crate::skeleton::{
 /// — the immutable asset is never cloned.
 #[derive(Debug, Clone)]
 pub struct Skeleton {
-    data: Arc<SkeletonData>,
+    // pub(crate) so sibling modules (notably `animation::apply`) can read
+    // setup-pose fields while mutably borrowing `self.bones`. External users
+    // still go through [`Self::data`].
+    pub(crate) data: Arc<SkeletonData>,
 
     /// One runtime `Bone` per `data.bones` entry, in the same order.
     pub bones: Vec<Bone>,
