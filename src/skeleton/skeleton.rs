@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use crate::data::{Attachment, BoneId, Inherit, SkeletonData, Skin, SkinId, SlotId};
+use crate::data::{Attachment, AttachmentId, BoneId, Inherit, SkeletonData, Skin, SkinId, SlotId};
 use crate::math::Color;
 use crate::math::util::{atan2_deg, cos_deg, sin_deg};
 use crate::skeleton::{
@@ -548,39 +548,162 @@ impl Skeleton {
 
     /// Reset every bone, slot, and constraint to its setup-pose value.
     ///
-    /// Port target: `spine::Skeleton::setToSetupPose`. Sub-phase 2e.
+    /// Port of `spine::Skeleton::setToSetupPose`: bones + constraints first,
+    /// then slots (order matters — slot attachment resolution reads from the
+    /// current skin, which doesn't depend on bones but preserves parity with
+    /// spine-cpp's sequence).
     pub fn set_to_setup_pose(&mut self) {
-        unimplemented!("Skeleton::set_to_setup_pose: port in Phase 2e");
+        self.set_bones_to_setup_pose();
+        self.set_slots_to_setup_pose();
     }
 
-    /// Reset every bone to setup pose. Sub-phase 2e.
+    /// Reset every runtime bone + constraint to its `data`'s setup values.
+    ///
+    /// Does **not** touch slot attachments (they depend on the active skin).
+    /// Ports `spine::Skeleton::setBonesToSetupPose`.
     pub fn set_bones_to_setup_pose(&mut self) {
-        unimplemented!("Skeleton::set_bones_to_setup_pose: port in Phase 2e");
+        for bone in &mut self.bones {
+            let data = &self.data.bones[bone.data_index.index()];
+            bone.set_to_setup_pose(data);
+        }
+        for c in &mut self.ik_constraints {
+            let data = &self.data.ik_constraints[c.data_index.index()];
+            c.set_to_setup_pose(data);
+        }
+        for c in &mut self.transform_constraints {
+            let data = &self.data.transform_constraints[c.data_index.index()];
+            c.set_to_setup_pose(data);
+        }
+        for c in &mut self.path_constraints {
+            let data = &self.data.path_constraints[c.data_index.index()];
+            c.set_to_setup_pose(data);
+        }
+        for c in &mut self.physics_constraints {
+            let data = &self.data.physics_constraints[c.data_index.index()];
+            c.set_to_setup_pose(data);
+        }
     }
 
-    /// Reset every slot (color + attachment) to setup pose. Sub-phase 2e.
+    /// Reset draw order to the identity permutation, then reset every slot's
+    /// color, dark-color, deform, and attachment (via current-skin →
+    /// default-skin resolution). Ports `spine::Skeleton::setSlotsToSetupPose`.
     pub fn set_slots_to_setup_pose(&mut self) {
-        unimplemented!("Skeleton::set_slots_to_setup_pose: port in Phase 2e");
+        self.draw_order.clear();
+        self.draw_order
+            .extend(self.data.slots.iter().map(|s| s.index));
+
+        for i in 0..self.slots.len() {
+            let slot_id = SlotId(i as u16);
+            // Snapshot the data attachment name to a local String so
+            // `get_attachment` doesn't fight the borrow of `self.data`.
+            let attachment_name = self.data.slots[i].attachment_name.clone();
+            {
+                let data = &self.data.slots[i];
+                self.slots[i].set_to_setup_pose(data);
+            }
+            self.slots[i].attachment = match attachment_name.as_deref() {
+                Some(name) if !name.is_empty() => self.get_attachment(slot_id, name),
+                _ => None,
+            };
+        }
+    }
+
+    // ----- attachment resolution ------------------------------------------
+
+    /// Resolve a slot's attachment by name, walking the active skin first
+    /// and the default skin as fallback. Matches
+    /// `spine::Skeleton::getAttachment(int, const String &)`.
+    #[must_use]
+    pub fn get_attachment(&self, slot_id: SlotId, name: &str) -> Option<AttachmentId> {
+        if name.is_empty() {
+            return None;
+        }
+        if let Some(skin_id) = self.skin
+            && let Some(att) = self.data.skins[skin_id.index()].get_attachment(slot_id, name)
+        {
+            return Some(att);
+        }
+        self.data
+            .default_skin
+            .and_then(|id| self.data.skins[id.index()].get_attachment(slot_id, name))
     }
 
     // ----- skin ------------------------------------------------------------
 
-    /// Activate `skin` (or clear when `None`). Re-runs `update_cache` because
-    /// skin-required bones and constraints change which entries are active.
-    ///
-    /// Sub-phase 2e.
-    pub fn set_skin(&mut self, _skin: Option<SkinId>) {
-        unimplemented!("Skeleton::set_skin: port in Phase 2e");
+    /// Activate `skin` (or clear when `None`). On a skin swap, attachments
+    /// currently pointing at the old skin's entries are remapped to the new
+    /// skin's entries with the same name (spine-cpp's `Skin::attachAll`).
+    /// Re-runs `update_cache` because skin-required bones and constraints
+    /// may change which entries are active.
+    pub fn set_skin(&mut self, new_skin: Option<SkinId>) {
+        if self.skin == new_skin {
+            return;
+        }
+
+        if let Some(new_id) = new_skin {
+            match self.skin {
+                Some(old_id) => self.attach_all(old_id, new_id),
+                None => {
+                    // No previous skin: apply the new skin's attachments for
+                    // each slot whose data carries a setup attachment name.
+                    for i in 0..self.slots.len() {
+                        let slot_id = SlotId(i as u16);
+                        let Some(name) = self.data.slots[i].attachment_name.clone() else {
+                            continue;
+                        };
+                        if name.is_empty() {
+                            continue;
+                        }
+                        if let Some(att) =
+                            self.data.skins[new_id.index()].get_attachment(slot_id, &name)
+                        {
+                            self.slots[i].attachment = Some(att);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.skin = new_skin;
+        self.update_cache();
     }
 
-    /// Name-lookup wrapper around [`Self::set_skin`]. Sub-phase 2e.
+    /// Name-lookup wrapper around [`Self::set_skin`].
     ///
     /// # Errors
     ///
     /// Returns [`SkinNotFound`] when `name` doesn't match any skin in
     /// `self.data().skins`.
-    pub fn set_skin_by_name(&mut self, _name: &str) -> Result<(), SkinNotFound> {
-        unimplemented!("Skeleton::set_skin_by_name: port in Phase 2e");
+    pub fn set_skin_by_name(&mut self, name: &str) -> Result<(), SkinNotFound> {
+        let skin_id = self
+            .data
+            .skins
+            .iter()
+            .position(|s| s.name == name)
+            .map(|i| SkinId(i as u16))
+            .ok_or_else(|| SkinNotFound(name.to_string()))?;
+        self.set_skin(Some(skin_id));
+        Ok(())
+    }
+
+    /// Port of `spine::Skin::attachAll`: for every attachment entry in the
+    /// old skin, if the slot currently shows that attachment *and* the new
+    /// skin has an entry with the same name on the same slot, swap the
+    /// runtime slot's attachment to the new one. Preserves the "which
+    /// attachment is currently showing" state across skin swaps.
+    fn attach_all(&mut self, old_skin_id: SkinId, new_skin_id: SkinId) {
+        let entries: Vec<(SlotId, String, AttachmentId)> = self.data.skins[old_skin_id.index()]
+            .attachments()
+            .map(|(slot, name, id)| (slot, name.to_string(), id))
+            .collect();
+        for (slot_id, name, old_att) in entries {
+            if self.slots[slot_id.index()].attachment == Some(old_att)
+                && let Some(new_att) =
+                    self.data.skins[new_skin_id.index()].get_attachment(slot_id, &name)
+            {
+                self.slots[slot_id.index()].attachment = Some(new_att);
+            }
+        }
     }
 
     // ----- pose pipeline ---------------------------------------------------
@@ -1098,6 +1221,174 @@ mod tests {
             ),
             "NoScale",
         );
+    }
+
+    // -- setup pose + skin --------------------------------------------------
+
+    /// `set_to_setup_pose` must restore local TRS after animation-style
+    /// mutation. Applies a nonsense local, calls `set_to_setup_pose`, checks
+    /// the bone snaps back to data values.
+    #[test]
+    fn set_to_setup_pose_restores_bone_local_trs() {
+        let mut sd = SkeletonData::default();
+        let mut root = BoneData::new(BoneId(0), "root", None);
+        root.x = 10.0;
+        root.rotation = 45.0;
+        root.scale_x = 2.0;
+        sd.bones.push(root);
+        let mut sk = Skeleton::new(Arc::new(sd));
+
+        // Clobber local TRS as an animation would.
+        sk.bones[0].x = 999.0;
+        sk.bones[0].rotation = -12.0;
+        sk.bones[0].scale_x = 0.5;
+
+        sk.set_to_setup_pose();
+
+        assert!((sk.bones[0].x - 10.0).abs() < 1e-6);
+        assert!((sk.bones[0].rotation - 45.0).abs() < 1e-6);
+        assert!((sk.bones[0].scale_x - 2.0).abs() < 1e-6);
+    }
+
+    /// `set_to_setup_pose` also resets constraint mix values.
+    #[test]
+    fn set_to_setup_pose_restores_ik_mix() {
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        sd.bones
+            .push(BoneData::new(BoneId(1), "target", Some(BoneId(0))));
+
+        let mut ik = IkConstraintData::new(IkConstraintId(0), "ik", BoneId(1));
+        ik.bones.push(BoneId(0));
+        ik.mix = 0.7;
+        ik.softness = 12.0;
+        sd.ik_constraints.push(ik);
+
+        let mut sk = Skeleton::new(Arc::new(sd));
+        sk.ik_constraints[0].mix = 0.0;
+        sk.ik_constraints[0].softness = 0.0;
+        sk.ik_constraints[0].bend_direction = -1;
+
+        sk.set_to_setup_pose();
+
+        assert!((sk.ik_constraints[0].mix - 0.7).abs() < 1e-6);
+        assert!((sk.ik_constraints[0].softness - 12.0).abs() < 1e-6);
+        assert_eq!(sk.ik_constraints[0].bend_direction, 1);
+    }
+
+    /// `set_skin_by_name("missing")` returns a `SkinNotFound` with the name.
+    #[test]
+    fn set_skin_by_name_reports_missing() {
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        sd.skins.push(crate::data::Skin::new("existing"));
+        let mut sk = Skeleton::new(Arc::new(sd));
+
+        let err = sk.set_skin_by_name("missing").unwrap_err();
+        assert_eq!(err, SkinNotFound("missing".into()));
+        // Unchanged.
+        assert_eq!(sk.skin, None);
+
+        sk.set_skin_by_name("existing").unwrap();
+        assert_eq!(sk.skin, Some(SkinId(0)));
+    }
+
+    /// Attachment resolution walks the active skin first and falls back to
+    /// the default skin. Verifies both paths and the empty-name early return.
+    #[test]
+    fn get_attachment_walks_active_then_default_skin() {
+        use crate::data::{Attachment, AttachmentId, RegionAttachment};
+
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        sd.slots.push(SlotData::new(SlotId(0), "body", BoneId(0)));
+
+        // Three attachments: only-in-default, only-in-extras, and a shared
+        // name whose resolution should prefer the active skin.
+        sd.attachments
+            .push(Attachment::Region(RegionAttachment::new("default-only")));
+        sd.attachments
+            .push(Attachment::Region(RegionAttachment::new("extras-only")));
+        sd.attachments
+            .push(Attachment::Region(RegionAttachment::new(
+                "shared-in-default",
+            )));
+        sd.attachments
+            .push(Attachment::Region(RegionAttachment::new(
+                "shared-in-extras",
+            )));
+
+        let mut default_skin = crate::data::Skin::new("default");
+        default_skin.set_attachment(SlotId(0), "default-only", AttachmentId(0));
+        default_skin.set_attachment(SlotId(0), "shared", AttachmentId(2));
+
+        let mut extras_skin = crate::data::Skin::new("extras");
+        extras_skin.set_attachment(SlotId(0), "extras-only", AttachmentId(1));
+        extras_skin.set_attachment(SlotId(0), "shared", AttachmentId(3));
+
+        sd.skins.push(default_skin);
+        sd.skins.push(extras_skin);
+        sd.default_skin = Some(SkinId(0));
+
+        let mut sk = Skeleton::new(Arc::new(sd));
+
+        // No active skin yet: fallback path only.
+        assert_eq!(
+            sk.get_attachment(SlotId(0), "default-only"),
+            Some(AttachmentId(0))
+        );
+        assert_eq!(
+            sk.get_attachment(SlotId(0), "shared"),
+            Some(AttachmentId(2))
+        );
+        assert_eq!(sk.get_attachment(SlotId(0), "extras-only"), None);
+        assert_eq!(sk.get_attachment(SlotId(0), ""), None);
+
+        // Activate extras: shared now resolves through extras, default-only
+        // still resolves through default (fallback).
+        sk.set_skin(Some(SkinId(1)));
+        assert_eq!(
+            sk.get_attachment(SlotId(0), "extras-only"),
+            Some(AttachmentId(1))
+        );
+        assert_eq!(
+            sk.get_attachment(SlotId(0), "shared"),
+            Some(AttachmentId(3))
+        );
+        assert_eq!(
+            sk.get_attachment(SlotId(0), "default-only"),
+            Some(AttachmentId(0))
+        );
+    }
+
+    /// `set_skin` triggers an `update_cache` rebuild — verifies the
+    /// skin-required-bone inclusion rule (same state machine exercised in
+    /// the dedicated `update_cache` test, but via the public setter).
+    #[test]
+    fn set_skin_rebuilds_update_cache_for_skin_required_bone() {
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        let mut hidden = BoneData::new(BoneId(1), "hidden", Some(BoneId(0)));
+        hidden.skin_required = true;
+        sd.bones.push(hidden);
+
+        let mut extras = crate::data::Skin::new("extras");
+        extras.bones.push(BoneId(1));
+        sd.skins.push(extras);
+
+        let mut sk = Skeleton::new(Arc::new(sd));
+        sk.update_cache();
+        assert!(!sk.bones[1].active);
+
+        sk.set_skin_by_name("extras").unwrap();
+        assert!(sk.bones[1].active);
+        assert!(
+            sk.update_cache.contains(&UpdateCacheEntry::Bone(BoneId(1))),
+            "skin swap should have rebuilt the cache"
+        );
+
+        sk.set_skin(None);
+        assert!(!sk.bones[1].active);
     }
 
     /// Primary goal of this test: cover the `Inherit::NoScaleOrReflection`

@@ -201,6 +201,10 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
 
         let (atlas_path, skel_path) = resolve_assets(rig, variant.as_deref());
         let mut sk = load_skeleton(&atlas_path, &skel_path);
+        // Exercise the full Phase 2 public sequence, not just the bone pose
+        // shortcut that Skeleton::new already seeds. `set_to_setup_pose` is a
+        // no-op for freshly-loaded skeletons but must stay idempotent here.
+        sk.set_to_setup_pose();
         sk.update_cache();
         sk.update_world_transform(Physics::None);
 

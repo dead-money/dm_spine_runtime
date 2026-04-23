@@ -38,7 +38,7 @@ Core design choices:
 
 - [x] 0 — math primitives (`Color`, deg/rad trig helpers) and triangulator (ear-clipping + convex decompose)
 - [x] 1 — atlas parser, data-type scaffold, binary `.skel` loader. Loads every rig shipped in `spine-runtimes/examples/` end-to-end through the `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
-- [ ] 2 — `Skeleton` pose (bones, slots, skin, `updateWorldTransform`)
+- [x] 2 — `Skeleton` runtime pose: update-cache ordering, bone world transforms with all five `Inherit` modes, skin activation + setup pose + attachment resolution. All 25 example skeletons match spine-cpp bit-for-bit on setup pose; constraint solvers are stubs until Phase 5.
 - [ ] 3 — property timelines and single-track `AnimationState`
 - [ ] 4 — full `AnimationState` (tracks, mixing, events, queue)
 - [ ] 5 — constraints (IK → Transform → Path → Physics)
@@ -48,6 +48,7 @@ Core design choices:
 ## Documentation
 
 - [`docs/BINARY_FORMAT.md`](docs/BINARY_FORMAT.md) — full reference for the Spine 4.2 binary `.skel` wire format. Written during the port to save the next implementer the debugging round-trip; includes a gotchas section for the non-obvious encoding tricks (DrawOrder sign-via-wraparound, Inherit's dual encoding, mesh triangle-count unit mixing, sequence path resolution).
+- [`tools/spine_capture/`](tools/spine_capture/) — small C++ harness that links spine-cpp and dumps setup-pose bone state as JSON fixtures for the Phase 2 golden tests. Rebuild with `make` in that directory and run `./capture_all.sh` to regenerate fixtures.
 
 ## Development
 

@@ -78,6 +78,17 @@ impl IkConstraint {
     /// Solver stub. Phase 5 replaces this with the port of
     /// `spine::IkConstraint::update`.
     pub fn update(&mut self) {}
+
+    /// Port of `spine::IkConstraint::setToSetupPose`. Resets every
+    /// animation-mutable field to `data`'s setup value.
+    pub fn set_to_setup_pose(&mut self, data: &IkConstraintData) {
+        debug_assert_eq!(data.index, self.data_index);
+        self.mix = data.mix;
+        self.softness = data.softness;
+        self.bend_direction = data.bend_direction;
+        self.compress = data.compress;
+        self.stretch = data.stretch;
+    }
 }
 
 // --- TransformConstraint ----------------------------------------------------
@@ -118,6 +129,17 @@ impl TransformConstraint {
     }
 
     pub fn update(&mut self) {}
+
+    /// Port of `spine::TransformConstraint::setToSetupPose`.
+    pub fn set_to_setup_pose(&mut self, data: &TransformConstraintData) {
+        debug_assert_eq!(data.index, self.data_index);
+        self.mix_rotate = data.mix_rotate;
+        self.mix_x = data.mix_x;
+        self.mix_y = data.mix_y;
+        self.mix_scale_x = data.mix_scale_x;
+        self.mix_scale_y = data.mix_scale_y;
+        self.mix_shear_y = data.mix_shear_y;
+    }
 }
 
 // --- PathConstraint ---------------------------------------------------------
@@ -169,6 +191,16 @@ impl PathConstraint {
     }
 
     pub fn update(&mut self) {}
+
+    /// Port of `spine::PathConstraint::setToSetupPose`.
+    pub fn set_to_setup_pose(&mut self, data: &PathConstraintData) {
+        debug_assert_eq!(data.index, self.data_index);
+        self.position = data.position;
+        self.spacing = data.spacing;
+        self.mix_rotate = data.mix_rotate;
+        self.mix_x = data.mix_x;
+        self.mix_y = data.mix_y;
+    }
 }
 
 // --- PhysicsConstraint ------------------------------------------------------
@@ -254,4 +286,18 @@ impl PhysicsConstraint {
     }
 
     pub fn update(&mut self) {}
+
+    /// Port of `spine::PhysicsConstraint::setToSetupPose`. Resets the
+    /// per-parameter working values; velocity state is left alone (the
+    /// solver will consume and zero it on next update).
+    pub fn set_to_setup_pose(&mut self, data: &PhysicsConstraintData) {
+        debug_assert_eq!(data.index, self.data_index);
+        self.inertia = data.inertia;
+        self.strength = data.strength;
+        self.damping = data.damping;
+        self.mass_inverse = data.mass_inverse;
+        self.wind = data.wind;
+        self.gravity = data.gravity;
+        self.mix = data.mix;
+    }
 }
