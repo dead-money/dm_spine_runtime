@@ -35,9 +35,11 @@
 pub mod apply;
 pub mod curve;
 pub mod state;
+pub mod state_data;
 
 pub use curve::{bezier_value, compute_bezier_samples, curve_value1, curve_value2, search};
 pub use state::{AnimationNotFound, AnimationState, TrackEntry};
+pub use state_data::{AnimationStateData, MixAnimationNotFound};
 
 use crate::data::EventId;
 

@@ -38,7 +38,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dm_spine_runtime::animation::AnimationState;
+use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::atlas::Atlas;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
@@ -197,8 +197,9 @@ fn animation_samples_match_spine_cpp() {
             sk.update_cache();
             sk.set_to_setup_pose();
 
-            let mut state = AnimationState::new(Arc::clone(&data));
-            state.set_animation(anim_id, false);
+            let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
+            let mut state = AnimationState::new(state_data);
+            state.set_animation(0, anim_id, false);
             // Jump to `fx.time` in one step (update advances by delta).
             state.update(fx.time);
 

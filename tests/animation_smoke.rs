@@ -35,7 +35,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dm_spine_runtime::animation::AnimationState;
+use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::atlas::Atlas;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
@@ -88,13 +88,17 @@ fn all_animations_apply_without_panic() {
                 let duration = data.animations[anim_idx].duration;
                 let mut sk = Skeleton::new(Arc::clone(&data));
                 sk.update_cache();
-                let mut state = AnimationState::new(Arc::clone(&data));
-                let _ =
-                    state.set_animation(dm_spine_runtime::data::AnimationId(anim_idx as u16), true);
+                let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
+                let mut state = AnimationState::new(state_data);
+                let _ = state.set_animation(
+                    0,
+                    dm_spine_runtime::data::AnimationId(anim_idx as u16),
+                    true,
+                );
 
                 for t in [0.0_f32, 0.1, 0.333, 0.666, 0.999].iter().copied() {
                     let time = if duration > 0.0 { t * duration } else { 0.0 };
-                    state.update(time - state.track().unwrap().time);
+                    state.update(time - state.current(0).unwrap().track_time);
                     sk.set_to_setup_pose();
                     let mut events = Vec::new();
                     state.apply(&mut sk, &mut events);
