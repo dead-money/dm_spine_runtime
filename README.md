@@ -37,13 +37,17 @@ Core design choices:
 ## Phase tracker
 
 - [x] 0 — math primitives (`Color`, deg/rad trig helpers) and triangulator (ear-clipping + convex decompose)
-- [ ] 1 — data types + atlas + binary loader
+- [x] 1 — atlas parser, data-type scaffold, binary `.skel` loader. Loads every rig shipped in `spine-runtimes/examples/` end-to-end through the `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
 - [ ] 2 — `Skeleton` pose (bones, slots, skin, `updateWorldTransform`)
 - [ ] 3 — property timelines and single-track `AnimationState`
 - [ ] 4 — full `AnimationState` (tracks, mixing, events, queue)
 - [ ] 5 — constraints (IK → Transform → Path → Physics)
 - [ ] 6 — clipping, bounds, render-command emission
 - [ ] 7 — `dm_spine_bevy` plugin and examples
+
+## Documentation
+
+- [`docs/BINARY_FORMAT.md`](docs/BINARY_FORMAT.md) — full reference for the Spine 4.2 binary `.skel` wire format. Written during the port to save the next implementer the debugging round-trip; includes a gotchas section for the non-obvious encoding tricks (DrawOrder sign-via-wraparound, Inherit's dual encoding, mesh triangle-count unit mixing, sequence path resolution).
 
 ## Development
 
