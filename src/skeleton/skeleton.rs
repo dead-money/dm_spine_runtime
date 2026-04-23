@@ -32,8 +32,9 @@
 
 use std::sync::Arc;
 
-use crate::data::{Attachment, BoneId, SkeletonData, Skin, SkinId, SlotId};
+use crate::data::{Attachment, BoneId, Inherit, SkeletonData, Skin, SkinId, SlotId};
 use crate::math::Color;
+use crate::math::util::{atan2_deg, cos_deg, sin_deg};
 use crate::skeleton::{
     Bone, IkConstraint, PathConstraint, Physics, PhysicsConstraint, Slot, TransformConstraint,
     UpdateCacheEntry,
@@ -592,10 +593,207 @@ impl Skeleton {
 
     /// Walk [`Self::update_cache`] and compute every bone's world transform.
     ///
-    /// Port target: `spine::Skeleton::updateWorldTransform(Physics)`.
-    /// Sub-phase 2d.
+    /// Literal port of `spine::Skeleton::updateWorldTransform(Physics)`:
+    /// first copies every bone's local TRS into its "applied" counterpart,
+    /// then dispatches each cache entry. Constraints no-op in Phase 2 —
+    /// Phase 5 will replace their stubs with real solvers.
     pub fn update_world_transform(&mut self, _physics: Physics) {
-        unimplemented!("Skeleton::update_world_transform: port in Phase 2d");
+        for bone in &mut self.bones {
+            bone.ax = bone.x;
+            bone.ay = bone.y;
+            bone.a_rotation = bone.rotation;
+            bone.a_scale_x = bone.scale_x;
+            bone.a_scale_y = bone.scale_y;
+            bone.a_shear_x = bone.shear_x;
+            bone.a_shear_y = bone.shear_y;
+        }
+
+        for i in 0..self.update_cache.len() {
+            match self.update_cache[i] {
+                UpdateCacheEntry::Bone(bone_id) => {
+                    self.update_bone_world_transform(bone_id);
+                }
+                UpdateCacheEntry::IkConstraint(_)
+                | UpdateCacheEntry::TransformConstraint(_)
+                | UpdateCacheEntry::PathConstraint(_)
+                | UpdateCacheEntry::PhysicsConstraint(_) => {
+                    // Phase 5: call the matching solver. For Phase 2 every
+                    // constraint's `update()` is a no-op, so the cache entry
+                    // is inert — the bones around it already carry the right
+                    // values from the local→applied seed pass above.
+                }
+            }
+        }
+    }
+
+    /// `Bone::updateWorldTransform()` — computes `bone`'s world matrix from
+    /// its own local TRS and its parent's world matrix. Root bones use the
+    /// skeleton's `x/y/scale_x/scale_y` as their parent transform.
+    ///
+    /// Literal port of `spine-cpp/src/spine/Bone.cpp` `Bone::updateWorldTransform`
+    /// (the one-arg overload fans into the multi-arg overload with the bone's
+    /// own local TRS; we inline both here). All five [`Inherit`] modes
+    /// follow — reflection check, per-axis sign handling, post-multiply
+    /// block — ported as-is without refactoring the math.
+    // spine-cpp keeps this as one ~120-line function; splitting breaks the
+    // port-verbatim rule and makes diffing harder for no correctness gain.
+    #[allow(clippy::too_many_lines)]
+    fn update_bone_world_transform(&mut self, bone_id: BoneId) {
+        let idx = bone_id.index();
+
+        // Snapshot the local TRS and parent/inherit once. Everything below
+        // either reads from the parent bone (a different index) or writes
+        // to this bone; interleaving those borrows needs care, so we pull
+        // the inputs out as bare floats up front.
+        let (x, y, rotation, scale_x, scale_y, shear_x, shear_y, parent, inherit) = {
+            let b = &self.bones[idx];
+            (
+                b.x, b.y, b.rotation, b.scale_x, b.scale_y, b.shear_x, b.shear_y, b.parent,
+                b.inherit,
+            )
+        };
+
+        // spine-cpp's first act is copying the passed-in TRS into the
+        // "applied" fields. The top-level `update_world_transform(Physics)`
+        // already did this for every bone, but we repeat it here so the
+        // per-bone helper is self-contained (matches spine-cpp's two-arg
+        // overload, which future animation code in Phase 3 will call with
+        // modified values).
+        {
+            let b = &mut self.bones[idx];
+            b.ax = x;
+            b.ay = y;
+            b.a_rotation = rotation;
+            b.a_scale_x = scale_x;
+            b.a_scale_y = scale_y;
+            b.a_shear_x = shear_x;
+            b.a_shear_y = shear_y;
+        }
+
+        let sx = self.scale_x;
+        let sy = self.scale_y;
+
+        let Some(parent_id) = parent else {
+            // Root bone: no parent matrix. spine-cpp uses skeleton.getScaleX/Y
+            // directly and skips the post-multiply at the bottom.
+            let rx = rotation + shear_x;
+            let ry = rotation + 90.0 + shear_y;
+            let b = &mut self.bones[idx];
+            b.a = cos_deg(rx) * scale_x * sx;
+            b.b = cos_deg(ry) * scale_y * sx;
+            b.c = sin_deg(rx) * scale_x * sy;
+            b.d = sin_deg(ry) * scale_y * sy;
+            b.world_x = x * sx + self.x;
+            b.world_y = y * sy + self.y;
+            return;
+        };
+
+        // Non-root: snapshot parent's world matrix.
+        let (mut pa, mut pb, mut pc, mut pd, p_world_x, p_world_y) = {
+            let p = &self.bones[parent_id.index()];
+            (p.a, p.b, p.c, p.d, p.world_x, p.world_y)
+        };
+
+        // World translation is always `parent.M * (x, y) + parent.world`,
+        // regardless of Inherit mode.
+        {
+            let b = &mut self.bones[idx];
+            b.world_x = pa * x + pb * y + p_world_x;
+            b.world_y = pc * x + pd * y + p_world_y;
+        }
+
+        match inherit {
+            Inherit::Normal => {
+                let rx = rotation + shear_x;
+                let ry = rotation + 90.0 + shear_y;
+                let la = cos_deg(rx) * scale_x;
+                let lb = cos_deg(ry) * scale_y;
+                let lc = sin_deg(rx) * scale_x;
+                let ld = sin_deg(ry) * scale_y;
+                let b = &mut self.bones[idx];
+                b.a = pa * la + pb * lc;
+                b.b = pa * lb + pb * ld;
+                b.c = pc * la + pd * lc;
+                b.d = pc * lb + pd * ld;
+                // Normal returns early — does NOT hit the post-multiply.
+                return;
+            }
+            Inherit::OnlyTranslation => {
+                let rx = rotation + shear_x;
+                let ry = rotation + 90.0 + shear_y;
+                let b = &mut self.bones[idx];
+                b.a = cos_deg(rx) * scale_x;
+                b.b = cos_deg(ry) * scale_y;
+                b.c = sin_deg(rx) * scale_x;
+                b.d = sin_deg(ry) * scale_y;
+            }
+            Inherit::NoRotationOrReflection => {
+                let mut s = pa * pa + pc * pc;
+                let prx;
+                if s > 0.0001 {
+                    s = (pa * pd - pb * pc).abs() / s;
+                    pa /= sx;
+                    pc /= sy;
+                    pb = pc * s;
+                    pd = pa * s;
+                    prx = atan2_deg(pc, pa);
+                } else {
+                    pa = 0.0;
+                    pc = 0.0;
+                    prx = 90.0 - atan2_deg(pd, pb);
+                }
+                let rx = rotation + shear_x - prx;
+                let ry = rotation + shear_y - prx + 90.0;
+                let la = cos_deg(rx) * scale_x;
+                let lb = cos_deg(ry) * scale_y;
+                let lc = sin_deg(rx) * scale_x;
+                let ld = sin_deg(ry) * scale_y;
+                let b = &mut self.bones[idx];
+                b.a = pa * la - pb * lc;
+                b.b = pa * lb - pb * ld;
+                b.c = pc * la + pd * lc;
+                b.d = pc * lb + pd * ld;
+            }
+            Inherit::NoScale | Inherit::NoScaleOrReflection => {
+                let rotation_rad = rotation.to_radians();
+                let cosine = rotation_rad.cos();
+                let sine = rotation_rad.sin();
+                let za = (pa * cosine + pb * sine) / sx;
+                let zc = (pc * cosine + pd * sine) / sy;
+                let mut s = (za * za + zc * zc).sqrt();
+                if s > 0.00001 {
+                    s = 1.0 / s;
+                }
+                let za = za * s;
+                let zc = zc * s;
+                let mut s = (za * za + zc * zc).sqrt();
+                if inherit == Inherit::NoScale
+                    && (pa * pd - pb * pc < 0.0) != ((sx < 0.0) != (sy < 0.0))
+                {
+                    s = -s;
+                }
+                let rot = std::f32::consts::FRAC_PI_2 + zc.atan2(za);
+                let zb = rot.cos() * s;
+                let zd = rot.sin() * s;
+                let la = cos_deg(shear_x) * scale_x;
+                let lb = cos_deg(90.0 + shear_y) * scale_y;
+                let lc = sin_deg(shear_x) * scale_x;
+                let ld = sin_deg(90.0 + shear_y) * scale_y;
+                let b = &mut self.bones[idx];
+                b.a = za * la + zb * lc;
+                b.b = za * lb + zb * ld;
+                b.c = zc * la + zd * lc;
+                b.d = zc * lb + zd * ld;
+            }
+        }
+
+        // All non-Normal branches fall through to this post-multiply.
+        // (Normal returned early; Root handled above.)
+        let b = &mut self.bones[idx];
+        b.a *= sx;
+        b.b *= sx;
+        b.c *= sy;
+        b.d *= sy;
     }
 }
 
@@ -606,6 +804,10 @@ impl Skeleton {
 pub struct SkinNotFound(pub String);
 
 #[cfg(test)]
+// Golden values in this module come from spine-cpp printf `%.9g` output —
+// keep them verbatim for diff-ability against the capture harness rather
+// than reformatting for Rust lint style.
+#[allow(clippy::excessive_precision, clippy::unreadable_literal)]
 mod tests {
     use super::*;
     use crate::data::{
@@ -812,5 +1014,114 @@ mod tests {
         sk.update(0.25);
         sk.update(0.5);
         assert!((sk.time - 0.75).abs() < 1e-6);
+    }
+
+    // -- Inherit::NoScaleOrReflection coverage ------------------------------
+    //
+    // No example rig (raptor, stretchyman, hero, etc.) carries a bone with
+    // Inherit::NoScaleOrReflection, so this case sits outside the
+    // golden_pose.rs integration test. The golden values below came from
+    // `tools/spine_capture/synthetic.cpp` — a small spine-cpp program that
+    // builds the same two-bone configuration directly and dumps its output.
+    //
+    // To regenerate (if the case configuration ever changes):
+    //   cd tools/spine_capture && make && ./build/spine_synthetic
+
+    fn synthetic_noscale_skeleton(child_inherit: Inherit) -> Skeleton {
+        let mut sd = SkeletonData::default();
+        let mut root = BoneData::new(BoneId(0), "root", None);
+        root.x = 10.0;
+        root.y = 5.0;
+        root.scale_x = -1.0;
+        root.scale_y = 1.0;
+        root.rotation = 30.0;
+        sd.bones.push(root);
+
+        let mut child = BoneData::new(BoneId(1), "child", Some(BoneId(0)));
+        child.x = 20.0;
+        child.y = 0.0;
+        child.rotation = 45.0;
+        child.scale_x = 2.0;
+        child.scale_y = 0.5;
+        child.shear_x = 10.0;
+        child.shear_y = -5.0;
+        child.inherit = child_inherit;
+        sd.bones.push(child);
+
+        let mut sk = Skeleton::new(Arc::new(sd));
+        sk.update_cache();
+        sk.update_world_transform(Physics::None);
+        sk
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 1e-4 || (a - b).abs() <= 1e-4 * a.abs().max(b.abs())
+    }
+
+    fn assert_child_matches(sk: &Skeleton, expected: (f32, f32, f32, f32, f32, f32), label: &str) {
+        let c = &sk.bones[1];
+        let (ea, eb, ec, ed, ewx, ewy) = expected;
+        let fields = [
+            ("a", ea, c.a),
+            ("b", eb, c.b),
+            ("c", ec, c.c),
+            ("d", ed, c.d),
+            ("world_x", ewx, c.world_x),
+            ("world_y", ewy, c.world_y),
+        ];
+        for (field, want, got) in fields {
+            assert!(
+                close(want, got),
+                "[{label}] child.{field} mismatch: expected {want}, got {got}"
+            );
+        }
+    }
+
+    /// Sanity: the shared `NoScale`/`NoScaleOrReflection` code path is
+    /// exercised by real fixtures, but having the synthetic side-by-side
+    /// with the `NoScaleOrReflection` test lets a future refactor catch
+    /// divergence between the two modes immediately.
+    #[test]
+    fn inherit_no_scale_matches_spine_cpp_synthetic() {
+        let sk = synthetic_noscale_skeleton(Inherit::NoScale);
+        // Golden from spine-cpp spine_synthetic (reflected parent, default
+        // skeleton scale 1,1 → `s = -s` flip applies for NoScale).
+        assert_child_matches(
+            &sk,
+            (
+                -1.81261575,
+                0.0868240446,
+                0.84523654,
+                0.492403954,
+                -7.32050705,
+                -5.0,
+            ),
+            "NoScale",
+        );
+    }
+
+    /// Primary goal of this test: cover the `Inherit::NoScaleOrReflection`
+    /// branch, which (a) takes the shared `NoScale` code path but (b) skips
+    /// the reflection-sign flip. With a reflected parent and identity
+    /// skeleton scale, `NoScale` and `NoScaleOrReflection` must produce
+    /// visibly different a/b/c/d — verifying both in one test proves the
+    /// port didn't accidentally collapse the two modes into one.
+    #[test]
+    fn inherit_no_scale_or_reflection_matches_spine_cpp_synthetic() {
+        let sk = synthetic_noscale_skeleton(Inherit::NoScaleOrReflection);
+        // Golden from spine-cpp spine_synthetic: same configuration but
+        // child.inherit = NoScaleOrReflection → no sign flip.
+        assert_child_matches(
+            &sk,
+            (
+                -1.99238956,
+                -0.171010092,
+                0.174311399,
+                -0.469846398,
+                -7.32050705,
+                -5.0,
+            ),
+            "NoScaleOrReflection",
+        );
     }
 }

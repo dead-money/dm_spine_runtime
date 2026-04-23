@@ -12,6 +12,7 @@
 SPINE_CPP := ../../../spine-runtimes/spine-cpp/spine-cpp
 OBJDIR    := build
 BIN       := $(OBJDIR)/spine_capture
+SYNTH_BIN := $(OBJDIR)/spine_synthetic
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++11 -O2 -Wall -Wextra
@@ -21,13 +22,20 @@ LDFLAGS  ?=
 SPINE_SRCS := $(wildcard $(SPINE_CPP)/src/spine/*.cpp)
 SPINE_OBJS := $(patsubst $(SPINE_CPP)/src/spine/%.cpp,$(OBJDIR)/spine/%.o,$(SPINE_SRCS))
 OBJS       := $(OBJDIR)/main.o $(SPINE_OBJS)
+SYNTH_OBJS := $(OBJDIR)/synthetic.o $(SPINE_OBJS)
 
-all: $(BIN)
+all: $(BIN) $(SYNTH_BIN)
 
 $(BIN): $(OBJS)
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
+$(SYNTH_BIN): $(SYNTH_OBJS)
+	$(CXX) $^ -o $@ $(LDFLAGS)
+
 $(OBJDIR)/main.o: main.cpp | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJDIR)/synthetic.o: synthetic.cpp | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJDIR)/spine/%.o: $(SPINE_CPP)/src/spine/%.cpp | $(OBJDIR)/spine

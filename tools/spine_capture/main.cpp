@@ -123,7 +123,40 @@ int main(int argc, char **argv) {
     {
         Skeleton skeleton(data);
         skeleton.setToSetupPose();
-        skeleton.updateWorldTransform(Physics_None);
+
+        // Bones-only pose, two-step to match dm_spine_runtime Phase 2
+        // semantics exactly:
+        //
+        //   1. seed `applied = local` on EVERY bone (spine-cpp's
+        //      `Skeleton::updateWorldTransform` does this unconditionally,
+        //      before walking the cache);
+        //   2. compute world transforms for ACTIVE bones only, in stored
+        //      order (parent-first by invariant). No constraints participate.
+        //
+        // Inactive bones keep their post-ctor world defaults (identity,
+        // world=(0,0)), which matches what Skeleton::updateWorldTransform
+        // produces in spine-cpp because inactive bones are excluded from the
+        // update cache.
+        //
+        // Phase 5's golden tests will replace this with
+        // `Skeleton::updateWorldTransform(Physics_None)` to exercise the
+        // constraint pipeline.
+        Vector<Bone *> &bones_for_pose = skeleton.getBones();
+        for (size_t i = 0; i < bones_for_pose.size(); ++i) {
+            Bone *b = bones_for_pose[i];
+            b->setAX(b->getX());
+            b->setAY(b->getY());
+            b->setAppliedRotation(b->getRotation());
+            b->setAScaleX(b->getScaleX());
+            b->setAScaleY(b->getScaleY());
+            b->setAShearX(b->getShearX());
+            b->setAShearY(b->getShearY());
+        }
+        for (size_t i = 0; i < bones_for_pose.size(); ++i) {
+            if (bones_for_pose[i]->isActive()) {
+                bones_for_pose[i]->updateWorldTransform();
+            }
+        }
 
         fprintf(out, "{\n");
         fprintf(out, "  \"source_skel\": \"%s\",\n",
