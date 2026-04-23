@@ -38,11 +38,46 @@ use crate::animation::{
     BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, Event, MixBlend, MixDirection,
 };
 use crate::data::{
-    AnimationEvent, BoneId, CurveFrames, Inherit, PhysicsConstraintData, PhysicsConstraintId,
-    PhysicsProperty, SlotId, Timeline,
+    Animation, AnimationEvent, BoneId, CurveFrames, Inherit, PhysicsConstraintData,
+    PhysicsConstraintId, PhysicsProperty, SlotId, Timeline,
 };
 use crate::math::Color;
 use crate::skeleton::{PhysicsConstraint, Skeleton};
+
+impl Animation {
+    /// Run every timeline in this animation against `skeleton` at `time`.
+    ///
+    /// When `loop_` is true and `self.duration != 0`, `time` and `last_time`
+    /// are first reduced modulo `duration` so the caller can pass monotonic
+    /// track times and get the wrapped behaviour for free. Ports
+    /// `spine::Animation::apply`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply(
+        &self,
+        skeleton: &mut Skeleton,
+        mut last_time: f32,
+        mut time: f32,
+        loop_: bool,
+        events: &mut Vec<Event>,
+        alpha: f32,
+        blend: MixBlend,
+        direction: MixDirection,
+    ) {
+        if loop_ && self.duration != 0.0 {
+            // `%` on f32 matches C's fmod, which is what spine-cpp uses via
+            // MathUtil::fmod. For positive time/duration it produces values
+            // in [0, duration), which is what the timeline machinery expects.
+            time %= self.duration;
+            if last_time > 0.0 {
+                last_time %= self.duration;
+            }
+        }
+
+        for tl in &self.timelines {
+            tl.apply(skeleton, last_time, time, events, alpha, blend, direction);
+        }
+    }
+}
 
 impl Timeline {
     /// Write this timeline's contribution to `skeleton` for the given time.
