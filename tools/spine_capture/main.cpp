@@ -59,10 +59,14 @@ spine::SpineExtension *spine::getDefaultExtension() {
 // Atlas construction requires a TextureLoader, but we never touch pixels here —
 // setup-pose bone transforms are derived from SkeletonData alone. Return a
 // stub page so Atlas construction succeeds.
+// NullTextureLoader — hands each page a small integer "handle" stashed in
+// `rendererObject` so `RenderCommand::texture` round-trips back to an atlas
+// page index for the render goldens (Phase 6g).
 class NullTextureLoader : public TextureLoader {
+    intptr_t _next = 1; // start at 1 so zero is distinguishable from "unset"
     void load(AtlasPage &page, const String &path) override {
-        (void)page;
         (void)path;
+        page.texture = reinterpret_cast<void*>(_next++);
     }
     void unload(void *texture) override { (void)texture; }
 };
@@ -105,6 +109,7 @@ static std::string json_escape(const char *s) {
 
 int main(int argc, char **argv) {
     bool anim_mode = false;
+    bool render_mode = false;
     const char *atlas_path = nullptr;
     const char *skel_path = nullptr;
     const char *out_path = nullptr;
@@ -122,17 +127,41 @@ int main(int argc, char **argv) {
         out_path = argv[4];
         anim_name = argv[5];
         anim_time = static_cast<float>(atof(argv[6]));
+    } else if (argc == 5 && strcmp(argv[1], "--render") == 0) {
+        render_mode = true;
+        atlas_path = argv[2];
+        skel_path = argv[3];
+        out_path = argv[4];
     } else {
         fprintf(stderr,
                 "usage:\n"
                 "  %s <atlas> <skel> <out.json>\n"
-                "  %s --anim <atlas> <skel> <out.json> <anim> <time>\n",
-                argv[0], argv[0]);
+                "  %s --anim <atlas> <skel> <out.json> <anim> <time>\n"
+                "  %s --render <atlas> <skel> <out.json>\n",
+                argv[0], argv[0], argv[0]);
         return 64;
     }
 
     NullTextureLoader texture_loader;
     Atlas atlas(atlas_path, &texture_loader, false);
+
+    // Assign each page a stable integer "handle" stashed in
+    // `page->texture`. `Atlas::load` copies that pointer into every
+    // region's `rendererObject`, which surfaces on `RenderCommand::texture`.
+    // For the render goldens we want these to be the page index so the
+    // Rust-side `TextureId(u32)` (page_index) matches bit-for-bit.
+    {
+        Vector<AtlasPage *> &pages = atlas.getPages();
+        for (size_t i = 0; i < pages.size(); ++i) {
+            pages[i]->texture = reinterpret_cast<void*>(static_cast<intptr_t>(i));
+            // Re-propagate to any regions already loaded against this page.
+        }
+        Vector<AtlasRegion *> &regions = atlas.getRegions();
+        for (size_t i = 0; i < regions.size(); ++i) {
+            regions[i]->rendererObject = regions[i]->page->texture;
+        }
+    }
+
     AtlasAttachmentLoader attachment_loader(&atlas);
 
     SkeletonBinary binary(&attachment_loader);
@@ -199,6 +228,49 @@ int main(int argc, char **argv) {
             }
         }
         skeleton.updateWorldTransform(Physics_None);
+
+        // Render mode (Phase 6g): run the SkeletonRenderer on the
+        // posed skeleton and dump per-command summaries.
+        if (render_mode) {
+            SkeletonRenderer renderer;
+            RenderCommand *head = renderer.render(skeleton);
+            fprintf(out, "{\n");
+            fprintf(out, "  \"source_skel\": \"%s\",\n",
+                    json_escape(skel_path).c_str());
+            fprintf(out, "  \"source_atlas\": \"%s\",\n",
+                    json_escape(atlas_path).c_str());
+            fprintf(out, "  \"commands\": [\n");
+            bool first = true;
+            for (RenderCommand *cmd = head; cmd != NULL; cmd = cmd->next) {
+                if (!first) fprintf(out, ",\n");
+                first = false;
+                intptr_t tex = reinterpret_cast<intptr_t>(cmd->texture);
+                uint32_t color = cmd->numVertices > 0 ? cmd->colors[0] : 0;
+                uint32_t dark = cmd->numVertices > 0 ? cmd->darkColors[0] : 0;
+                float fx = cmd->numVertices > 0 ? cmd->positions[0] : 0.0f;
+                float fy = cmd->numVertices > 0 ? cmd->positions[1] : 0.0f;
+                float lx = cmd->numVertices > 0 ? cmd->positions[cmd->numVertices * 2 - 2] : 0.0f;
+                float ly = cmd->numVertices > 0 ? cmd->positions[cmd->numVertices * 2 - 1] : 0.0f;
+                float fu = cmd->numVertices > 0 ? cmd->uvs[0] : 0.0f;
+                float fv = cmd->numVertices > 0 ? cmd->uvs[1] : 0.0f;
+                fprintf(out,
+                        "    {\"texture\": %zd, \"blend\": %d, "
+                        "\"num_vertices\": %d, \"num_indices\": %d, "
+                        "\"color\": %u, \"dark_color\": %u, "
+                        "\"first_pos\": [%.6g, %.6g], "
+                        "\"last_pos\": [%.6g, %.6g], "
+                        "\"first_uv\": [%.6g, %.6g]}",
+                        (ssize_t) tex, (int) cmd->blendMode,
+                        cmd->numVertices, cmd->numIndices,
+                        color, dark,
+                        fx, fy, lx, ly, fu, fv);
+            }
+            fprintf(out, "\n  ]\n}\n");
+            fclose(out);
+            delete data;
+            return 0;
+        }
+
         if (getenv("DUMP_TC")) {
             // Re-dump mix values AFTER updateWorldTransform to see if anything changed.
             Vector<TransformConstraint *> &tcs = skeleton.getTransformConstraints();

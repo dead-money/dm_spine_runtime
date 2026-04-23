@@ -1,0 +1,20 @@
+{
+  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/dragon/export/dragon-ess.skel",
+  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/dragon/export/dragon.atlas",
+  "commands": [
+    {"texture": 1, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [20.5708, -166.088], "last_pos": [20.5708, 10.9119], "first_uv": [0.949219, 0.213867]},
+    {"texture": 2, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [48.0588, -114.098], "last_pos": [48.0588, 34.902], "first_uv": [0.720703, 0.358398]},
+    {"texture": 0, "blend": 0, "num_vertices": 20, "num_indices": 30, "color": 4294967295, "dark_color": 4278190080, "first_pos": [253.818, -291.215], "last_pos": [-175.64, 77.3318], "first_uv": [0.976562, 0.998047]},
+    {"texture": 2, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-117.882, -2.90402], "last_pos": [-117.882, 117.096], "first_uv": [0.81543, 0.182617]},
+    {"texture": 1, "blend": 0, "num_vertices": 8, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-48.5424, 4.11672], "last_pos": [69.9991, 119.736], "first_uv": [0.749023, 0.151367]},
+    {"texture": 0, "blend": 0, "num_vertices": 24, "num_indices": 36, "color": 4294967295, "dark_color": 4278190080, "first_pos": [139.01, -72.706], "last_pos": [185.53, -66.1106], "first_uv": [0.914062, 0.0771484]},
+    {"texture": 2, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [126.61, -73.7727], "last_pos": [126.61, 48.2273], "first_uv": [0.855469, 0.411133]},
+    {"texture": 0, "blend": 0, "num_vertices": 12, "num_indices": 18, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-95.3636, -88.1828], "last_pos": [-140.885, -28.3266], "first_uv": [0.738281, 0.0771484]},
+    {"texture": 2, "blend": 0, "num_vertices": 8, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-73.1194, -112.439], "last_pos": [-24.3054, 25.7511], "first_uv": [0.970703, 0.411133]},
+    {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [113.605, -110.969], "last_pos": [58.5093, -96.3569], "first_uv": [0.974609, 0.170898]},
+    {"texture": 2, "blend": 0, "num_vertices": 8, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [86.7736, -97.1665], "last_pos": [67.1958, -41.0204], "first_uv": [0.828125, 0.290039]},
+    {"texture": 0, "blend": 0, "num_vertices": 8, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [100.74, -152.581], "last_pos": [65.0256, -116.394], "first_uv": [0.974609, 0.170898]},
+    {"texture": 1, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [287.642, -52.6731], "last_pos": [287.642, 93.3269], "first_uv": [0.774414, 0.15332]},
+    {"texture": 0, "blend": 0, "num_vertices": 12, "num_indices": 18, "color": 4294967295, "dark_color": 4278190080, "first_pos": [151.621, -327.81], "last_pos": [175, -255.62], "first_uv": [0.358398, 0.998047]}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/raptor/export/raptor-pro.skel",
+  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/raptor/export/raptor.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 16, "num_indices": 24, "color": 4294967295, "dark_color": 4278190080, "first_pos": [80.1859, 640.784], "last_pos": [75.3613, 574.62], "first_uv": [0.615234, 0.179688]},
+    {"texture": 0, "blend": 0, "num_vertices": 16, "num_indices": 51, "color": 4284769380, "dark_color": 4278190080, "first_pos": [268.53, 677.646], "last_pos": [316.278, 512.556], "first_uv": [0.404247, 0.295289]},
+    {"texture": 0, "blend": 0, "num_vertices": 610, "num_indices": 2184, "color": 4294967295, "dark_color": 4278190080, "first_pos": [334.779, 604.893], "last_pos": [51.3753, 706.507], "first_uv": [0.938376, 0.445312]}
+  ]
+}

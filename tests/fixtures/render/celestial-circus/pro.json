@@ -1,0 +1,15 @@
+{
+  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/celestial-circus/export/celestial-circus-pro.skel",
+  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/celestial-circus/export/celestial-circus.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 485, "num_indices": 1407, "color": 4294967295, "dark_color": 4278190080, "first_pos": [361.957, 159], "last_pos": [20.5216, 801.564], "first_uv": [0.776778, 0.831055]},
+    {"texture": 0, "blend": 2, "num_vertices": 12, "num_indices": 18, "color": 4294967295, "dark_color": 4278190080, "first_pos": [70.9999, 735], "last_pos": [105, 770], "first_uv": [0.731445, 0.516602]},
+    {"texture": 0, "blend": 0, "num_vertices": 20, "num_indices": 30, "color": 4294967295, "dark_color": 4278190080, "first_pos": [5.99986, 754], "last_pos": [3.99985, 793], "first_uv": [0.897461, 0.831055]},
+    {"texture": 0, "blend": 2, "num_vertices": 10, "num_indices": 24, "color": 4294967295, "dark_color": 4278190080, "first_pos": [95.0519, 807.732], "last_pos": [82.189, 807.597], "first_uv": [0.407833, 0.385852]},
+    {"texture": 0, "blend": 0, "num_vertices": 11, "num_indices": 27, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-45.0002, 782.363], "last_pos": [-45.0002, 777.719], "first_uv": [0.697223, 0.204102]},
+    {"texture": 0, "blend": 2, "num_vertices": 12, "num_indices": 18, "color": 4294967295, "dark_color": 4278190080, "first_pos": [21.4181, 771.707], "last_pos": [74.9999, 753], "first_uv": [0.710938, 0.530273]},
+    {"texture": 0, "blend": 0, "num_vertices": 38, "num_indices": 96, "color": 4294967295, "dark_color": 4278190080, "first_pos": [63.9999, 748], "last_pos": [-40.0001, 722.4], "first_uv": [0.706055, 0.296875]},
+    {"texture": 0, "blend": 2, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [41.9998, 870], "last_pos": [41.9998, 972], "first_uv": [0.314453, 0.428711]},
+    {"texture": 0, "blend": 0, "num_vertices": 175, "num_indices": 546, "color": 4294967295, "dark_color": 4278190080, "first_pos": [147.59, 248.146], "last_pos": [278.816, 1595.91], "first_uv": [0.00267824, 0.489103]}
+  ]
+}

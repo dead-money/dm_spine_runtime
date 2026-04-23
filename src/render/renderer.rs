@@ -123,9 +123,74 @@ impl SkeletonRenderer {
             self.clipping.clip_end_on(slot_id);
         }
         self.clipping.clip_end();
-        // Phase 6g: batch same-(texture, blend, color) runs.
-
+        self.batch_commands();
         &self.render_commands
+    }
+
+    /// Merge adjacent commands that share `(texture, blend_mode,
+    /// colors[0], dark_colors[0])` into a single command, as long as
+    /// the merged index count stays under `0xffff` (`u16::MAX`).
+    /// Literal port of `SkeletonRenderer::batchCommands`.
+    ///
+    /// Replaces `self.render_commands` with the batched set.
+    #[allow(clippy::too_many_lines)]
+    fn batch_commands(&mut self) {
+        if self.render_commands.is_empty() {
+            return;
+        }
+        let input = std::mem::take(&mut self.render_commands);
+        let mut output: Vec<RenderCommand> = Vec::new();
+
+        let mut start = 0usize;
+        let mut i = 1usize;
+        let mut num_vertices = input[0].num_vertices();
+        let mut num_indices = input[0].num_indices();
+        while i <= input.len() {
+            let cmd = if i < input.len() {
+                Some(&input[i])
+            } else {
+                None
+            };
+
+            if let Some(c) = cmd
+                && c.num_vertices() == 0
+                && c.num_indices() == 0
+            {
+                i += 1;
+                continue;
+            }
+
+            let first = &input[start];
+            let can_merge = cmd.is_some_and(|c| {
+                c.texture == first.texture
+                    && c.blend_mode == first.blend_mode
+                    && c.colors.first() == first.colors.first()
+                    && c.dark_colors.first() == first.dark_colors.first()
+                    && (num_indices + c.num_indices()) < 0xffff
+            });
+
+            if can_merge {
+                let c = cmd.unwrap();
+                num_vertices += c.num_vertices();
+                num_indices += c.num_indices();
+            } else {
+                output.push(batch_sub_commands(
+                    &input,
+                    start,
+                    i - 1,
+                    num_vertices,
+                    num_indices,
+                ));
+                if i == input.len() {
+                    break;
+                }
+                start = i;
+                num_vertices = input[i].num_vertices();
+                num_indices = input[i].num_indices();
+            }
+            i += 1;
+        }
+        self.render_commands = output;
     }
 
     /// Emit a `RegionAttachment` as a 4-vertex / 6-index quad.
@@ -304,6 +369,43 @@ impl Default for SkeletonRenderer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Concatenate `commands[first..=last]` into a single batched
+/// `RenderCommand`. Rebases each source command's index buffer by
+/// the running vertex offset so the merged indices stay valid.
+/// Literal port of `SkeletonRenderer::batchSubCommands`.
+fn batch_sub_commands(
+    commands: &[RenderCommand],
+    first: usize,
+    last: usize,
+    num_vertices: usize,
+    num_indices: usize,
+) -> RenderCommand {
+    let f = &commands[first];
+    let mut out = RenderCommand::with_capacity(num_vertices, num_indices, f.blend_mode, f.texture);
+
+    let mut pos_w = 0;
+    let mut col_w = 0;
+    let mut idx_w = 0;
+    let mut indices_offset: u16 = 0;
+
+    for cmd in &commands[first..=last] {
+        let n = cmd.num_vertices();
+        let nf = n * 2;
+        out.positions[pos_w..pos_w + nf].copy_from_slice(&cmd.positions);
+        out.uvs[pos_w..pos_w + nf].copy_from_slice(&cmd.uvs);
+        pos_w += nf;
+        out.colors[col_w..col_w + n].copy_from_slice(&cmd.colors);
+        out.dark_colors[col_w..col_w + n].copy_from_slice(&cmd.dark_colors);
+        col_w += n;
+        for (k, &ix) in cmd.indices.iter().enumerate() {
+            out.indices[idx_w + k] = ix + indices_offset;
+        }
+        idx_w += cmd.num_indices();
+        indices_offset += n as u16;
+    }
+    out
 }
 
 /// Pack the skeleton × slot × attachment-color blend into a single

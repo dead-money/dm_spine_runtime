@@ -1,0 +1,12 @@
+{
+  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/alien/export/alien-pro.skel",
+  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/alien/export/alien.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4286216826, "dark_color": 4278190080, "first_pos": [141.709, 61.9651], "last_pos": [164.96, 222.503], "first_uv": [0.338867, 0.408203]},
+    {"texture": 0, "blend": 0, "num_vertices": 24, "num_indices": 36, "color": 4294967295, "dark_color": 4278190080, "first_pos": [50.382, 52.6901], "last_pos": [36.0095, 291.482], "first_uv": [0.28418, 0.31543]},
+    {"texture": 0, "blend": 0, "num_vertices": 73, "num_indices": 366, "color": 4292847905, "dark_color": 4291132446, "first_pos": [35.686, 281.335], "last_pos": [31.243, 236.324], "first_uv": [0.544712, 0.635162]},
+    {"texture": 0, "blend": 0, "num_vertices": 12, "num_indices": 42, "color": 4278190080, "dark_color": 4278190080, "first_pos": [64.3064, 237.907], "last_pos": [85.9593, 237.931], "first_uv": [0.291992, 0.297852]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 3372220415, "dark_color": 4278190080, "first_pos": [92.5396, 258.738], "last_pos": [54.0574, 277.924], "first_uv": [0.276367, 0.271484]},
+    {"texture": 0, "blend": 0, "num_vertices": 139, "num_indices": 630, "color": 4294967295, "dark_color": 4278190080, "first_pos": [145.265, 345.794], "last_pos": [-102.063, 165.525], "first_uv": [0.464939, 0.582217]}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/speedy/export/speedy-ess.skel",
+  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/speedy/export/speedy.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 44, "num_indices": 66, "color": 4294967295, "dark_color": 4278190080, "first_pos": [78.0249, 66.9086], "last_pos": [92.7308, 275.232], "first_uv": [0.619141, 0.632812]}
+  ]
+}
