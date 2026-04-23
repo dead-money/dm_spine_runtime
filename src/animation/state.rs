@@ -43,10 +43,13 @@
 //!   attachment applies.
 //! - **4e**: event queue, per-entry listeners, empty animations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::animation::{AnimationStateData, Event, MixBlend, MixDirection};
+use crate::animation::{
+    AnimationStateData, Event, MixBlend, MixDirection, PropertyId, animation_has_timeline,
+    property_ids,
+};
 use crate::data::{AnimationId, SkeletonData};
 use crate::skeleton::Skeleton;
 
@@ -807,16 +810,176 @@ impl AnimationState {
         false
     }
 
+    // ----- Phase 4d: animationsChanged + computeHold --------------------
+
+    /// Re-classify every timeline on every `mixing_from` chain entry.
+    /// Ports `spine::AnimationState::animationsChanged`.
+    ///
+    /// Walks each track from its outgoing (`mixing_from`-most) entry up
+    /// through `mixing_to` edges back to the current entry, invoking
+    /// [`compute_hold`][Self::compute_hold] on each entry (skipping
+    /// Add-blend entries that don't need hold classification).
+    fn animations_changed_rebuild(&mut self) {
+        self.animations_changed = false;
+
+        // Collect the walk order across tracks into a linear Vec so the
+        // per-entry mutation inside compute_hold doesn't have to fight
+        // aliased iteration of `self.tracks`.
+        let mut walk: Vec<EntryId> = Vec::new();
+        for i in 0..self.tracks.len() {
+            let Some(start) = self.tracks[i] else {
+                continue;
+            };
+            // Walk mixing_from to the root.
+            let mut root = start;
+            while let Some(from) = self.entries.get(&root).and_then(|e| e.mixing_from) {
+                root = from;
+            }
+            // Then walk mixing_to back up.
+            let mut entry = Some(root);
+            while let Some(id) = entry {
+                walk.push(id);
+                entry = self.entries.get(&id).and_then(|e| e.mixing_to);
+            }
+        }
+
+        let mut seen: HashSet<PropertyId> = HashSet::new();
+        for id in walk {
+            let (mixing_to, mix_blend) = self
+                .entries
+                .get(&id)
+                .map_or((None, MixBlend::Replace), |e| (e.mixing_to, e.mix_blend));
+            if mixing_to.is_none() || mix_blend != MixBlend::Add {
+                self.compute_hold(id, &mut seen);
+            }
+        }
+    }
+
+    /// Classify each timeline on `entry` as Subsequent/First/HoldSubsequent/
+    /// HoldFirst/HoldMix, seeding `timeline_mode` and `timeline_hold_mix`.
+    ///
+    /// Ports `spine::AnimationState::computeHold`. `seen` is the shared
+    /// "already-keyed property IDs" set that drives the classification.
+    fn compute_hold(&mut self, entry: EntryId, seen: &mut HashSet<PropertyId>) {
+        let (animation_id, mixing_to, hold_previous) = {
+            let Some(e) = self.entries.get(&entry) else {
+                return;
+            };
+            (e.animation, e.mixing_to, e.hold_previous)
+        };
+        let timelines = self.skeleton_data().animations[animation_id.index()]
+            .timelines
+            .clone();
+        let n = timelines.len();
+
+        // Pre-size the per-entry scratch vecs.
+        if let Some(e) = self.entries.get_mut(&entry) {
+            e.timeline_mode.clear();
+            e.timeline_mode.resize(n, TimelineMode::First);
+            e.timeline_hold_mix.clear();
+            e.timeline_hold_mix.resize(n, None);
+        }
+
+        // `to->_holdPrevious` fast path: every timeline is HoldFirst or
+        // HoldSubsequent depending on whether this is the first time we've
+        // seen its property IDs.
+        if let Some(to_id) = mixing_to
+            && self.entries.get(&to_id).is_some_and(|e| e.hold_previous)
+        {
+            let _ = hold_previous; // silences unused when to_id exists
+            for (i, tl) in timelines.iter().enumerate() {
+                let ids = property_ids(tl);
+                let newly_seen = add_all(seen, &ids);
+                let mode = if newly_seen {
+                    TimelineMode::HoldFirst
+                } else {
+                    TimelineMode::HoldSubsequent
+                };
+                if let Some(e) = self.entries.get_mut(&entry) {
+                    e.timeline_mode[i] = mode;
+                }
+            }
+            return;
+        }
+
+        // Main path: per-timeline classification.
+        for (i, tl) in timelines.iter().enumerate() {
+            let ids = property_ids(tl);
+            if !add_all(seen, &ids) {
+                // Property is already keyed by a lower-indexed track or
+                // another timeline — this timeline is "subsequent".
+                if let Some(e) = self.entries.get_mut(&entry) {
+                    e.timeline_mode[i] = TimelineMode::Subsequent;
+                }
+                continue;
+            }
+
+            // Newly-seen property. If there's no mixing_to, or if this is
+            // a non-blendable timeline (attachment/drawOrder/event), or
+            // the mixing-to animation doesn't even key this property, we
+            // use MixBlend::Setup (First) with alpha_mix.
+            let Some(to_id) = mixing_to else {
+                continue;
+            };
+            let uses_first = matches!(
+                tl,
+                crate::data::Timeline::Attachment { .. }
+                    | crate::data::Timeline::DrawOrder { .. }
+                    | crate::data::Timeline::Event { .. }
+            );
+            let to_anim_id = self.entries.get(&to_id).map(|e| e.animation);
+            let to_has_timeline = to_anim_id.is_some_and(|aid| {
+                animation_has_timeline(&self.skeleton_data().animations[aid.index()], &ids)
+            });
+            if uses_first || !to_has_timeline {
+                // HoldFirst: timeline ramps down under its own mix but
+                // blends against setup pose.
+                if let Some(e) = self.entries.get_mut(&entry) {
+                    e.timeline_mode[i] = TimelineMode::First;
+                }
+                continue;
+            }
+
+            // Walk the rest of the mixing_to chain. If any subsequent
+            // entry also keys this property with mix_duration > 0, we
+            // need HoldMix pointing at that entry.
+            let mut hold_mix: Option<EntryId> = None;
+            let mut next_id = self.entries.get(&to_id).and_then(|e| e.mixing_to);
+            while let Some(nid) = next_id {
+                let Some(n_entry) = self.entries.get(&nid) else {
+                    break;
+                };
+                let n_anim = n_entry.animation;
+                if animation_has_timeline(&self.skeleton_data().animations[n_anim.index()], &ids) {
+                    next_id = n_entry.mixing_to;
+                    continue;
+                }
+                if n_entry.mix_duration > 0.0 {
+                    hold_mix = Some(nid);
+                }
+                break;
+            }
+            let mode = if hold_mix.is_some() {
+                TimelineMode::HoldMix
+            } else {
+                TimelineMode::HoldFirst
+            };
+            if let Some(e) = self.entries.get_mut(&entry) {
+                e.timeline_mode[i] = mode;
+                e.timeline_hold_mix[i] = hold_mix;
+            }
+        }
+    }
+
     /// Apply the mixing-from chain for `to`, returning the alpha
     /// multiplier that should scale the incoming animation.
     ///
-    /// Ports `spine::AnimationState::applyMixingFrom`. Phase 4c uses the
-    /// simple path: every timeline on `from` applies with `MixBlend::Setup`
-    /// (or `Add` when the top blend is Add) scaled by
-    /// `alpha_hold * (1 - mix)`. Phase 4d replaces this with per-timeline
-    /// `timeline_mode` specialisation (HoldSubsequent/HoldFirst/HoldMix)
-    /// for cleaner blends against lower tracks.
+    /// Ports `spine::AnimationState::applyMixingFrom`. Dispatches per
+    /// timeline via [`TrackEntry::timeline_mode`], which
+    /// [`compute_hold`][Self::compute_hold] populated in
+    /// [`animations_changed_rebuild`][Self::animations_changed_rebuild].
     #[allow(clippy::float_cmp)] // tag comparisons (mix_duration == 0, blend == Setup/First)
+    #[allow(clippy::too_many_lines)] // matches spine-cpp's single-function shape
     fn apply_mixing_from(
         &mut self,
         to: EntryId,
@@ -884,6 +1047,13 @@ impl AnimationState {
         let to_interrupt_alpha = self.entries.get(&to).map_or(1.0, |e| e.interrupt_alpha);
         let alpha_hold = from_alpha * to_interrupt_alpha;
         let alpha_mix = alpha_hold * (1.0 - mix);
+        // Whether DrawOrder timelines on the mixing-out side fire; also
+        // used by the HoldMix path below when filtering timelines.
+        let draw_order = mix
+            < self
+                .entries
+                .get(&from)
+                .map_or(0.0, |e| e.mix_draw_order_threshold);
 
         // total_alpha is accumulated by Phase 4d's HoldMix branch; the
         // simple path just resets it here.
@@ -904,25 +1074,87 @@ impl AnimationState {
             &mut scratch
         };
 
-        let (direction, effective_blend) = if blend == MixBlend::Add {
-            (MixDirection::Out, blend)
-        } else {
-            (MixDirection::Out, MixBlend::Setup)
-        };
-
         let timelines = self.skeleton_data().animations[from_animation_id.index()]
             .timelines
             .clone();
-        for tl in &timelines {
-            tl.apply(
-                skeleton,
-                from_animation_last,
-                apply_time,
-                ev_ref,
-                alpha_mix,
-                effective_blend,
-                direction,
-            );
+
+        if blend == MixBlend::Add {
+            // Add-blend entries: every timeline applies with the entry's
+            // blend + alpha_mix + MixDirection::Out.
+            for tl in &timelines {
+                tl.apply(
+                    skeleton,
+                    from_animation_last,
+                    apply_time,
+                    ev_ref,
+                    alpha_mix,
+                    blend,
+                    MixDirection::Out,
+                );
+            }
+        } else {
+            // Per-timeline dispatch via the entry's timeline_mode.
+            // Snapshot timeline_mode + hold-mix state first to avoid
+            // aliasing self during the inner loop.
+            let modes = self
+                .entries
+                .get(&from)
+                .map(|e| e.timeline_mode.clone())
+                .unwrap_or_default();
+            let hold_mix = self
+                .entries
+                .get(&from)
+                .map(|e| e.timeline_hold_mix.clone())
+                .unwrap_or_default();
+
+            let mut total_alpha_acc = 0.0_f32;
+            for (i, tl) in timelines.iter().enumerate() {
+                let mode = modes.get(i).copied().unwrap_or(TimelineMode::First);
+                let (timeline_blend, tl_alpha) = match mode {
+                    TimelineMode::Subsequent => (blend, alpha_mix),
+                    TimelineMode::First => (MixBlend::Setup, alpha_mix),
+                    TimelineMode::HoldSubsequent => (blend, alpha_hold),
+                    TimelineMode::HoldFirst => (MixBlend::Setup, alpha_hold),
+                    TimelineMode::HoldMix => {
+                        // Alpha tapers with the downstream mix's progress.
+                        let hm_id = hold_mix.get(i).and_then(|h| *h);
+                        let (hm_time, hm_duration) = hm_id
+                            .and_then(|id| self.entries.get(&id))
+                            .map_or((0.0, 0.0), |e| (e.mix_time, e.mix_duration));
+                        let frac = if hm_duration > 0.0 {
+                            (1.0 - hm_time / hm_duration).max(0.0)
+                        } else {
+                            1.0
+                        };
+                        (MixBlend::Setup, alpha_hold * frac)
+                    }
+                };
+                total_alpha_acc += tl_alpha;
+
+                // DrawOrder timelines on the mixing-out side: spine-cpp
+                // skips them when mix is past mix_draw_order_threshold
+                // (except for the Setup-blend reset). We approximate
+                // "subsequent + !draw_order → skip" to match that.
+                if matches!(tl, crate::data::Timeline::DrawOrder { .. })
+                    && mode == TimelineMode::Subsequent
+                    && !draw_order
+                {
+                    continue;
+                }
+
+                tl.apply(
+                    skeleton,
+                    from_animation_last,
+                    apply_time,
+                    ev_ref,
+                    tl_alpha,
+                    timeline_blend,
+                    MixDirection::Out,
+                );
+            }
+            if let Some(from_entry) = self.entries.get_mut(&from) {
+                from_entry.total_alpha = total_alpha_acc;
+            }
         }
 
         if let Some(from_entry) = self.entries.get_mut(&from) {
@@ -944,10 +1176,12 @@ impl AnimationState {
     /// (HoldSubsequent/HoldFirst/HoldMix) for cleaner crossfades when
     /// lower tracks also key the same property.
     pub fn apply(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) {
-        // Phase 4d hook: re-classify timelines when the track topology
-        // changed. Stubbed for 4c — simple apply path doesn't use
-        // timeline_mode.
-        self.animations_changed = false;
+        // Phase 4d: re-classify timelines when the track topology
+        // changed. Populates every entry's timeline_mode/timeline_hold_mix
+        // so apply_mixing_from can dispatch per-timeline.
+        if self.animations_changed {
+            self.animations_changed_rebuild();
+        }
 
         for i in 0..self.tracks.len() {
             let Some(current_id) = self.tracks[i] else {
@@ -1035,6 +1269,19 @@ impl AnimationState {
             }
         }
     }
+}
+
+/// Insert every id into `seen`, returning `true` if any were newly
+/// added. Ports spine-cpp's `HashMap::addAll(keys, value)` idiom used in
+/// `computeHold`.
+fn add_all(seen: &mut HashSet<PropertyId>, ids: &[PropertyId]) -> bool {
+    let mut any_new = false;
+    for id in ids {
+        if seen.insert(*id) {
+            any_new = true;
+        }
+    }
+    any_new
 }
 
 /// Error returned by [`AnimationState::set_animation_by_name`] when the

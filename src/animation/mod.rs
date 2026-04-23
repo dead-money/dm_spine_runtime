@@ -34,10 +34,12 @@
 
 pub mod apply;
 pub mod curve;
+pub mod property;
 pub mod state;
 pub mod state_data;
 
 pub use curve::{bezier_value, compute_bezier_samples, curve_value1, curve_value2, search};
+pub use property::{Property, PropertyId, animation_has_timeline, property_ids};
 pub use state::{AnimationNotFound, AnimationState, TrackEntry};
 pub use state_data::{AnimationStateData, MixAnimationNotFound};
 
