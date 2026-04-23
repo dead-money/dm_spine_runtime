@@ -127,6 +127,15 @@ impl SkeletonRenderer {
         &self.render_commands
     }
 
+    /// Borrow the most recent command buffer without re-walking the draw
+    /// order. Useful for engine integrations that want to run `render`
+    /// inside one system and consume the slice in a later system without
+    /// cloning or re-rendering.
+    #[must_use]
+    pub fn commands(&self) -> &[RenderCommand] {
+        &self.render_commands
+    }
+
     /// Merge adjacent commands that share `(texture, blend_mode,
     /// colors[0], dark_colors[0])` into a single command, as long as
     /// the merged index count stays under `0xffff` (`u16::MAX`).
