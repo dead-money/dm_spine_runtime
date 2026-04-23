@@ -34,7 +34,7 @@
 //! `batchCommands` merge pass.
 
 use crate::data::attachment::TextureRegionRef;
-use crate::data::{Attachment, RegionAttachment};
+use crate::data::{Attachment, MeshAttachment, RegionAttachment};
 use crate::render::{pack_color, RenderCommand, TextureId};
 use crate::skeleton::{Skeleton, Slot};
 
@@ -101,11 +101,15 @@ impl SkeletonRenderer {
                 continue;
             }
 
-            // Phase 6d (Mesh), Phase 6e (Clipping) will grow this
-            // into a match — the single-branch form triggers clippy
-            // but that goes away as soon as 6d lands.
-            if let Attachment::Region(region) = attachment {
-                self.emit_region(skeleton, slot_id, slot, region);
+            match attachment {
+                Attachment::Region(region) => {
+                    self.emit_region(skeleton, slot_id, slot, region);
+                }
+                Attachment::Mesh(mesh) => {
+                    self.emit_mesh(skeleton, slot_id, slot, mesh);
+                }
+                // Phase 6e (Clipping): hook clipStart/clipEnd here.
+                _ => {}
             }
             // Phase 6e: clipper.clipEnd(slot) at end of every slot iteration.
         }
@@ -195,6 +199,79 @@ impl SkeletonRenderer {
             *c = dark_color;
         }
         cmd.indices.copy_from_slice(&self.quad_indices);
+        self.render_commands.push(cmd);
+    }
+
+    /// Emit a `MeshAttachment` — N-vertex / M-index triangle list.
+    ///
+    /// Mirrors the `MeshAttachment` branch of
+    /// `SkeletonRenderer::render`. World vertices come from the shared
+    /// `Skeleton::compute_world_vertices` helper (ported in 6a);
+    /// uvs/triangles come straight from the attachment.
+    ///
+    /// Sequence-driven region cycling is deferred to a later sub-phase
+    /// — meshes with a non-setup `sequence_index` fall back to the
+    /// attachment's resolved region and setup-pose UVs.
+    fn emit_mesh(
+        &mut self,
+        skeleton: &Skeleton,
+        slot_id: crate::data::SlotId,
+        slot: &Slot,
+        mesh: &MeshAttachment,
+    ) {
+        if mesh.color.a == 0.0 {
+            return;
+        }
+        let Some(region) = mesh.region.as_ref() else {
+            return;
+        };
+
+        let world_len = mesh.vertex_data.world_vertices_length as usize;
+        if world_len == 0 || mesh.triangles.is_empty() || mesh.uvs.is_empty() {
+            return;
+        }
+        self.world_vertices.resize(world_len.max(self.world_vertices.len()), 0.0);
+        skeleton.compute_world_vertices(
+            &mesh.vertex_data,
+            slot_id,
+            0,
+            world_len,
+            &mut self.world_vertices,
+            0,
+            2,
+        );
+        let num_vertices = world_len / 2;
+
+        let sc = skeleton.color;
+        let scol = slot.color;
+        let acol = mesh.color;
+        let color = pack_color(
+            sc.r * scol.r * acol.r,
+            sc.g * scol.g * acol.g,
+            sc.b * scol.b * acol.b,
+            sc.a * scol.a * acol.a,
+        );
+        let dark_color = if let Some(dark) = slot.dark_color {
+            pack_color(dark.r, dark.g, dark.b, 1.0)
+        } else {
+            0xff00_0000
+        };
+
+        let mut cmd = RenderCommand::with_capacity(
+            num_vertices,
+            mesh.triangles.len(),
+            skeleton.data.slots[slot_id.index()].blend_mode,
+            TextureId(region.page_index),
+        );
+        cmd.positions.copy_from_slice(&self.world_vertices[..world_len]);
+        cmd.uvs.copy_from_slice(&mesh.uvs);
+        for c in &mut cmd.colors {
+            *c = color;
+        }
+        for c in &mut cmd.dark_colors {
+            *c = dark_color;
+        }
+        cmd.indices.copy_from_slice(&mesh.triangles);
         self.render_commands.push(cmd);
     }
 
@@ -363,9 +440,12 @@ mod tests {
             );
             assert_eq!(cmd.colors.len(), cmd.num_vertices());
             assert_eq!(cmd.dark_colors.len(), cmd.num_vertices());
-            // Region attachments are quads: 4 vertices, 6 indices.
-            assert_eq!(cmd.num_vertices(), 4, "command[{i}]: region quad");
-            assert_eq!(cmd.num_indices(), 6, "command[{i}]: region quad");
+            // Non-zero geometry in every emitted command.
+            assert!(cmd.num_vertices() > 0, "command[{i}]: zero vertices");
+            assert!(
+                cmd.num_indices() % 3 == 0,
+                "command[{i}]: indices must be a multiple of 3 (triangle list)"
+            );
             // No non-finite world coordinates.
             for (k, v) in cmd.positions.iter().enumerate() {
                 assert!(

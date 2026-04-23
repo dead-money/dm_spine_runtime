@@ -773,6 +773,11 @@ impl<'loader> SkeletonBinary<'loader> {
                     mesh.edges = edges;
                     mesh.width = width;
                     mesh.height = height;
+                    // Populate atlas-space `uvs` from `region_uvs` + the
+                    // loader-resolved region, matching spine-cpp's
+                    // `AtlasAttachmentLoader::configureAttachment` which
+                    // calls `updateRegion` on mesh creation.
+                    mesh.update_region();
                 }
                 Ok(attachment)
             }
@@ -988,6 +993,10 @@ impl<'loader> SkeletonBinary<'loader> {
                 } else {
                     lm.mesh
                 });
+                // Linked mesh carries its own region (may differ from
+                // parent when a skin swaps the texture). Recompute its
+                // UVs against the just-copied region_uvs.
+                child.update_region();
             }
         }
         Ok(())

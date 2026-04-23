@@ -311,6 +311,91 @@ impl MeshAttachment {
             region: None,
         }
     }
+
+    /// Recompute atlas-space [`Self::uvs`] from the attachment's
+    /// mesh-local [`Self::region_uvs`] and its currently resolved
+    /// [`Self::region`]. Literal port of
+    /// `spine-cpp/src/spine/MeshAttachment.cpp::updateRegion` — handles
+    /// the four `degrees` cases (0 / 90 / 180 / 270) and the
+    /// atlas-packing offset/crop math exactly.
+    ///
+    /// Called at load time (so stored `uvs` are valid for the initial
+    /// region) and will be called again by the renderer when a
+    /// `Sequence` cycles the active region (Phase 6d/f).
+    pub fn update_region(&mut self) {
+        if self.uvs.len() != self.region_uvs.len() {
+            self.uvs.resize(self.region_uvs.len(), 0.0);
+        }
+        let Some(region) = self.region.as_ref() else {
+            return;
+        };
+
+        let n = self.region_uvs.len();
+        let u = region.u;
+        let v = region.v;
+
+        match region.degrees {
+            90 => {
+                let texture_width = region.height / (region.u2 - region.u);
+                let texture_height = region.width / (region.v2 - region.v);
+                let u = u
+                    - (region.original_height - region.offset_y - region.height) / texture_width;
+                let v = v
+                    - (region.original_width - region.offset_x - region.width) / texture_height;
+                let width = region.original_height / texture_width;
+                let height = region.original_width / texture_height;
+                let mut i = 0;
+                while i < n {
+                    self.uvs[i] = u + self.region_uvs[i + 1] * width;
+                    self.uvs[i + 1] = v + (1.0 - self.region_uvs[i]) * height;
+                    i += 2;
+                }
+            }
+            180 => {
+                let texture_width = region.width / (region.u2 - region.u);
+                let texture_height = region.height / (region.v2 - region.v);
+                let u = u - (region.original_width - region.offset_x - region.width) / texture_width;
+                let v = v - region.offset_y / texture_height;
+                let width = region.original_width / texture_width;
+                let height = region.original_height / texture_height;
+                let mut i = 0;
+                while i < n {
+                    self.uvs[i] = u + (1.0 - self.region_uvs[i]) * width;
+                    self.uvs[i + 1] = v + (1.0 - self.region_uvs[i + 1]) * height;
+                    i += 2;
+                }
+            }
+            270 => {
+                let texture_height = region.height / (region.v2 - region.v);
+                let texture_width = region.width / (region.u2 - region.u);
+                let u = u - region.offset_y / texture_width;
+                let v = v - region.offset_x / texture_height;
+                let width = region.original_height / texture_width;
+                let height = region.original_width / texture_height;
+                let mut i = 0;
+                while i < n {
+                    self.uvs[i] = u + (1.0 - self.region_uvs[i + 1]) * width;
+                    self.uvs[i + 1] = v + self.region_uvs[i] * height;
+                    i += 2;
+                }
+            }
+            _ => {
+                let texture_width = region.width / (region.u2 - region.u);
+                let texture_height = region.height / (region.v2 - region.v);
+                let u = u - region.offset_x / texture_width;
+                let v = v
+                    - (region.original_height - region.offset_y - region.height) / texture_height;
+                let width = region.original_width / texture_width;
+                let height = region.original_height / texture_height;
+                let mut i = 0;
+                while i < n {
+                    self.uvs[i] = u + self.region_uvs[i] * width;
+                    self.uvs[i + 1] = v + self.region_uvs[i + 1] * height;
+                    i += 2;
+                }
+            }
+        }
+    }
 }
 
 // --- BoundingBoxAttachment --------------------------------------------------
