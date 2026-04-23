@@ -723,7 +723,8 @@ impl Skeleton {
     /// first copies every bone's local TRS into its "applied" counterpart,
     /// then dispatches each cache entry. Constraints no-op in Phase 2 —
     /// Phase 5 will replace their stubs with real solvers.
-    pub fn update_world_transform(&mut self, _physics: Physics) {
+    pub fn update_world_transform(&mut self, physics: Physics) {
+        let physics_arg = physics;
         for bone in &mut self.bones {
             bone.ax = bone.x;
             bone.ay = bone.y;
@@ -748,8 +749,12 @@ impl Skeleton {
                 UpdateCacheEntry::PathConstraint(id) => {
                     crate::skeleton::path::solve_path_constraint(self, id.index());
                 }
-                UpdateCacheEntry::PhysicsConstraint(_) => {
-                    // Phase 5d ships the Physics simulator.
+                UpdateCacheEntry::PhysicsConstraint(id) => {
+                    crate::skeleton::physics::solve_physics_constraint(
+                        self,
+                        id.index(),
+                        physics_arg,
+                    );
                 }
             }
         }
