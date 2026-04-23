@@ -750,79 +750,289 @@ impl AnimationState {
     /// entire chain has completed its crossfade and the caller can drop
     /// the chain.
     ///
-    /// Phase 4b stub: treat every `mixing_from` as immediately complete.
-    /// Phase 4c replaces this with the real ramp logic and enables
-    /// smooth crossfades. `&mut self` today is `#[allow(clippy::unused_self)]`
-    /// because 4c needs it.
-    #[allow(clippy::unused_self)]
-    fn update_mixing_from(&mut self, _to: EntryId, _delta: f32) -> bool {
-        // TODO(phase4c): port spine-cpp's updateMixingFrom — walk the
-        // chain bottom-up, advance from.track_time/mix_time, and only
-        // return true when to.mix_time >= to.mix_duration.
-        true
+    /// Ports `spine::AnimationState::updateMixingFrom`. Walks the chain
+    /// bottom-up recursively, copies `next_animation_last` +
+    /// `next_track_last` into their counterparts, and either closes the
+    /// mix (when the outer entry's `mix_time` has reached `mix_duration`)
+    /// or bumps `from.track_time` + `to.mix_time`.
+    #[allow(clippy::float_cmp)] // sentinel comparison (to_next_track_last != -1)
+    fn update_mixing_from(&mut self, to: EntryId, delta: f32) -> bool {
+        let Some(from) = self.entries.get(&to).and_then(|e| e.mixing_from) else {
+            return true;
+        };
+
+        let finished = self.update_mixing_from(from, delta);
+
+        // Copy spine-cpp's "animation_last = next_animation_last; track_last
+        // = next_track_last;" step on the `from` entry.
+        if let Some(from_entry) = self.entries.get_mut(&from) {
+            from_entry.animation_last = from_entry.next_animation_last;
+            from_entry.track_last = from_entry.next_track_last;
+        }
+
+        let (to_next_track_last, to_mix_time, to_mix_duration) =
+            self.entries.get(&to).map_or((-1.0, 0.0, 0.0), |e| {
+                (e.next_track_last, e.mix_time, e.mix_duration)
+            });
+
+        if to_next_track_last != -1.0 && to_mix_time >= to_mix_duration {
+            let (from_total_alpha, from_interrupt_alpha, from_mixing_from) =
+                self.entries.get(&from).map_or((0.0, 1.0, None), |e| {
+                    (e.total_alpha, e.interrupt_alpha, e.mixing_from)
+                });
+            if from_total_alpha == 0.0 || to_mix_duration == 0.0 {
+                if let Some(to_entry) = self.entries.get_mut(&to) {
+                    to_entry.mixing_from = from_mixing_from;
+                    to_entry.interrupt_alpha = from_interrupt_alpha;
+                }
+                if let Some(mf) = from_mixing_from
+                    && let Some(mf_entry) = self.entries.get_mut(&mf)
+                {
+                    mf_entry.mixing_to = Some(to);
+                }
+                // queue->end(from) lands in Phase 4e — entry is disposed by
+                // the caller (update or set_animation) via dispose_entry_chain.
+            }
+            return finished;
+        }
+
+        // Advance mix timers.
+        if let Some(from_entry) = self.entries.get_mut(&from) {
+            from_entry.track_time += delta * from_entry.time_scale;
+        }
+        if let Some(to_entry) = self.entries.get_mut(&to) {
+            to_entry.mix_time += delta;
+        }
+
+        false
     }
 
-    /// Apply every track's current animation to `skeleton`, pushing event
-    /// firings into `events`.
+    /// Apply the mixing-from chain for `to`, returning the alpha
+    /// multiplier that should scale the incoming animation.
     ///
-    /// Phase 4a: no mixing, no event queue. Each track's animation runs
-    /// top-to-bottom with `MixBlend::First` on track 0 (so Setup-pose
-    /// defaults kick in) and `entry.mix_blend` on higher tracks. Without
-    /// `applyMixingFrom`, overlapping property writes are "last wins".
-    pub fn apply(&self, skeleton: &mut Skeleton, events: &mut Vec<Event>) {
+    /// Ports `spine::AnimationState::applyMixingFrom`. Phase 4c uses the
+    /// simple path: every timeline on `from` applies with `MixBlend::Setup`
+    /// (or `Add` when the top blend is Add) scaled by
+    /// `alpha_hold * (1 - mix)`. Phase 4d replaces this with per-timeline
+    /// `timeline_mode` specialisation (HoldSubsequent/HoldFirst/HoldMix)
+    /// for cleaner blends against lower tracks.
+    #[allow(clippy::float_cmp)] // tag comparisons (mix_duration == 0, blend == Setup/First)
+    fn apply_mixing_from(
+        &mut self,
+        to: EntryId,
+        skeleton: &mut Skeleton,
+        mut blend: MixBlend,
+        events: &mut Vec<Event>,
+    ) -> f32 {
+        let Some(from) = self.entries.get(&to).and_then(|e| e.mixing_from) else {
+            return 1.0;
+        };
+
+        // Recurse down the chain first.
+        if self
+            .entries
+            .get(&from)
+            .is_some_and(|e| e.mixing_from.is_some())
+        {
+            self.apply_mixing_from(from, skeleton, blend, events);
+        }
+
+        let (mix_time, mix_duration) = self
+            .entries
+            .get(&to)
+            .map_or((0.0, 0.0), |e| (e.mix_time, e.mix_duration));
+        let mix = if mix_duration == 0.0 {
+            if blend == MixBlend::First {
+                blend = MixBlend::Setup;
+            }
+            1.0
+        } else {
+            let raw = mix_time / mix_duration;
+            let m = raw.min(1.0);
+            if blend != MixBlend::First {
+                blend = self
+                    .entries
+                    .get(&from)
+                    .map_or(MixBlend::Replace, |e| e.mix_blend);
+            }
+            m
+        };
+
+        let (
+            from_alpha,
+            from_event_threshold,
+            from_reverse,
+            from_animation_last,
+            from_animation_time,
+            from_animation_id,
+            from_duration,
+        ) = {
+            let Some(from_entry) = self.entries.get(&from) else {
+                return mix;
+            };
+            let anim = &self.skeleton_data().animations[from_entry.animation.index()];
+            (
+                from_entry.alpha,
+                from_entry.event_threshold,
+                from_entry.reverse,
+                from_entry.animation_last,
+                from_entry.animation_time(),
+                from_entry.animation,
+                anim.duration,
+            )
+        };
+        let to_interrupt_alpha = self.entries.get(&to).map_or(1.0, |e| e.interrupt_alpha);
+        let alpha_hold = from_alpha * to_interrupt_alpha;
+        let alpha_mix = alpha_hold * (1.0 - mix);
+
+        // total_alpha is accumulated by Phase 4d's HoldMix branch; the
+        // simple path just resets it here.
+        if let Some(from_entry) = self.entries.get_mut(&from) {
+            from_entry.total_alpha = 0.0;
+        }
+
+        let apply_time = if from_reverse {
+            from_duration - from_animation_time
+        } else {
+            from_animation_time
+        };
+        let capture_events = !from_reverse && mix < from_event_threshold;
+        let mut scratch: Vec<Event> = Vec::new();
+        let ev_ref: &mut Vec<Event> = if capture_events {
+            &mut *events
+        } else {
+            &mut scratch
+        };
+
+        let (direction, effective_blend) = if blend == MixBlend::Add {
+            (MixDirection::Out, blend)
+        } else {
+            (MixDirection::Out, MixBlend::Setup)
+        };
+
+        let timelines = self.skeleton_data().animations[from_animation_id.index()]
+            .timelines
+            .clone();
+        for tl in &timelines {
+            tl.apply(
+                skeleton,
+                from_animation_last,
+                apply_time,
+                ev_ref,
+                alpha_mix,
+                effective_blend,
+                direction,
+            );
+        }
+
+        if let Some(from_entry) = self.entries.get_mut(&from) {
+            from_entry.next_animation_last = from_animation_time;
+            from_entry.next_track_last = from_entry.track_time;
+        }
+
+        mix
+    }
+
+    /// Apply every track's current animation to `skeleton`, crossfading
+    /// from any `mixing_from` chain as needed, and pushing event firings
+    /// into `events`.
+    ///
+    /// Ports `spine::AnimationState::apply`. Phase 4c form: simple
+    /// mixing path — every timeline on the outgoing entry applies with
+    /// `MixBlend::Setup` and `alpha * (1 - mix_progress)`. Phase 4d
+    /// introduces the per-timeline `timeline_mode` specialisation
+    /// (HoldSubsequent/HoldFirst/HoldMix) for cleaner crossfades when
+    /// lower tracks also key the same property.
+    pub fn apply(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) {
+        // Phase 4d hook: re-classify timelines when the track topology
+        // changed. Stubbed for 4c — simple apply path doesn't use
+        // timeline_mode.
+        self.animations_changed = false;
+
         for i in 0..self.tracks.len() {
-            let Some(id) = self.tracks[i] else { continue };
-            let Some(entry) = self.entries.get(&id) else {
+            let Some(current_id) = self.tracks[i] else {
                 continue;
             };
-            if entry.delay > 0.0 {
+            let (delay, alpha, mix_blend, mixing_from) = {
+                let Some(entry) = self.entries.get(&current_id) else {
+                    continue;
+                };
+                (entry.delay, entry.alpha, entry.mix_blend, entry.mixing_from)
+            };
+            if delay > 0.0 {
                 continue;
             }
 
-            let blend = if i == 0 {
-                MixBlend::First
+            let mut blend = if i == 0 { MixBlend::First } else { mix_blend };
+
+            // Apply the mixing-from chain first; returns the alpha
+            // multiplier to scale the incoming timeline.
+            let mut effective_alpha = alpha;
+            if mixing_from.is_some() {
+                effective_alpha *= self.apply_mixing_from(current_id, skeleton, blend, events);
             } else {
-                entry.mix_blend
+                // spine-cpp: track_time >= track_end && next is None →
+                // fade toward setup on the last apply before the track
+                // is cleared.
+                let (track_time, track_end, has_next) = self
+                    .entries
+                    .get(&current_id)
+                    .map_or((0.0, 0.0, false), |e| {
+                        (e.track_time, e.track_end, e.next.is_some())
+                    });
+                if track_time >= track_end && !has_next {
+                    effective_alpha = 0.0;
+                }
+            }
+
+            let (animation_last, animation_time, reverse, animation_id) = {
+                let Some(entry) = self.entries.get(&current_id) else {
+                    continue;
+                };
+                (
+                    entry.animation_last,
+                    entry.animation_time(),
+                    entry.reverse,
+                    entry.animation,
+                )
+            };
+            let duration = self.skeleton_data().animations[animation_id.index()].duration;
+            let apply_time = if reverse {
+                duration - animation_time
+            } else {
+                animation_time
             };
 
-            let animation = &self.skeleton_data().animations[entry.animation.index()];
-            let animation_last = entry.animation_last;
-            let animation_time = entry.animation_time();
+            // On track 0 at full alpha, switch to First blend so setup
+            // pose acts as the baseline. Add stays Add.
+            if i == 0 && ((effective_alpha - 1.0).abs() < f32::EPSILON || blend == MixBlend::Add) {
+                blend = MixBlend::First;
+            }
 
-            for tl in &animation.timelines {
+            let mut scratch: Vec<Event> = Vec::new();
+            // Clone timelines so the apply loop doesn't hold a borrow
+            // through `self.skeleton_data()`.
+            let timelines = self.skeleton_data().animations[animation_id.index()]
+                .timelines
+                .clone();
+            let ev_ref: &mut Vec<Event> = if reverse { &mut scratch } else { &mut *events };
+
+            for tl in &timelines {
                 tl.apply(
                     skeleton,
                     animation_last,
-                    animation_time,
-                    events,
-                    entry.alpha,
+                    apply_time,
+                    ev_ref,
+                    effective_alpha,
                     blend,
                     MixDirection::In,
                 );
             }
 
-            // next_{animation,track}_last are normally written back inside
-            // apply() in spine-cpp; with `&self` here we defer that to
-            // `advance_last_applied` (called from `apply_and_advance`). Phase
-            // 4b revisits this with `&mut self` once the queue machinery
-            // needs it.
-        }
-    }
-
-    /// Convenience: apply then record the last-applied times so events
-    /// don't refire. Until Phase 4e's event queue lands, callers who want
-    /// correct looping event firings should use this pair.
-    pub fn apply_and_advance(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) {
-        // Snapshot per-entry state before the (`&self`) apply, then write
-        // back nextAnimationLast/nextTrackLast afterwards.
-        self.apply(skeleton, events);
-        for id_slot in &self.tracks {
-            let Some(id) = id_slot else { continue };
-            let Some(entry) = self.entries.get_mut(id) else {
-                continue;
-            };
-            entry.next_animation_last = entry.animation_time();
-            entry.next_track_last = entry.track_time;
+            if let Some(entry) = self.entries.get_mut(&current_id) {
+                entry.next_animation_last = animation_time;
+                entry.next_track_last = entry.track_time;
+            }
         }
     }
 }
@@ -958,7 +1168,7 @@ mod tests {
         let mut sk = Skeleton::new(Arc::clone(&sd));
         sk.update_cache();
         let mut events = Vec::new();
-        state.apply_and_advance(&mut sk, &mut events);
+        state.apply(&mut sk, &mut events);
         assert!(state.entry(a_id).unwrap().was_applied());
 
         let b_id = state.set_animation(0, AnimationId(1), false);
@@ -1010,13 +1220,13 @@ mod tests {
         sk.update_cache();
         let mut events = Vec::new();
         state.update(0.1);
-        state.apply_and_advance(&mut sk, &mut events);
+        state.apply(&mut sk, &mut events);
 
         let b_id = state.add_animation(0, AnimationId(1), false, 0.2);
         // Advance past the delay (track_time is 0.1, next_delay 0.2 → need
         // track_last >= 0.2). Apply once more to make the snapshot take effect.
         state.update(0.25);
-        state.apply_and_advance(&mut sk, &mut events);
+        state.apply(&mut sk, &mut events);
         state.update(0.1);
 
         assert_eq!(
@@ -1026,6 +1236,53 @@ mod tests {
         );
         assert_eq!(state.current(0).map(|e| e.track_index), Some(0));
         let _ = b_id;
+    }
+
+    /// Crossfade from animation A (rotation 10 → 20 over 1s) to B
+    /// (rotation 30 → 40 over 1s) with a `mix_duration` of 0.4s. Halfway
+    /// through the crossfade (`mix_time = 0.2s`, mix = 0.5), the bone's
+    /// rotation should sit between each animation's sampled values: the
+    /// outgoing `from` applies with `alpha * (1 - mix)`, the incoming
+    /// `to` overwrites with `First` blend at full alpha, so the final
+    /// rotation tracks the incoming animation's value with a residual
+    /// pull from the fading-out one.
+    #[test]
+    fn crossfade_ramps_apply_through_mix_duration() {
+        let sd = two_anim_skeleton();
+        let mut state_data = AnimationStateData::new(Arc::clone(&sd));
+        state_data.set_default_mix(0.4);
+        let state_data = Arc::new(state_data);
+        let mut state = AnimationState::new(state_data);
+
+        // Start `a`, apply once, update past a little, switch to `b`.
+        state.set_animation(0, AnimationId(0), false);
+        let mut sk = Skeleton::new(Arc::clone(&sd));
+        sk.update_cache();
+        let mut events = Vec::new();
+        state.update(0.5);
+        state.apply(&mut sk, &mut events);
+        // Halfway through `a` (t=0.5) → rotation 15.
+        assert!((sk.bones[0].rotation - 15.0).abs() < 1e-4);
+
+        state.set_animation(0, AnimationId(1), false);
+        assert!(state.current(0).unwrap().mixing_from.is_some());
+        assert!((state.current(0).unwrap().mix_duration - 0.4).abs() < 1e-6);
+
+        // Advance halfway into the mix. First update delta advances both
+        // to.track_time and mix_time.
+        state.update(0.2);
+        state.apply(&mut sk, &mut events);
+
+        // At mix = 0.5, `from` is still live but at half alpha; `b` is at
+        // track_time = 0.2 (rot = 32). With Setup blend from applies
+        // `setup + value * alpha` then to overwrites with First blend.
+        // Final rotation dominated by `b`'s ~32 — not a perfect linear blend
+        // here, but must be well between the two sampled values.
+        let r = sk.bones[0].rotation;
+        assert!(
+            r > 20.0 && r < 45.0,
+            "expected mid-crossfade rotation, got {r}"
+        );
     }
 
     #[test]
