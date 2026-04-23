@@ -40,7 +40,7 @@ Core design choices:
 - [x] 1 — atlas parser, data-type scaffold, binary `.skel` loader. Loads every rig shipped in `spine-runtimes/examples/` end-to-end through the `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
 - [x] 2 — `Skeleton` runtime pose: update-cache ordering, bone world transforms with all five `Inherit` modes, skin activation + setup pose + attachment resolution. All 25 example skeletons match spine-cpp bit-for-bit on setup pose; constraint solvers are stubs until Phase 5.
 - [x] 3 — property timelines + single-track `AnimationState`. Bone/slot/skeleton-wide/constraint timelines apply against setup pose with curves, MixBlend, MixDirection, and loop handling; animation goldens diff against spine-cpp for 7 animations across 3 rigs within 1e-3. Deform and Sequence timelines are no-op fallthroughs (need mesh-attachment plumbing); constraint solvers remain stubbed until Phase 5.
-- [ ] 4 — full `AnimationState` (tracks, mixing, events, queue)
+- [x] 4 — full `AnimationState`: multi-track + queuing (`set_animation` / `add_animation`), crossfade mixing with proper per-timeline classification (Subsequent / First / HoldSubsequent / HoldFirst / HoldMix) via `compute_hold`, event queue (Start / Interrupt / End / Complete / Dispose / Event), and empty animations (`set_empty_animation` for fading back to setup pose). Shortest-rotation rotate mixing and the `unkeyedState` attachment state-machine are visual-polish follow-ups.
 - [ ] 5 — constraints (IK → Transform → Path → Physics)
 - [ ] 6 — clipping, bounds, render-command emission
 - [ ] 7 — `dm_spine_bevy` plugin and examples
