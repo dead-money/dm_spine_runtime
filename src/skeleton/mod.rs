@@ -34,6 +34,7 @@
 pub mod bone;
 pub mod constraint;
 pub mod ik;
+pub mod path;
 // 1:1 port parity with `spine-cpp/src/spine/Skeleton.cpp`. The inner module
 // name matches the file it came from; the inception is intentional.
 #[allow(clippy::module_inception)]

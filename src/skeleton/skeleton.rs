@@ -745,8 +745,11 @@ impl Skeleton {
                 UpdateCacheEntry::TransformConstraint(id) => {
                     crate::skeleton::transform::solve_transform_constraint(self, id.index());
                 }
-                UpdateCacheEntry::PathConstraint(_) | UpdateCacheEntry::PhysicsConstraint(_) => {
-                    // Phase 5c/5d ship the remaining solvers.
+                UpdateCacheEntry::PathConstraint(id) => {
+                    crate::skeleton::path::solve_path_constraint(self, id.index());
+                }
+                UpdateCacheEntry::PhysicsConstraint(_) => {
+                    // Phase 5d ships the Physics simulator.
                 }
             }
         }
