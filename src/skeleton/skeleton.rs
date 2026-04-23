@@ -909,18 +909,31 @@ impl Skeleton {
         }
     }
 
-    /// `Bone::updateWorldTransform()` — computes `bone`'s world matrix from
-    /// its own local TRS and its parent's world matrix. Matches spine-cpp's
-    /// zero-arg overload that reads local TRS from the bone itself.
+    /// `Bone::update(Physics)` — the update-cache callback for a bone.
+    ///
+    /// Reads the bone's **applied** TRS (`ax`, `ay`, …) — not the local
+    /// setup values. spine-cpp does the same in `Bone::update`. This is
+    /// load-bearing when a bone appears twice in the cache (constrained
+    /// bone + descendant-rewired re-run): after a world-space constraint
+    /// calls `updateAppliedTransform`, the applied fields carry the
+    /// constraint's effect forward into the second `Bone::update` pass,
+    /// so the second pass reproduces the constrained world matrix
+    /// instead of overwriting it with the unmodified local TRS.
     pub(crate) fn update_bone_world_transform(&mut self, bone_id: BoneId) {
-        let (x, y, rotation, scale_x, scale_y, shear_x, shear_y) = {
+        let (ax, ay, a_rotation, a_scale_x, a_scale_y, a_shear_x, a_shear_y) = {
             let b = &self.bones[bone_id.index()];
             (
-                b.x, b.y, b.rotation, b.scale_x, b.scale_y, b.shear_x, b.shear_y,
+                b.ax,
+                b.ay,
+                b.a_rotation,
+                b.a_scale_x,
+                b.a_scale_y,
+                b.a_shear_x,
+                b.a_shear_y,
             )
         };
         self.update_bone_world_transform_with(
-            bone_id, x, y, rotation, scale_x, scale_y, shear_x, shear_y,
+            bone_id, ax, ay, a_rotation, a_scale_x, a_scale_y, a_shear_x, a_shear_y,
         );
     }
 
@@ -1441,6 +1454,7 @@ mod tests {
         ik.bones.push(BoneId(0));
         ik.mix = 0.7;
         ik.softness = 12.0;
+        ik.bend_direction = 1;
         sd.ik_constraints.push(ik);
 
         let mut sk = Skeleton::new(Arc::new(sd));

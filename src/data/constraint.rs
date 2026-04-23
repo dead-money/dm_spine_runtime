@@ -91,6 +91,10 @@ pub struct IkConstraintData {
 }
 
 impl IkConstraintData {
+    /// Defaults match `spine-cpp` `IkConstraintData` constructor. The
+    /// binary loader always writes `bend_direction` and `mix` explicitly
+    /// (see `SkeletonBinary.cpp`), so those zeros are only visible to
+    /// code that builds a `IkConstraintData` directly (tests, future JSON).
     #[must_use]
     pub fn new(index: IkConstraintId, name: impl Into<String>, target: BoneId) -> Self {
         Self {
@@ -100,11 +104,11 @@ impl IkConstraintData {
             skin_required: false,
             bones: Vec::new(),
             target,
-            bend_direction: 1,
+            bend_direction: 0,
             compress: false,
             stretch: false,
             uniform: false,
-            mix: 1.0,
+            mix: 0.0,
             softness: 0.0,
         }
     }
@@ -144,6 +148,12 @@ pub struct TransformConstraintData {
 }
 
 impl TransformConstraintData {
+    /// Defaults match `spine-cpp` `TransformConstraintData` constructor:
+    /// all mixes and offsets are zero. The binary loader only reads a mix
+    /// value when its flag bit is set, so these zeros are the
+    /// authoritative "field not serialized" value — a non-zero default
+    /// here silently activates constraints that were meant to stay off
+    /// until an animation timeline ramps their mix up.
     #[must_use]
     pub fn new(index: TransformConstraintId, name: impl Into<String>, target: BoneId) -> Self {
         Self {
@@ -153,12 +163,12 @@ impl TransformConstraintData {
             skin_required: false,
             bones: Vec::new(),
             target,
-            mix_rotate: 1.0,
-            mix_x: 1.0,
-            mix_y: 1.0,
-            mix_scale_x: 1.0,
-            mix_scale_y: 1.0,
-            mix_shear_y: 1.0,
+            mix_rotate: 0.0,
+            mix_x: 0.0,
+            mix_y: 0.0,
+            mix_scale_x: 0.0,
+            mix_scale_y: 0.0,
+            mix_shear_y: 0.0,
             offset_rotation: 0.0,
             offset_x: 0.0,
             offset_y: 0.0,
@@ -201,6 +211,10 @@ pub struct PathConstraintData {
 }
 
 impl PathConstraintData {
+    /// Defaults match `spine-cpp` `PathConstraintData` constructor. The
+    /// binary loader always writes `position_mode`, `mix_rotate`,
+    /// `mix_x`, and `mix_y` explicitly, so those defaults are only
+    /// visible to tests / future JSON.
     #[must_use]
     pub fn new(index: PathConstraintId, name: impl Into<String>, target: SlotId) -> Self {
         Self {
@@ -210,15 +224,15 @@ impl PathConstraintData {
             skin_required: false,
             bones: Vec::new(),
             target,
-            position_mode: PositionMode::Percent,
+            position_mode: PositionMode::Fixed,
             spacing_mode: SpacingMode::Length,
             rotate_mode: RotateMode::Tangent,
             offset_rotation: 0.0,
             position: 0.0,
             spacing: 0.0,
-            mix_rotate: 1.0,
-            mix_x: 1.0,
-            mix_y: 1.0,
+            mix_rotate: 0.0,
+            mix_x: 0.0,
+            mix_y: 0.0,
         }
     }
 }
@@ -268,6 +282,12 @@ pub struct PhysicsConstraintData {
 }
 
 impl PhysicsConstraintData {
+    /// Defaults match `spine-cpp` `PhysicsConstraintData` constructor
+    /// (all zero). The binary loader always writes the simulation
+    /// parameters (`step`, `inertia`, `strength`, `damping`, `wind`,
+    /// `gravity`) and has explicit fallbacks for `limit` (5000),
+    /// `mass_inverse` (1), and `mix` (1), so these zeros are only
+    /// visible to tests / future JSON.
     #[must_use]
     pub fn new(index: PhysicsConstraintId, name: impl Into<String>, bone: BoneId) -> Self {
         Self {
@@ -281,15 +301,15 @@ impl PhysicsConstraintData {
             rotate: 0.0,
             scale_x: 0.0,
             shear_x: 0.0,
-            limit: 5000.0,
-            step: 1.0 / 60.0,
-            inertia: 1.0,
-            strength: 100.0,
-            damping: 1.0,
-            mass_inverse: 1.0,
+            limit: 0.0,
+            step: 0.0,
+            inertia: 0.0,
+            strength: 0.0,
+            damping: 0.0,
+            mass_inverse: 0.0,
             wind: 0.0,
             gravity: 0.0,
-            mix: 1.0,
+            mix: 0.0,
             inertia_global: false,
             strength_global: false,
             damping_global: false,
@@ -309,33 +329,34 @@ mod tests {
     #[test]
     fn ik_defaults_match_spine_cpp() {
         let ik = IkConstraintData::new(IkConstraintId(0), "ik", BoneId(1));
-        assert_eq!(ik.mix, 1.0);
-        assert_eq!(ik.bend_direction, 1);
+        assert_eq!(ik.mix, 0.0);
+        assert_eq!(ik.bend_direction, 0);
         assert_eq!(ik.softness, 0.0);
     }
 
     #[test]
-    fn transform_defaults_mix_all_ones() {
+    fn transform_defaults_match_spine_cpp() {
         let tc = TransformConstraintData::new(TransformConstraintId(0), "tc", BoneId(1));
-        assert_eq!(tc.mix_rotate, 1.0);
-        assert_eq!(tc.mix_shear_y, 1.0);
+        assert_eq!(tc.mix_rotate, 0.0);
+        assert_eq!(tc.mix_shear_y, 0.0);
         assert!(!tc.relative);
     }
 
     #[test]
-    fn path_defaults_are_percent_length_tangent() {
+    fn path_defaults_match_spine_cpp() {
         let pc = PathConstraintData::new(PathConstraintId(0), "pc", SlotId(2));
-        assert_eq!(pc.position_mode, PositionMode::Percent);
+        assert_eq!(pc.position_mode, PositionMode::Fixed);
         assert_eq!(pc.spacing_mode, SpacingMode::Length);
         assert_eq!(pc.rotate_mode, RotateMode::Tangent);
+        assert_eq!(pc.mix_rotate, 0.0);
     }
 
     #[test]
-    fn physics_defaults_plausible_simulation() {
+    fn physics_defaults_match_spine_cpp() {
         let ph = PhysicsConstraintData::new(PhysicsConstraintId(0), "ph", BoneId(3));
-        assert_eq!(ph.step, 1.0 / 60.0);
-        assert_eq!(ph.mix, 1.0);
-        assert_eq!(ph.strength, 100.0);
-        assert_eq!(ph.limit, 5000.0);
+        assert_eq!(ph.step, 0.0);
+        assert_eq!(ph.mix, 0.0);
+        assert_eq!(ph.strength, 0.0);
+        assert_eq!(ph.limit, 0.0);
     }
 }
