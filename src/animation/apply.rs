@@ -32,14 +32,17 @@
 #![allow(clippy::many_single_char_names)] // mirrors spine-cpp variable names
 
 use crate::animation::curve::{
-    bezier_value, curve_value1, curve_value2, relative_value, scale_value, search,
+    absolute_value, bezier_value, curve_value1, curve_value2, relative_value, scale_value, search,
 };
 use crate::animation::{
     BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, Event, MixBlend, MixDirection,
 };
-use crate::data::{AnimationEvent, BoneId, CurveFrames, Inherit, SlotId, Timeline};
+use crate::data::{
+    AnimationEvent, BoneId, CurveFrames, Inherit, PhysicsConstraintData, PhysicsConstraintId,
+    PhysicsProperty, SlotId, Timeline,
+};
 use crate::math::Color;
-use crate::skeleton::Skeleton;
+use crate::skeleton::{PhysicsConstraint, Skeleton};
 
 impl Timeline {
     /// Write this timeline's contribution to `skeleton` for the given time.
@@ -142,7 +145,34 @@ impl Timeline {
                 apply_event(frames, keyframes, last_time, time, events);
             }
 
-            // --- Deform / Sequence and all constraint timelines land later ---
+            // --- Constraint timelines (Phase 3d) ---
+            Timeline::IkConstraint { constraint, curves } => {
+                apply_ik_constraint(skeleton, *constraint, curves, time, alpha, blend, direction);
+            }
+            Timeline::TransformConstraint { constraint, curves } => {
+                apply_transform_constraint(skeleton, *constraint, curves, time, alpha, blend);
+            }
+            Timeline::PathConstraintPosition { constraint, curves } => {
+                apply_path_position(skeleton, *constraint, curves, time, alpha, blend);
+            }
+            Timeline::PathConstraintSpacing { constraint, curves } => {
+                apply_path_spacing(skeleton, *constraint, curves, time, alpha, blend);
+            }
+            Timeline::PathConstraintMix { constraint, curves } => {
+                apply_path_mix(skeleton, *constraint, curves, time, alpha, blend);
+            }
+            Timeline::Physics {
+                constraint,
+                property,
+                curves,
+            } => {
+                apply_physics(skeleton, *constraint, *property, curves, time, alpha, blend);
+            }
+            Timeline::PhysicsReset { constraint, frames } => {
+                apply_physics_reset(skeleton, *constraint, frames, last_time, time);
+            }
+
+            // --- Deform / Sequence remain stubbed pending mesh-attachment plumbing ---
             _ => {}
         }
     }
@@ -1049,6 +1079,499 @@ fn apply_event(
     let _ = &mut last_time; // silences unused_mut after the `if lastTime > time` branch
 }
 
+// ---------------------------------------------------------------------------
+// Constraint timelines (Phase 3d)
+// ---------------------------------------------------------------------------
+
+/// Sample `N` channel values at `time` from a stride-`(1 + N)` timeline.
+/// Identical shape to [`sample_color_channels`] but meant for the constraint
+/// channel layouts (`mix_rotate` / `mix_x` / `mix_y` / etc.). Returning the
+/// frame index `i` lets IK's stepped flag lookup share the search.
+fn sample_constraint_channels<const N: usize>(
+    frames: &[f32],
+    curves: &[f32],
+    time: f32,
+) -> ([f32; N], usize) {
+    let entries = N + 1;
+    let i = search(frames, time, entries);
+    let curve_type = curves[i / entries] as i32;
+    let mut out = [0.0_f32; N];
+    match curve_type {
+        CURVE_LINEAR => {
+            let before = frames[i];
+            for (k, o) in out.iter_mut().enumerate() {
+                *o = frames[i + 1 + k];
+            }
+            let t = (time - before) / (frames[i + entries] - before);
+            for (k, o) in out.iter_mut().enumerate() {
+                *o += (frames[i + entries + 1 + k] - *o) * t;
+            }
+        }
+        CURVE_STEPPED => {
+            for (k, o) in out.iter_mut().enumerate() {
+                *o = frames[i + 1 + k];
+            }
+        }
+        _ => {
+            let bezier_0 = (curve_type - CURVE_BEZIER) as usize;
+            for (k, o) in out.iter_mut().enumerate() {
+                *o = bezier_value(
+                    frames,
+                    curves,
+                    time,
+                    i,
+                    1 + k,
+                    bezier_0 + k * BEZIER_SIZE,
+                    entries,
+                );
+            }
+        }
+    }
+    (out, i)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_ik_constraint(
+    skeleton: &mut Skeleton,
+    constraint_id: crate::data::IkConstraintId,
+    curves: &CurveFrames,
+    time: f32,
+    alpha: f32,
+    blend: MixBlend,
+    direction: MixDirection,
+) {
+    // Stride 6: [t, mix, softness, bend_direction, compress, stretch].
+    // Only mix and softness are curve-interpolated; bend/compress/stretch
+    // are discrete flags read directly from the frame's left edge.
+    const ENTRIES: usize = 6;
+    const MIX: usize = 1;
+    const SOFTNESS: usize = 2;
+    const BEND_DIRECTION: usize = 3;
+    const COMPRESS: usize = 4;
+    const STRETCH: usize = 5;
+
+    let idx = constraint_id.index();
+    if !skeleton.ik_constraints[idx].active {
+        return;
+    }
+    let data = skeleton.data.ik_constraints[idx].clone();
+    let c = &mut skeleton.ik_constraints[idx];
+
+    if time < curves.frames[0] {
+        match blend {
+            MixBlend::Setup => {
+                c.mix = data.mix;
+                c.softness = data.softness;
+                c.bend_direction = data.bend_direction;
+                c.compress = data.compress;
+                c.stretch = data.stretch;
+            }
+            MixBlend::First => {
+                c.mix += (data.mix - c.mix) * alpha;
+                c.softness += (data.softness - c.softness) * alpha;
+                c.bend_direction = data.bend_direction;
+                c.compress = data.compress;
+                c.stretch = data.stretch;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let i = search(&curves.frames, time, ENTRIES);
+    let curve_type = curves.curves[i / ENTRIES] as i32;
+    let (mix, softness) = match curve_type {
+        CURVE_LINEAR => {
+            let before = curves.frames[i];
+            let mut m = curves.frames[i + MIX];
+            let mut s = curves.frames[i + SOFTNESS];
+            let t = (time - before) / (curves.frames[i + ENTRIES] - before);
+            m += (curves.frames[i + ENTRIES + MIX] - m) * t;
+            s += (curves.frames[i + ENTRIES + SOFTNESS] - s) * t;
+            (m, s)
+        }
+        CURVE_STEPPED => (curves.frames[i + MIX], curves.frames[i + SOFTNESS]),
+        _ => {
+            let bezier_0 = (curve_type - CURVE_BEZIER) as usize;
+            let m = bezier_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                i,
+                MIX,
+                bezier_0,
+                ENTRIES,
+            );
+            let s = bezier_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                i,
+                SOFTNESS,
+                bezier_0 + BEZIER_SIZE,
+                ENTRIES,
+            );
+            (m, s)
+        }
+    };
+    let bend_f = curves.frames[i + BEND_DIRECTION];
+    let compress_f = curves.frames[i + COMPRESS];
+    let stretch_f = curves.frames[i + STRETCH];
+
+    if blend == MixBlend::Setup {
+        c.mix = data.mix + (mix - data.mix) * alpha;
+        c.softness = data.softness + (softness - data.softness) * alpha;
+        if direction == MixDirection::Out {
+            c.bend_direction = data.bend_direction;
+            c.compress = data.compress;
+            c.stretch = data.stretch;
+        } else {
+            c.bend_direction = bend_f as i8;
+            c.compress = compress_f != 0.0;
+            c.stretch = stretch_f != 0.0;
+        }
+    } else {
+        c.mix += (mix - c.mix) * alpha;
+        c.softness += (softness - c.softness) * alpha;
+        if direction == MixDirection::In {
+            c.bend_direction = bend_f as i8;
+            c.compress = compress_f != 0.0;
+            c.stretch = stretch_f != 0.0;
+        }
+    }
+}
+
+fn apply_transform_constraint(
+    skeleton: &mut Skeleton,
+    constraint_id: crate::data::TransformConstraintId,
+    curves: &CurveFrames,
+    time: f32,
+    alpha: f32,
+    blend: MixBlend,
+) {
+    let idx = constraint_id.index();
+    if !skeleton.transform_constraints[idx].active {
+        return;
+    }
+    let data = skeleton.data.transform_constraints[idx].clone();
+    let c = &mut skeleton.transform_constraints[idx];
+
+    if time < curves.frames[0] {
+        match blend {
+            MixBlend::Setup => {
+                c.mix_rotate = data.mix_rotate;
+                c.mix_x = data.mix_x;
+                c.mix_y = data.mix_y;
+                c.mix_scale_x = data.mix_scale_x;
+                c.mix_scale_y = data.mix_scale_y;
+                c.mix_shear_y = data.mix_shear_y;
+            }
+            MixBlend::First => {
+                c.mix_rotate += (data.mix_rotate - c.mix_rotate) * alpha;
+                c.mix_x += (data.mix_x - c.mix_x) * alpha;
+                c.mix_y += (data.mix_y - c.mix_y) * alpha;
+                c.mix_scale_x += (data.mix_scale_x - c.mix_scale_x) * alpha;
+                c.mix_scale_y += (data.mix_scale_y - c.mix_scale_y) * alpha;
+                c.mix_shear_y += (data.mix_shear_y - c.mix_shear_y) * alpha;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let ([rotate, x, y, scale_x, scale_y, shear_y], _) =
+        sample_constraint_channels::<6>(&curves.frames, &curves.curves, time);
+
+    if blend == MixBlend::Setup {
+        c.mix_rotate = data.mix_rotate + (rotate - data.mix_rotate) * alpha;
+        c.mix_x = data.mix_x + (x - data.mix_x) * alpha;
+        c.mix_y = data.mix_y + (y - data.mix_y) * alpha;
+        c.mix_scale_x = data.mix_scale_x + (scale_x - data.mix_scale_x) * alpha;
+        c.mix_scale_y = data.mix_scale_y + (scale_y - data.mix_scale_y) * alpha;
+        c.mix_shear_y = data.mix_shear_y + (shear_y - data.mix_shear_y) * alpha;
+    } else {
+        c.mix_rotate += (rotate - c.mix_rotate) * alpha;
+        c.mix_x += (x - c.mix_x) * alpha;
+        c.mix_y += (y - c.mix_y) * alpha;
+        c.mix_scale_x += (scale_x - c.mix_scale_x) * alpha;
+        c.mix_scale_y += (scale_y - c.mix_scale_y) * alpha;
+        c.mix_shear_y += (shear_y - c.mix_shear_y) * alpha;
+    }
+}
+
+fn apply_path_position(
+    skeleton: &mut Skeleton,
+    constraint_id: crate::data::PathConstraintId,
+    curves: &CurveFrames,
+    time: f32,
+    alpha: f32,
+    blend: MixBlend,
+) {
+    let idx = constraint_id.index();
+    if !skeleton.path_constraints[idx].active {
+        return;
+    }
+    let setup = skeleton.data.path_constraints[idx].position;
+    let c = &mut skeleton.path_constraints[idx];
+    c.position = absolute_value(
+        &curves.frames,
+        &curves.curves,
+        time,
+        alpha,
+        blend,
+        c.position,
+        setup,
+    );
+}
+
+fn apply_path_spacing(
+    skeleton: &mut Skeleton,
+    constraint_id: crate::data::PathConstraintId,
+    curves: &CurveFrames,
+    time: f32,
+    alpha: f32,
+    blend: MixBlend,
+) {
+    let idx = constraint_id.index();
+    if !skeleton.path_constraints[idx].active {
+        return;
+    }
+    let setup = skeleton.data.path_constraints[idx].spacing;
+    let c = &mut skeleton.path_constraints[idx];
+    c.spacing = absolute_value(
+        &curves.frames,
+        &curves.curves,
+        time,
+        alpha,
+        blend,
+        c.spacing,
+        setup,
+    );
+}
+
+fn apply_path_mix(
+    skeleton: &mut Skeleton,
+    constraint_id: crate::data::PathConstraintId,
+    curves: &CurveFrames,
+    time: f32,
+    alpha: f32,
+    blend: MixBlend,
+) {
+    let idx = constraint_id.index();
+    if !skeleton.path_constraints[idx].active {
+        return;
+    }
+    let data = skeleton.data.path_constraints[idx].clone();
+    let c = &mut skeleton.path_constraints[idx];
+
+    if time < curves.frames[0] {
+        match blend {
+            MixBlend::Setup => {
+                c.mix_rotate = data.mix_rotate;
+                c.mix_x = data.mix_x;
+                c.mix_y = data.mix_y;
+            }
+            MixBlend::First => {
+                c.mix_rotate += (data.mix_rotate - c.mix_rotate) * alpha;
+                c.mix_x += (data.mix_x - c.mix_x) * alpha;
+                c.mix_y += (data.mix_y - c.mix_y) * alpha;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let ([rotate, x, y], _) = sample_constraint_channels::<3>(&curves.frames, &curves.curves, time);
+
+    if blend == MixBlend::Setup {
+        c.mix_rotate = data.mix_rotate + (rotate - data.mix_rotate) * alpha;
+        c.mix_x = data.mix_x + (x - data.mix_x) * alpha;
+        c.mix_y = data.mix_y + (y - data.mix_y) * alpha;
+    } else {
+        c.mix_rotate += (rotate - c.mix_rotate) * alpha;
+        c.mix_x += (x - c.mix_x) * alpha;
+        c.mix_y += (y - c.mix_y) * alpha;
+    }
+}
+
+/// Get a physics-property value off the runtime constraint, per
+/// [`PhysicsProperty`].
+fn physics_get(c: &PhysicsConstraint, prop: PhysicsProperty) -> f32 {
+    match prop {
+        PhysicsProperty::Inertia => c.inertia,
+        PhysicsProperty::Strength => c.strength,
+        PhysicsProperty::Damping => c.damping,
+        PhysicsProperty::Mass => c.mass_inverse,
+        PhysicsProperty::Wind => c.wind,
+        PhysicsProperty::Gravity => c.gravity,
+        PhysicsProperty::Mix => c.mix,
+    }
+}
+
+/// Setup-pose value for a physics property.
+fn physics_setup(data: &PhysicsConstraintData, prop: PhysicsProperty) -> f32 {
+    match prop {
+        PhysicsProperty::Inertia => data.inertia,
+        PhysicsProperty::Strength => data.strength,
+        PhysicsProperty::Damping => data.damping,
+        PhysicsProperty::Mass => data.mass_inverse,
+        PhysicsProperty::Wind => data.wind,
+        PhysicsProperty::Gravity => data.gravity,
+        PhysicsProperty::Mix => data.mix,
+    }
+}
+
+/// Is the per-property "global" flag set on this constraint's data?
+/// spine-cpp's `global(prop)` virtual — governs whether a `None`-constraint
+/// physics timeline applies to this constraint.
+fn physics_global(data: &PhysicsConstraintData, prop: PhysicsProperty) -> bool {
+    match prop {
+        PhysicsProperty::Inertia => data.inertia_global,
+        PhysicsProperty::Strength => data.strength_global,
+        PhysicsProperty::Damping => data.damping_global,
+        PhysicsProperty::Mass => data.mass_global,
+        PhysicsProperty::Wind => data.wind_global,
+        PhysicsProperty::Gravity => data.gravity_global,
+        PhysicsProperty::Mix => data.mix_global,
+    }
+}
+
+fn physics_set(c: &mut PhysicsConstraint, prop: PhysicsProperty, value: f32) {
+    match prop {
+        PhysicsProperty::Inertia => c.inertia = value,
+        PhysicsProperty::Strength => c.strength = value,
+        PhysicsProperty::Damping => c.damping = value,
+        PhysicsProperty::Mass => c.mass_inverse = value,
+        PhysicsProperty::Wind => c.wind = value,
+        PhysicsProperty::Gravity => c.gravity = value,
+        PhysicsProperty::Mix => c.mix = value,
+    }
+}
+
+#[allow(clippy::single_match_else)] // dual-arm Some/None match reads cleaner than if let + else
+fn apply_physics(
+    skeleton: &mut Skeleton,
+    constraint_id: Option<PhysicsConstraintId>,
+    property: PhysicsProperty,
+    curves: &CurveFrames,
+    time: f32,
+    alpha: f32,
+    blend: MixBlend,
+) {
+    match constraint_id {
+        Some(id) => {
+            let idx = id.index();
+            if !skeleton.physics_constraints[idx].active {
+                return;
+            }
+            let setup = physics_setup(&skeleton.data.physics_constraints[idx], property);
+            let current = physics_get(&skeleton.physics_constraints[idx], property);
+            let new_value = absolute_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                blend,
+                current,
+                setup,
+            );
+            physics_set(&mut skeleton.physics_constraints[idx], property, new_value);
+        }
+        None => {
+            // Apply to every active physics constraint whose data carries
+            // the matching `_global` flag. spine-cpp samples the curve once
+            // at top-level (returns 0 when before the first frame) and
+            // passes it as the overriding value to getAbsoluteValue's
+            // 6-arg overload.
+            let value = if time >= curves.frames[0] {
+                curve_value1(&curves.frames, &curves.curves, time)
+            } else {
+                0.0
+            };
+            for i in 0..skeleton.physics_constraints.len() {
+                if !skeleton.physics_constraints[i].active {
+                    continue;
+                }
+                if !physics_global(&skeleton.data.physics_constraints[i], property) {
+                    continue;
+                }
+                let setup = physics_setup(&skeleton.data.physics_constraints[i], property);
+                let current = physics_get(&skeleton.physics_constraints[i], property);
+                // getAbsoluteValue(time, alpha, blend, current, setup, value)
+                // overload: uses passed `value` rather than sampling internally.
+                let new_value = if time < curves.frames[0] {
+                    match blend {
+                        MixBlend::Setup => setup,
+                        MixBlend::First => current + (setup - current) * alpha,
+                        _ => current,
+                    }
+                } else if blend == MixBlend::Setup {
+                    setup + (value - setup) * alpha
+                } else {
+                    current + (value - current) * alpha
+                };
+                physics_set(&mut skeleton.physics_constraints[i], property, new_value);
+            }
+        }
+    }
+}
+
+fn apply_physics_reset(
+    skeleton: &mut Skeleton,
+    constraint_id: Option<PhysicsConstraintId>,
+    frames: &[f32],
+    last_time: f32,
+    time: f32,
+) {
+    // Active check is a function of constraint_id; precompute the target set.
+    // Matches spine-cpp: skip the whole thing if the named constraint isn't
+    // active (but when `None`, still run — "all active" filter below).
+    if let Some(id) = constraint_id
+        && !skeleton.physics_constraints[id.index()].active
+    {
+        return;
+    }
+
+    // Wrap-around for looped animations: fire every event past last_time,
+    // then re-enter with last_time = -1 for the [0, time] portion.
+    let (last_time, time) = if last_time > time {
+        apply_physics_reset(skeleton, constraint_id, frames, last_time, f32::MAX);
+        (-1.0_f32, time)
+    } else if last_time >= frames[frames.len() - 1] {
+        return;
+    } else {
+        (last_time, time)
+    };
+
+    if time < frames[0] {
+        return;
+    }
+
+    // spine-cpp: if last_time < frames[0] || time >= frames[search(frames, last_time) + 1]
+    let trigger = if last_time < frames[0] {
+        true
+    } else {
+        let next_frame_idx = (search(frames, last_time, 1) + 1).min(frames.len() - 1);
+        time >= frames[next_frame_idx]
+    };
+    if !trigger {
+        return;
+    }
+
+    match constraint_id {
+        Some(id) => {
+            skeleton.physics_constraints[id.index()].reset = true;
+        }
+        None => {
+            for c in &mut skeleton.physics_constraints {
+                if c.active {
+                    c.reset = true;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -1342,6 +1865,112 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].int_value, 1);
         assert_eq!(events[1].int_value, 2);
+    }
+
+    #[test]
+    fn ik_constraint_timeline_writes_mix_and_stepped_flags() {
+        use crate::data::{IkConstraintData, IkConstraintId};
+
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        sd.bones
+            .push(BoneData::new(BoneId(1), "child", Some(BoneId(0))));
+        let mut ik = IkConstraintData::new(IkConstraintId(0), "ik", BoneId(1));
+        ik.bones.push(BoneId(0));
+        ik.mix = 0.5;
+        ik.softness = 10.0;
+        ik.bend_direction = 1;
+        sd.ik_constraints.push(ik);
+
+        let mut sk = Skeleton::new(Arc::new(sd));
+        sk.update_cache();
+        // update_cache sets active=true for the IK.
+        assert!(sk.ik_constraints[0].active);
+
+        // Timeline: stride 6 [t, mix, softness, bend, compress, stretch].
+        // Linear from [0, 0.8, 20, -1, 1, 0] at t=0 to [0.2, 1.0, 0, 0, 1] at t=1.
+        let curves = CurveFrames {
+            frames: vec![
+                0.0, 0.8, 20.0, -1.0, 1.0, 0.0, // frame 0
+                1.0, 0.2, 1.0, 0.0, 0.0, 1.0, // frame 1
+            ],
+            curves: vec![CURVE_LINEAR as f32, CURVE_STEPPED as f32],
+        };
+        let tl = Timeline::IkConstraint {
+            constraint: IkConstraintId(0),
+            curves,
+        };
+        let mut events = Vec::new();
+        tl.apply(
+            &mut sk,
+            0.0,
+            0.5,
+            &mut events,
+            1.0,
+            MixBlend::Setup,
+            MixDirection::In,
+        );
+        let c = &sk.ik_constraints[0];
+        // Linear midpoint: mix = (0.8 + 0.2) / 2 = 0.5 with Setup blend
+        // (data.mix = 0.5 + (0.5 - 0.5)*1 = 0.5). softness = (20 + 1)/2 = 10.5.
+        assert!((c.mix - 0.5).abs() < 1e-6);
+        assert!((c.softness - 10.5).abs() < 1e-6);
+        // Stepped fields come straight from frame 0.
+        assert_eq!(c.bend_direction, -1);
+        assert!(c.compress);
+        assert!(!c.stretch);
+    }
+
+    #[test]
+    fn physics_reset_sets_flag_when_window_crosses_frame() {
+        use crate::data::{PhysicsConstraintData, PhysicsConstraintId};
+
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        sd.physics_constraints.push(PhysicsConstraintData::new(
+            PhysicsConstraintId(0),
+            "phys",
+            BoneId(0),
+        ));
+        let mut sk = Skeleton::new(Arc::new(sd));
+        sk.update_cache();
+        // Skin-required check would make active=false; flip it for this test
+        // since our scaffold constraint is otherwise unactivated.
+        sk.physics_constraints[0].active = true;
+        sk.physics_constraints[0].reset = false;
+
+        let tl = Timeline::PhysicsReset {
+            constraint: Some(PhysicsConstraintId(0)),
+            frames: vec![0.5, 1.5],
+        };
+
+        // last_time = 0.0, time = 0.6 → crosses frame at 0.5 → should set
+        // reset = true.
+        let mut events = Vec::new();
+        tl.apply(
+            &mut sk,
+            0.0,
+            0.6,
+            &mut events,
+            1.0,
+            MixBlend::Setup,
+            MixDirection::In,
+        );
+        assert!(sk.physics_constraints[0].reset);
+
+        // Second call in [0.6, 0.8] — still within frame-0 segment, no
+        // new reset should fire. Reset the flag first to detect.
+        sk.physics_constraints[0].reset = false;
+        tl.apply(
+            &mut sk,
+            0.6,
+            0.8,
+            &mut events,
+            1.0,
+            MixBlend::Setup,
+            MixDirection::In,
+        );
+        assert!(!sk.physics_constraints[0].reset);
     }
 
     #[test]
