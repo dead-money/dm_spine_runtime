@@ -345,13 +345,18 @@ impl AnimationState {
 
     // ----- Public API: set/clear ------------------------------------------
 
-    /// Replace the track's current animation, discarding any queued entries.
+    /// Replace the track's current animation, discarding any queued
+    /// entries.
     ///
-    /// Starts the animation from `track_time = 0` with the default
-    /// properties `newTrackEntry` assigns. Returns an [`EntryId`] the
-    /// caller can use to tweak per-entry settings via [`Self::entry_mut`].
+    /// When an existing entry is current:
+    /// - If it was never applied (`next_track_last == -1`), it's dropped
+    ///   without marking an interrupt — matches spine-cpp's "don't mix
+    ///   from an entry that was never applied" rule.
+    /// - Otherwise the entry is chained as `mixing_from` on the new entry
+    ///   so [`apply`][Self::apply] crossfades between them (Phase 4c).
     ///
-    /// No crossfade yet — Phase 4c wires `mixing_from` here.
+    /// Returns an [`EntryId`] the caller can keep to mutate per-entry
+    /// settings via [`Self::entry_mut`].
     pub fn set_animation(
         &mut self,
         track_index: usize,
@@ -360,18 +365,33 @@ impl AnimationState {
     ) -> EntryId {
         self.expand_to_index(track_index);
 
-        // Phase 4b/4c will clean up any existing entry (dispose queued,
-        // potentially chain mixing_from). For 4a, just replace.
-        if let Some(old_id) = self.tracks[track_index].take() {
-            self.free_entry(old_id);
+        let mut interrupt = true;
+        // "Last" for mix_duration lookup. Starts as the current entry,
+        // then drops into its mixing_from when the current was never
+        // applied so the mix comes from the most-recently-applied source.
+        let mut last_for_mix: Option<EntryId> = self.tracks[track_index];
+
+        if let Some(current_id) = self.tracks[track_index] {
+            let never_applied = self
+                .entries
+                .get(&current_id)
+                .is_some_and(|e| !e.was_applied());
+            if never_applied {
+                let mixing_from = self.entries.get(&current_id).and_then(|e| e.mixing_from);
+                self.tracks[track_index] = mixing_from;
+                // queue->interrupt(current) + queue->end(current) land in 4e.
+                self.clear_next(current_id);
+                self.dispose_entry_chain(current_id);
+                last_for_mix = mixing_from;
+                interrupt = false;
+            } else {
+                self.clear_next(current_id);
+            }
         }
 
-        let duration = self.skeleton_data().animations[animation.index()].duration;
-        let entry = TrackEntry::new(track_index, animation, duration, loop_);
-        let id = self.alloc_entry(entry);
-        self.tracks[track_index] = Some(id);
-        self.animations_changed = true;
-        id
+        let entry_id = self.new_track_entry(track_index, animation, loop_, last_for_mix);
+        self.set_current(track_index, entry_id, interrupt);
+        entry_id
     }
 
     /// Name-lookup wrapper around [`Self::set_animation`].
@@ -395,6 +415,85 @@ impl AnimationState {
         Ok(self.set_animation(track_index, id, loop_))
     }
 
+    /// Queue an animation to play `delay` seconds after the current (or
+    /// last-queued) animation on `track_index`. If `delay <= 0`, the
+    /// start time is computed relative to the previous entry's
+    /// completion time minus the new entry's mix duration.
+    ///
+    /// Ports `spine::AnimationState::addAnimation`.
+    pub fn add_animation(
+        &mut self,
+        track_index: usize,
+        animation: AnimationId,
+        loop_: bool,
+        delay: f32,
+    ) -> EntryId {
+        self.expand_to_index(track_index);
+
+        // Walk to the tail of the queue for this track.
+        let mut last: Option<EntryId> = self.tracks[track_index];
+        while let Some(id) = last {
+            match self.entries.get(&id).and_then(|e| e.next) {
+                Some(next_id) => last = Some(next_id),
+                None => break,
+            }
+        }
+
+        let entry_id = self.new_track_entry(track_index, animation, loop_, last);
+
+        let mut delay = delay;
+        if let Some(last_id) = last {
+            // Queue behind `last`.
+            if let Some(last_entry) = self.entries.get_mut(&last_id) {
+                last_entry.next = Some(entry_id);
+            }
+            if let Some(new_entry) = self.entries.get_mut(&entry_id) {
+                new_entry.previous = Some(last_id);
+            }
+            if delay <= 0.0 {
+                let complete = self
+                    .entries
+                    .get(&last_id)
+                    .map_or(0.0, TrackEntry::track_complete);
+                let mix = self.entries.get(&entry_id).map_or(0.0, |e| e.mix_duration);
+                delay = (delay + complete - mix).max(0.0);
+            }
+        } else {
+            // Empty track: promote directly.
+            self.set_current(track_index, entry_id, true);
+            if delay < 0.0 {
+                delay = 0.0;
+            }
+        }
+
+        if let Some(new_entry) = self.entries.get_mut(&entry_id) {
+            new_entry.delay = delay;
+        }
+        entry_id
+    }
+
+    /// Name-lookup wrapper around [`Self::add_animation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AnimationNotFound`] if no animation with `name` exists.
+    pub fn add_animation_by_name(
+        &mut self,
+        track_index: usize,
+        name: &str,
+        loop_: bool,
+        delay: f32,
+    ) -> Result<EntryId, AnimationNotFound> {
+        let id = self
+            .skeleton_data()
+            .animations
+            .iter()
+            .position(|a| a.name == name)
+            .map(|i| AnimationId(i as u16))
+            .ok_or_else(|| AnimationNotFound(name.to_string()))?;
+        Ok(self.add_animation(track_index, id, loop_, delay))
+    }
+
     /// Remove the entry on `track_index`, leaving the skeleton at its
     /// current pose. Matches `spine::AnimationState::clearTrack` minus
     /// the event queue (Phase 4e).
@@ -402,10 +501,25 @@ impl AnimationState {
         if track_index >= self.tracks.len() {
             return;
         }
-        if let Some(id) = self.tracks[track_index].take() {
-            self.free_entry(id);
-            self.animations_changed = true;
+        let Some(current_id) = self.tracks[track_index].take() else {
+            return;
+        };
+
+        // Walk down the mixing_from chain and dispose each entry.
+        self.clear_next(current_id);
+        let mut entry_id = Some(current_id);
+        while let Some(id) = entry_id {
+            let from_id = self.entries.get(&id).and_then(|e| e.mixing_from);
+            // Break the mixing_from/mixing_to link before disposing.
+            if let Some(e) = self.entries.get_mut(&id) {
+                e.mixing_from = None;
+                e.mixing_to = None;
+            }
+            entry_id = from_id;
         }
+        // Now dispose the whole chain.
+        self.dispose_entry_chain(current_id);
+        self.animations_changed = true;
     }
 
     /// Remove every track's entries.
@@ -416,38 +530,236 @@ impl AnimationState {
         self.tracks.clear();
     }
 
-    // ----- Update + apply (Phase 4a subset) -------------------------------
+    // ----- set/queue helpers ---------------------------------------------
+
+    /// Hook `current` into `_tracks[index]`, chaining any previous entry
+    /// as `mixing_from` for a crossfade. Matches `spine::AnimationState::setCurrent`.
+    fn set_current(&mut self, index: usize, current: EntryId, interrupt: bool) {
+        let from = self.tracks[index];
+        self.tracks[index] = Some(current);
+
+        // Always clear `previous` on the new current.
+        if let Some(e) = self.entries.get_mut(&current) {
+            e.previous = None;
+        }
+
+        if let Some(from_id) = from {
+            if interrupt {
+                // queue->interrupt(from) lands in Phase 4e.
+            }
+
+            // Link mixing_from ↔ mixing_to.
+            let from_mix_time;
+            let from_mix_duration;
+            let from_mixing_from;
+            {
+                let Some(from_entry) = self.entries.get_mut(&from_id) else {
+                    self.animations_changed = true;
+                    return;
+                };
+                from_entry.timelines_rotation.clear();
+                from_mix_time = from_entry.mix_time;
+                from_mix_duration = from_entry.mix_duration;
+                from_mixing_from = from_entry.mixing_from;
+            }
+            if let Some(e) = self.entries.get_mut(&current) {
+                e.mixing_from = Some(from_id);
+                e.mix_time = 0.0;
+                // Store interrupted mix percentage per spine-cpp.
+                if from_mixing_from.is_some() && from_mix_duration > 0.0 {
+                    e.interrupt_alpha *= (from_mix_time / from_mix_duration).min(1.0);
+                }
+            }
+            if let Some(from_entry) = self.entries.get_mut(&from_id) {
+                from_entry.mixing_to = Some(current);
+            }
+        }
+        self.animations_changed = true;
+    }
+
+    /// Build a new `TrackEntry` and register it in the slab, returning
+    /// its handle. Matches `spine::AnimationState::newTrackEntry`.
+    fn new_track_entry(
+        &mut self,
+        track_index: usize,
+        animation: AnimationId,
+        loop_: bool,
+        last: Option<EntryId>,
+    ) -> EntryId {
+        let duration = self.skeleton_data().animations[animation.index()].duration;
+        let mut entry = TrackEntry::new(track_index, animation, duration, loop_);
+        // mix_duration defaults to 0 when there's no predecessor, else
+        // pulled from the AnimationStateData's (last_anim → new_anim) lookup.
+        if let Some(last_id) = last
+            && let Some(last_entry) = self.entries.get(&last_id)
+        {
+            entry.mix_duration = self.data.mix(last_entry.animation, animation);
+        }
+        self.alloc_entry(entry)
+    }
+
+    /// Dispose every entry queued behind `entry_id` (via `next` pointers).
+    /// Matches `spine::AnimationState::clearNext`.
+    fn clear_next(&mut self, entry_id: EntryId) {
+        // Walk the `next` chain, disposing each.
+        let mut next = self.entries.get(&entry_id).and_then(|e| e.next);
+        while let Some(next_id) = next {
+            let after = self.entries.get(&next_id).and_then(|e| e.next);
+            // queue->dispose(next) lands in Phase 4e.
+            self.free_entry(next_id);
+            next = after;
+        }
+        if let Some(e) = self.entries.get_mut(&entry_id) {
+            e.next = None;
+        }
+    }
+
+    /// Dispose an entry and its entire `mixing_from` chain. Used on
+    /// `clear_track` and on the "never-applied" replacement path in
+    /// `set_animation`.
+    fn dispose_entry_chain(&mut self, entry_id: EntryId) {
+        let mut cur = Some(entry_id);
+        while let Some(id) = cur {
+            let from = self.entries.get(&id).and_then(|e| e.mixing_from);
+            self.free_entry(id);
+            cur = from;
+        }
+    }
+
+    // ----- Update + apply -------------------------------------------------
 
     /// Advance every active track by `delta` seconds.
     ///
-    /// Phase 4a: single-track simple path (delay decrement + `track_time`
-    /// bump). Phase 4b adds queued-animation promotion and `mixing_from`
-    /// decay.
+    /// Ports `spine::AnimationState::update`. Handles:
+    /// - Per-entry delay countdown.
+    /// - Promotion of queued `next` entries when their delay elapses
+    ///   (chains `mix_time` advances on any `mixing_from` on the new current).
+    /// - Track clearing when `track_end` is reached.
+    /// - Mixing-from decay via `update_mixing_from` (Phase 4c fills the body).
     pub fn update(&mut self, delta: f32) {
         let delta = delta * self.time_scale;
         for i in 0..self.tracks.len() {
-            let Some(id) = self.tracks[i] else { continue };
-            let Some(entry) = self.entries.get_mut(&id) else {
+            let Some(current_id) = self.tracks[i] else {
                 continue;
             };
 
-            entry.animation_last = entry.next_animation_last;
-            entry.track_last = entry.next_track_last;
-
-            let mut current_delta = delta * entry.time_scale;
-            if entry.delay > 0.0 {
-                entry.delay -= current_delta;
-                if entry.delay > 0.0 {
+            // Snapshot before any mutation: spine-cpp's
+            // `animation_last = next_animation_last; track_last = next_track_last;`
+            let time_scale;
+            let next_id;
+            let track_last;
+            let track_end;
+            let mixing_from;
+            {
+                let Some(entry) = self.entries.get_mut(&current_id) else {
                     continue;
-                }
-                current_delta = -entry.delay;
-                entry.delay = 0.0;
+                };
+                entry.animation_last = entry.next_animation_last;
+                entry.track_last = entry.next_track_last;
+                time_scale = entry.time_scale;
+                next_id = entry.next;
+                track_last = entry.track_last;
+                track_end = entry.track_end;
+                mixing_from = entry.mixing_from;
             }
 
-            // Phase 4b will insert the queued-next promotion + clear-on-end
-            // logic here. For 4a, just bump track_time.
-            entry.track_time += current_delta;
+            let mut current_delta = delta * time_scale;
+            {
+                let Some(entry) = self.entries.get_mut(&current_id) else {
+                    continue;
+                };
+                if entry.delay > 0.0 {
+                    entry.delay -= current_delta;
+                    if entry.delay > 0.0 {
+                        continue;
+                    }
+                    current_delta = -entry.delay;
+                    entry.delay = 0.0;
+                }
+            }
+
+            // Queued-animation promotion.
+            if let Some(next_id) = next_id {
+                let next_delay = self.entries.get(&next_id).map_or(0.0, |n| n.delay);
+                let next_time = track_last - next_delay;
+                if next_time >= 0.0 {
+                    if let Some(next_entry) = self.entries.get_mut(&next_id) {
+                        next_entry.delay = 0.0;
+                        let step = if time_scale == 0.0 {
+                            0.0
+                        } else {
+                            (next_time / time_scale + delta) * next_entry.time_scale
+                        };
+                        next_entry.track_time += step;
+                    }
+                    if let Some(entry) = self.entries.get_mut(&current_id) {
+                        entry.track_time += current_delta;
+                    }
+                    self.set_current(i, next_id, true);
+
+                    // Bump mix_time on the promoted entry and its mixing_from chain.
+                    let mut walk = Some(next_id);
+                    while let Some(w_id) = walk {
+                        let from = {
+                            let Some(w) = self.entries.get_mut(&w_id) else {
+                                break;
+                            };
+                            w.mix_time += delta;
+                            w.mixing_from
+                        };
+                        walk = from;
+                    }
+                    continue;
+                }
+            } else if track_last >= track_end && mixing_from.is_none() {
+                // No next + track_end reached + no mixing_from → clear the track.
+                self.tracks[i] = None;
+                // queue->end(currentP) lands in Phase 4e.
+                self.clear_next(current_id);
+                self.dispose_entry_chain(current_id);
+                self.animations_changed = true;
+                continue;
+            }
+
+            // Decay any mixing_from chain.
+            if mixing_from.is_some() {
+                let finished = self.update_mixing_from(current_id, delta);
+                if finished {
+                    let chain_root = {
+                        let Some(e) = self.entries.get_mut(&current_id) else {
+                            continue;
+                        };
+                        e.mixing_from.take()
+                    };
+                    if let Some(from_id) = chain_root {
+                        if let Some(f) = self.entries.get_mut(&from_id) {
+                            f.mixing_to = None;
+                        }
+                        self.dispose_entry_chain(from_id);
+                    }
+                }
+            }
+
+            if let Some(entry) = self.entries.get_mut(&current_id) {
+                entry.track_time += current_delta;
+            }
         }
+    }
+
+    /// Advance a mixing-from chain's mix times. Returns `true` when the
+    /// entire chain has completed its crossfade and the caller can drop
+    /// the chain.
+    ///
+    /// Phase 4b stub: treat every `mixing_from` as immediately complete.
+    /// Phase 4c replaces this with the real ramp logic and enables
+    /// smooth crossfades. `&mut self` today is `#[allow(clippy::unused_self)]`
+    /// because 4c needs it.
+    #[allow(clippy::unused_self)]
+    fn update_mixing_from(&mut self, _to: EntryId, _delta: f32) -> bool {
+        // TODO(phase4c): port spine-cpp's updateMixingFrom — walk the
+        // chain bottom-up, advance from.track_time/mix_time, and only
+        // return true when to.mix_time >= to.mix_duration.
+        true
     }
 
     /// Apply every track's current animation to `skeleton`, pushing event
@@ -600,5 +912,134 @@ mod tests {
         assert!(state.current(0).is_some());
         assert!(state.current(1).is_none());
         assert!(state.current(2).is_some());
+    }
+
+    fn two_anim_skeleton() -> Arc<SkeletonData> {
+        let mut sd = SkeletonData::default();
+        sd.bones.push(BoneData::new(BoneId(0), "root", None));
+        let mut a = Animation::new("a", 1.0);
+        a.timelines.push(Timeline::Rotate {
+            bone: BoneId(0),
+            curves: CurveFrames {
+                frames: vec![0.0, 10.0, 1.0, 20.0],
+                curves: vec![
+                    crate::animation::CURVE_LINEAR as f32,
+                    crate::animation::CURVE_STEPPED as f32,
+                ],
+            },
+        });
+        sd.animations.push(a);
+        let mut b = Animation::new("b", 1.0);
+        b.timelines.push(Timeline::Rotate {
+            bone: BoneId(0),
+            curves: CurveFrames {
+                frames: vec![0.0, 30.0, 1.0, 40.0],
+                curves: vec![
+                    crate::animation::CURVE_LINEAR as f32,
+                    crate::animation::CURVE_STEPPED as f32,
+                ],
+            },
+        });
+        sd.animations.push(b);
+        Arc::new(sd)
+    }
+
+    #[test]
+    fn set_animation_replaces_previous_with_mixing_from() {
+        let sd = two_anim_skeleton();
+        let mut state_data = AnimationStateData::new(Arc::clone(&sd));
+        state_data.set_default_mix(0.2);
+        let state_data = Arc::new(state_data);
+        let mut state = AnimationState::new(state_data);
+
+        let a_id = state.set_animation(0, AnimationId(0), false);
+        // Apply once so entry `a` is marked applied — otherwise set_animation's
+        // "never applied" branch drops it without chaining mixing_from.
+        let mut sk = Skeleton::new(Arc::clone(&sd));
+        sk.update_cache();
+        let mut events = Vec::new();
+        state.apply_and_advance(&mut sk, &mut events);
+        assert!(state.entry(a_id).unwrap().was_applied());
+
+        let b_id = state.set_animation(0, AnimationId(1), false);
+        let b = state.entry(b_id).unwrap();
+        assert_eq!(b.animation, AnimationId(1));
+        assert_eq!(b.mixing_from, Some(a_id));
+        assert!((b.mix_duration - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_animation_on_never_applied_entry_drops_without_mixing() {
+        let sd = two_anim_skeleton();
+        let state_data = Arc::new(AnimationStateData::new(Arc::clone(&sd)));
+        let mut state = AnimationState::new(state_data);
+
+        let a_id = state.set_animation(0, AnimationId(0), false);
+        // Replace immediately — `a` was never applied.
+        let b_id = state.set_animation(0, AnimationId(1), false);
+        assert!(state.entry(a_id).is_none(), "a should be disposed");
+        assert_eq!(state.entry(b_id).unwrap().mixing_from, None);
+    }
+
+    #[test]
+    fn add_animation_queues_behind_current() {
+        let sd = two_anim_skeleton();
+        let state_data = Arc::new(AnimationStateData::new(Arc::clone(&sd)));
+        let mut state = AnimationState::new(state_data);
+
+        let a_id = state.set_animation(0, AnimationId(0), false);
+        let b_id = state.add_animation(0, AnimationId(1), false, 0.5);
+
+        assert_eq!(state.entry(a_id).unwrap().next, Some(b_id));
+        assert_eq!(state.entry(b_id).unwrap().previous, Some(a_id));
+        assert!((state.entry(b_id).unwrap().delay - 0.5).abs() < 1e-6);
+        // `a` is still the current track entry; `b` is queued.
+        assert_eq!(state.current(0).unwrap().animation, AnimationId(0));
+    }
+
+    #[test]
+    fn update_promotes_queued_animation_after_delay() {
+        let sd = two_anim_skeleton();
+        let state_data = Arc::new(AnimationStateData::new(Arc::clone(&sd)));
+        let mut state = AnimationState::new(state_data);
+
+        state.set_animation(0, AnimationId(0), false);
+        // Apply once so `a` is marked applied; the promotion path reads
+        // `track_last` which is set by the `apply` snapshot loop.
+        let mut sk = Skeleton::new(Arc::clone(&sd));
+        sk.update_cache();
+        let mut events = Vec::new();
+        state.update(0.1);
+        state.apply_and_advance(&mut sk, &mut events);
+
+        let b_id = state.add_animation(0, AnimationId(1), false, 0.2);
+        // Advance past the delay (track_time is 0.1, next_delay 0.2 → need
+        // track_last >= 0.2). Apply once more to make the snapshot take effect.
+        state.update(0.25);
+        state.apply_and_advance(&mut sk, &mut events);
+        state.update(0.1);
+
+        assert_eq!(
+            state.current(0).map(|e| e.animation),
+            Some(AnimationId(1)),
+            "queued animation should have been promoted"
+        );
+        assert_eq!(state.current(0).map(|e| e.track_index), Some(0));
+        let _ = b_id;
+    }
+
+    #[test]
+    fn clear_tracks_drops_everything() {
+        let sd = two_anim_skeleton();
+        let state_data = Arc::new(AnimationStateData::new(Arc::clone(&sd)));
+        let mut state = AnimationState::new(state_data);
+
+        state.set_animation(0, AnimationId(0), false);
+        state.add_animation(0, AnimationId(1), false, 1.0);
+        state.set_animation(1, AnimationId(1), true);
+        state.clear_tracks();
+        assert!(state.current(0).is_none());
+        assert!(state.current(1).is_none());
+        assert_eq!(state.track_count(), 0);
     }
 }
