@@ -11,6 +11,7 @@ keywords = ["spine", "2d", "animation", "skeletal"]
 
 [dependencies]
 glam = "0.32"
+thiserror = "2"
 
 [dev-dependencies]
 approx = "0.5"

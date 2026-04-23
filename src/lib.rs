@@ -29,4 +29,5 @@
 //!
 //! Renderer-agnostic. Bevy integration lives in the sibling `dm_spine_bevy` crate.
 
+pub mod atlas;
 pub mod math;
