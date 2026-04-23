@@ -29,7 +29,7 @@
 //!
 //! Every Spine asset loads into a single `SkeletonData`, which is typically
 //! wrapped in an `Arc` and referenced by many `Skeleton` instances. Runtime
-//! mutable state lives on `Skeleton` (coming in Phase 2), not here.
+//! mutable state lives on `Skeleton`, not here.
 //!
 //! # Typed indices
 //!

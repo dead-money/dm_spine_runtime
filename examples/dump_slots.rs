@@ -79,26 +79,15 @@ fn main() {
     let cmds = renderer.render_unbatched(&sk);
     println!("rig={rig} skel={skel}: {} drawable commands", cmds.len());
     for (i, c) in cmds.iter().enumerate() {
-        let n = c.num_vertices();
-        let mut xmin = f32::INFINITY;
-        let mut xmax = f32::NEG_INFINITY;
-        let mut ymin = f32::INFINITY;
-        let mut ymax = f32::NEG_INFINITY;
-        for k in 0..n {
-            let x = c.positions[k * 2];
-            let y = c.positions[k * 2 + 1];
-            xmin = xmin.min(x);
-            xmax = xmax.max(x);
-            ymin = ymin.min(y);
-            ymax = ymax.max(y);
-        }
+        let (xmin, xmax, ymin, ymax) = c.position_bounds().unwrap_or((0.0, 0.0, 0.0, 0.0));
         let (slot_name, kind, att_name) = labels
             .get(i)
             .cloned()
             .unwrap_or_else(|| ("?".to_string(), "?", "?".to_string()));
         let degenerate = (xmax - xmin).abs() < 1e-4 && (ymax - ymin).abs() < 1e-4;
         println!(
-            "  cmd[{i:2}] {flag} verts={n:3} tris={:3} x=[{xmin:7.1}..{xmax:7.1}] y=[{ymin:7.1}..{ymax:7.1}] slot={slot_name} ({kind}:{att_name})",
+            "  cmd[{i:2}] {flag} verts={:3} tris={:3} x=[{xmin:7.1}..{xmax:7.1}] y=[{ymin:7.1}..{ymax:7.1}] slot={slot_name} ({kind}:{att_name})",
+            c.num_vertices(),
             c.indices.len() / 3,
             flag = if degenerate { "!!" } else { "  " },
         );

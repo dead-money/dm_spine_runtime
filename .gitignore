@@ -1,6 +1,6 @@
 /target
 
-# Build artefacts from the spine_capture harness (phase-2 golden generator).
+# Build artefacts from the spine_capture golden-generator harness.
 /tools/spine_capture/build/
 
 # Editor / IDE
@@ -8,6 +8,9 @@
 .idea/
 *.swp
 *.swo
+*~
+.*.un~
+*.orig
 
 # OS cruft
 .DS_Store
@@ -15,3 +18,13 @@ Thumbs.db
 
 # Claude Code personal overrides (team settings.json is committed)
 .claude/settings.local.json
+
+# Ad-hoc output from diagnostic examples (software_render, debug dumps).
+# Run from the repo root, these write next to Cargo.toml.
+/*.png
+/*.ppm
+
+# Working notes. These are authored per-session and are not intended to
+# live in the published tree — keep them local.
+/NEXT_SESSION.md
+/PHASE_*.md

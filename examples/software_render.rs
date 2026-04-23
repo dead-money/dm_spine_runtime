@@ -128,32 +128,22 @@ fn main() {
     }
 
     let mut renderer = SkeletonRenderer::new();
-    // Diagnostic: skip the batcher so one command = one slot. Makes bugs
-    // that drop slots entirely visible via per-command counts / bounds.
+    // Skip the batcher so one command = one slot when `SPINE_UNBATCHED` is
+    // set. Makes bugs that drop slots entirely visible via per-command
+    // counts / bounds.
     let unbatched = std::env::var("SPINE_UNBATCHED").is_ok();
-    let cmds = if unbatched {
-        renderer.render_unbatched(&skeleton).to_vec()
+    let cmds: &[_] = if unbatched {
+        renderer.render_unbatched(&skeleton)
     } else {
-        renderer.render(&skeleton).to_vec()
+        renderer.render(&skeleton)
     };
     if unbatched {
         eprintln!("software_render: {} unbatched commands", cmds.len());
         for (i, c) in cmds.iter().enumerate() {
-            let n = c.num_vertices();
-            let mut xmin = f32::INFINITY;
-            let mut xmax = f32::NEG_INFINITY;
-            let mut ymin = f32::INFINITY;
-            let mut ymax = f32::NEG_INFINITY;
-            for k in 0..n {
-                let x = c.positions[k * 2];
-                let y = c.positions[k * 2 + 1];
-                xmin = xmin.min(x);
-                xmax = xmax.max(x);
-                ymin = ymin.min(y);
-                ymax = ymax.max(y);
-            }
+            let (xmin, xmax, ymin, ymax) = c.position_bounds().unwrap_or((0.0, 0.0, 0.0, 0.0));
             eprintln!(
-                "  cmd[{i:2}] verts={n:3} tris={:3} x=[{xmin:7.1}..{xmax:7.1}] y=[{ymin:7.1}..{ymax:7.1}]",
+                "  cmd[{i:2}] verts={:3} tris={:3} x=[{xmin:7.1}..{xmax:7.1}] y=[{ymin:7.1}..{ymax:7.1}]",
+                c.num_vertices(),
                 c.indices.len() / 3
             );
         }
@@ -164,7 +154,7 @@ fn main() {
     let mut total_tris_drawn = 0usize;
     let mut total_tris_culled = 0usize;
 
-    for cmd in &cmds {
+    for cmd in cmds {
         if cmd.blend_mode != BlendMode::Normal {
             eprintln!(
                 "software_render: skipping {:?} blend-mode command ({} tris)",
@@ -228,9 +218,9 @@ fn load_atlas_pages(atlas: &Atlas, dir: &Path) -> Vec<RgbaImage> {
         if page.pma {
             pages.push(img);
         } else {
-            // If the page is straight-alpha, premultiply on load so the
-            // renderer can blend uniformly.
-            let mut pma = img.clone();
+            // Straight-alpha page: premultiply in place so the renderer
+            // can blend uniformly.
+            let mut pma = img;
             for p in pma.pixels_mut() {
                 let a = p[3] as f32 / 255.0;
                 p[0] = (p[0] as f32 * a) as u8;

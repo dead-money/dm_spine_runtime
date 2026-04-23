@@ -28,8 +28,8 @@
 //! Pluggable attachment construction during skeleton load.
 //!
 //! Ported from `spine-cpp/AttachmentLoader.h` and
-//! `spine-cpp/AtlasAttachmentLoader.cpp`. The binary loader (Phase 1c) hands
-//! each attachment description to the loader, which returns the runtime
+//! `spine-cpp/AtlasAttachmentLoader.cpp`. The binary loader hands each
+//! attachment description to the loader, which returns the runtime
 //! [`Attachment`][crate::data::Attachment] value with region metadata
 //! already resolved. Swapping the loader is how callers integrate with
 //! custom atlas formats, on-demand texture streaming, or mock loaders for
@@ -46,7 +46,7 @@ use crate::data::attachment::{
 
 /// Errors surfaced by an [`AttachmentLoader`]. Loaders can define richer
 /// error types of their own; the binary loader wraps these variants into
-/// its top-level error enum in Phase 1c.
+/// its top-level error enum.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AttachmentLoaderError {
     #[error("atlas region not found: {path:?} (slot {slot:?}, attachment {attachment:?})")]
@@ -80,11 +80,11 @@ pub trait AttachmentLoader {
     ///
     /// When `sequence` is `Some`, the loader should populate
     /// `sequence.regions` with per-frame atlas regions derived from
-    /// `path` (via [`Sequence::frame_path`]), and leave the attachment's
-    /// direct region reference unset — matching spine-cpp's
-    /// `AtlasAttachmentLoader::loadSequence`. When `sequence` is `None`,
-    /// the loader resolves `path` to a single region and stores it on the
-    /// attachment.
+    /// `path` (via [`Sequence::frame_path`]) and seed the attachment's
+    /// direct `region` with the first resolvable frame, so the initial
+    /// setup pose has something to size and sample against before the
+    /// sequence cycles. When `sequence` is `None`, the loader resolves
+    /// `path` to a single region and stores it on the attachment.
     ///
     /// # Errors
     /// Returns [`AttachmentLoaderError::RegionNotFound`] if any required
@@ -270,7 +270,7 @@ impl AttachmentLoader for AtlasAttachmentLoader<'_> {
             // `update_region` has something to size against. The runtime
             // overrides `region` when the sequence cycles at apply time.
             if let Some(Some(first)) = seq.regions.first() {
-                r.region = Some(first.clone());
+                r.region = Some(*first);
             }
         } else {
             r.region = Some(self.resolve_region(slot_name, attachment_name, path)?);
@@ -294,7 +294,7 @@ impl AttachmentLoader for AtlasAttachmentLoader<'_> {
             // `update_region` / `compute_world_vertices` a reasonable
             // default UV frame for setup pose before the sequence cycles.
             if let Some(Some(first)) = seq.regions.first() {
-                m.region = Some(first.clone());
+                m.region = Some(*first);
             }
         } else {
             m.region = Some(self.resolve_region(slot_name, attachment_name, path)?);

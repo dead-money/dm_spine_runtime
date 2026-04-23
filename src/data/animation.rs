@@ -25,10 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Animation data scaffolding — types only, no evaluation.
-//!
-//! Phase 1b stops at data shape. Phase 3 implements curve evaluation and the
-//! per-variant `apply` logic that reads these arrays.
+//! Animation data types: [`Animation`], [`Timeline`], [`CurveFrames`],
+//! and supporting enums. Evaluation of these timelines lives in the
+//! [`crate::animation`] module.
 
 use crate::data::{
     AttachmentId, BoneId, EventId, IkConstraintId, Inherit, PathConstraintId, PhysicsConstraintId,
@@ -98,8 +97,8 @@ pub enum PhysicsProperty {
     Mix,
 }
 
-/// Tagged union of every kind of animation timeline. Structure data only —
-/// evaluation lands in Phase 3.
+/// Tagged union of every kind of animation timeline. Evaluation is performed
+/// by the [`crate::animation`] apply path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Timeline {
     // --- Bone timelines ----------------------------------------------------

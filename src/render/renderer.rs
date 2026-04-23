@@ -27,11 +27,10 @@
 
 //! `SkeletonRenderer` — walks a skeleton's draw-order and emits a
 //! stream of [`RenderCommand`]s. Literal port of
-//! `spine-cpp/src/spine/SkeletonRenderer.cpp`.
-//!
-//! Phase 6c lands the `RegionAttachment` emission path. Phase 6d
-//! extends the walker to meshes; 6e hooks clipping in; 6g adds the
-//! `batchCommands` merge pass.
+//! `spine-cpp/src/spine/SkeletonRenderer.cpp`. Handles
+//! [`RegionAttachment`] and [`MeshAttachment`] emission,
+//! `ClippingAttachment`-bounded triangle clipping, and an adjacency-merge
+//! batch pass.
 
 use crate::data::attachment::TextureRegionRef;
 use crate::data::{Attachment, MeshAttachment, RegionAttachment};
@@ -59,7 +58,7 @@ pub struct SkeletonRenderer {
     render_commands: Vec<RenderCommand>,
     /// Triangle-polygon clipper. Stores per-region scratch state
     /// between `clip_start` and `clip_end`; active for every
-    /// `ClippingAttachment`-bounded slot range (Phase 6e).
+    /// `ClippingAttachment`-bounded slot range.
     clipping: SkeletonClipping,
 }
 
@@ -81,9 +80,7 @@ impl SkeletonRenderer {
     /// per visible attachment. Skips slots with `alpha == 0`, inactive
     /// bones, or attachment kinds not yet supported.
     ///
-    /// Literal port of `spine-cpp/src/spine/SkeletonRenderer.cpp` —
-    /// the 6c phase covers the [`RegionAttachment`] branch; meshes
-    /// (6d) and clipping (6e) follow.
+    /// Literal port of `spine-cpp/src/spine/SkeletonRenderer.cpp`.
     pub fn render(&mut self, skeleton: &Skeleton) -> &[RenderCommand] {
         self.render_unbatched(skeleton);
         self.batch_commands();
@@ -252,30 +249,28 @@ impl SkeletonRenderer {
         let dark_color = pack_dark_color(slot);
         let blend = skeleton.data.slots[slot_id.index()].blend_mode;
 
-        // Collect quad indices into a local buffer — can't borrow
-        // `self.quad_indices` while calling `self.push_command`.
-        let indices = [
-            self.quad_indices[0],
-            self.quad_indices[1],
-            self.quad_indices[2],
-            self.quad_indices[3],
-            self.quad_indices[4],
-            self.quad_indices[5],
-        ];
-
-        self.push_command(&v, &uvs, &indices, color, dark_color, blend, texture);
+        push_command(
+            &mut self.clipping,
+            &mut self.render_commands,
+            &v,
+            &uvs,
+            &self.quad_indices,
+            color,
+            dark_color,
+            blend,
+            texture,
+        );
     }
 
     /// Emit a `MeshAttachment` — N-vertex / M-index triangle list.
     ///
-    /// Mirrors the `MeshAttachment` branch of
-    /// `SkeletonRenderer::render`. World vertices come from the shared
-    /// `Skeleton::compute_world_vertices` helper (ported in 6a);
-    /// uvs/triangles come straight from the attachment.
+    /// Mirrors the `MeshAttachment` branch of `SkeletonRenderer::render`.
+    /// World vertices come from the shared `Skeleton::compute_world_vertices`
+    /// helper; uvs/triangles come straight from the attachment.
     ///
-    /// Sequence-driven region cycling is deferred to a later sub-phase
-    /// — meshes with a non-setup `sequence_index` fall back to the
-    /// attachment's resolved region and setup-pose UVs.
+    /// Sequence-driven region cycling for meshes is not yet wired — meshes
+    /// with a non-setup `sequence_index` fall back to the attachment's
+    /// resolved region and setup-pose UVs.
     fn emit_mesh(
         &mut self,
         skeleton: &Skeleton,
@@ -294,7 +289,9 @@ impl SkeletonRenderer {
         if world_len == 0 || mesh.triangles.is_empty() || mesh.uvs.is_empty() {
             return;
         }
-        self.world_vertices.resize(world_len.max(self.world_vertices.len()), 0.0);
+        if self.world_vertices.len() < world_len {
+            self.world_vertices.resize(world_len, 0.0);
+        }
         skeleton.compute_world_vertices(
             &mesh.vertex_data,
             slot_id,
@@ -309,64 +306,17 @@ impl SkeletonRenderer {
         let dark_color = pack_dark_color(slot);
         let blend = skeleton.data.slots[slot_id.index()].blend_mode;
 
-        // Re-borrow world_vertices as a fresh slice to satisfy the
-        // borrow checker (push_command takes &mut self).
-        let world_slice = self.world_vertices[..world_len].to_vec();
-        let triangles = mesh.triangles.clone();
-        let uvs = mesh.uvs.clone();
-        self.push_command(
-            &world_slice,
-            &uvs,
-            &triangles,
+        push_command(
+            &mut self.clipping,
+            &mut self.render_commands,
+            &self.world_vertices[..world_len],
+            &mesh.uvs,
+            &mesh.triangles,
             color,
             dark_color,
             blend,
             TextureId(region.page_index),
         );
-    }
-
-    /// Route a triangle list + uvs through the clipper (if active)
-    /// and emit one `RenderCommand` with the final geometry.
-    #[allow(clippy::too_many_arguments)]
-    fn push_command(
-        &mut self,
-        positions: &[f32],
-        uvs: &[f32],
-        indices: &[u16],
-        color: u32,
-        dark_color: u32,
-        blend: crate::data::BlendMode,
-        texture: TextureId,
-    ) {
-        let (positions, uvs, indices) = if self.clipping.is_clipping() {
-            self.clipping.clip_triangles(positions, indices, uvs, 2);
-            if self.clipping.clipped_vertices().is_empty() {
-                return;
-            }
-            (
-                self.clipping.clipped_vertices(),
-                self.clipping.clipped_uvs(),
-                self.clipping.clipped_triangles(),
-            )
-        } else {
-            (positions, uvs, indices)
-        };
-        let num_vertices = positions.len() / 2;
-        let num_indices = indices.len();
-        if num_vertices == 0 || num_indices == 0 {
-            return;
-        }
-        let mut cmd = RenderCommand::with_capacity(num_vertices, num_indices, blend, texture);
-        cmd.positions.copy_from_slice(positions);
-        cmd.uvs.copy_from_slice(uvs);
-        for c in &mut cmd.colors {
-            *c = color;
-        }
-        for c in &mut cmd.dark_colors {
-            *c = dark_color;
-        }
-        cmd.indices.copy_from_slice(indices);
-        self.render_commands.push(cmd);
     }
 
     /// Capacity of the internal world-vertex scratch buffer, in
@@ -388,6 +338,55 @@ impl Default for SkeletonRenderer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Route a triangle list + UVs through `clipping` (if active) and push one
+/// `RenderCommand` with the final geometry onto `render_commands`.
+///
+/// Free function rather than `&mut self` method so callers can borrow other
+/// fields of `SkeletonRenderer` (notably `world_vertices` and
+/// `quad_indices`) in the slice arguments without a borrow-checker conflict.
+#[allow(clippy::too_many_arguments)]
+fn push_command(
+    clipping: &mut SkeletonClipping,
+    render_commands: &mut Vec<RenderCommand>,
+    positions: &[f32],
+    uvs: &[f32],
+    indices: &[u16],
+    color: u32,
+    dark_color: u32,
+    blend: crate::data::BlendMode,
+    texture: TextureId,
+) {
+    let (positions, uvs, indices) = if clipping.is_clipping() {
+        clipping.clip_triangles(positions, indices, uvs, 2);
+        if clipping.clipped_vertices().is_empty() {
+            return;
+        }
+        (
+            clipping.clipped_vertices(),
+            clipping.clipped_uvs(),
+            clipping.clipped_triangles(),
+        )
+    } else {
+        (positions, uvs, indices)
+    };
+    let num_vertices = positions.len() / 2;
+    let num_indices = indices.len();
+    if num_vertices == 0 || num_indices == 0 {
+        return;
+    }
+    let mut cmd = RenderCommand::with_capacity(num_vertices, num_indices, blend, texture);
+    cmd.positions.copy_from_slice(positions);
+    cmd.uvs.copy_from_slice(uvs);
+    for c in &mut cmd.colors {
+        *c = color;
+    }
+    for c in &mut cmd.dark_colors {
+        *c = dark_color;
+    }
+    cmd.indices.copy_from_slice(indices);
+    render_commands.push(cmd);
 }
 
 /// Concatenate `commands[first..=last]` into a single batched
@@ -452,17 +451,10 @@ fn pack_dark_color(slot: &Slot) -> u32 {
     }
 }
 
-// --- Corner offset / UV indices ---------------------------------------------
-// spine-cpp const ints — reproduced here so the vertex code matches the
-// reference visually. Order: BL, UL, UR, BR (low-to-high in memory).
-const BLX: usize = 0;
-const BLY: usize = 1;
-const ULX: usize = 2;
-const ULY: usize = 3;
-const URX: usize = 4;
-const URY: usize = 5;
-const BRX: usize = 6;
-const BRY: usize = 7;
+// Corner offset / UV indices into an 8-float quad array. Re-exported
+// from `crate::data::attachment` (where `RegionAttachment` stores them)
+// so the emission code here reads the way spine-cpp's does.
+use crate::data::attachment::quad_corner::{BLX, BLY, BRX, BRY, ULX, ULY, URX, URY};
 
 /// Resolve the active `(TextureId, UVs)` for a region attachment.
 ///

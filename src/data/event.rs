@@ -25,9 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Setup-pose event definition. Runtime `Event` instances (produced during
-//! animation apply in Phase 3) inherit these defaults and may override them
-//! per-keyframe.
+//! Setup-pose event definition. Runtime `Event` instances produced during
+//! animation apply inherit these defaults and may override them per-keyframe.
 
 use crate::data::EventId;
 

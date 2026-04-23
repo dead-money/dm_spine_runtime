@@ -35,10 +35,10 @@
 //!   [`TextureId`]. Matches `spine-cpp`'s `RenderCommand` struct
 //!   exactly so the golden-capture harness can dump byte-comparable
 //!   output.
-//! - The [`SkeletonRenderer`] walker (sub-phase 6c) that iterates a
+//! - The [`SkeletonRenderer`] walker that iterates a
 //!   `Skeleton`'s draw-order, resolves each attachment's geometry, and
-//!   emits one or more `RenderCommand`s — with clipping (6e) and
-//!   batching (6g) wired in as those sub-phases land.
+//!   emits one or more `RenderCommand`s — with clipping and
+//!   command batching wired in.
 //!
 //! **No GPU / windowing deps.** `TextureId` is a newtype over `u32`
 //! (the atlas page index); the downstream renderer maps it to whatever
@@ -116,10 +116,35 @@ impl RenderCommand {
         self.indices.len()
     }
 
+    /// World-space axis-aligned bounding box of this command's vertices as
+    /// `(x_min, x_max, y_min, y_max)`. Returns `None` for an empty command.
+    ///
+    /// Useful for cull tests, for degenerate-command detection, and for
+    /// diagnostic tools that want a quick per-command summary.
+    #[must_use]
+    pub fn position_bounds(&self) -> Option<(f32, f32, f32, f32)> {
+        let n = self.num_vertices();
+        if n == 0 {
+            return None;
+        }
+        let mut xmin = f32::INFINITY;
+        let mut xmax = f32::NEG_INFINITY;
+        let mut ymin = f32::INFINITY;
+        let mut ymax = f32::NEG_INFINITY;
+        for i in 0..n {
+            let x = self.positions[i * 2];
+            let y = self.positions[i * 2 + 1];
+            xmin = xmin.min(x);
+            xmax = xmax.max(x);
+            ymin = ymin.min(y);
+            ymax = ymax.max(y);
+        }
+        Some((xmin, xmax, ymin, ymax))
+    }
+
     /// Empty command with the given `blend_mode` / `texture` and
     /// `num_vertices` / `num_indices` reserved but uninitialised.
-    /// Used by the walker to allocate command storage before filling.
-    #[allow(dead_code)] // Used by 6c walker; unit-tested here in 6a.
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn with_capacity(
         num_vertices: usize,
@@ -144,9 +169,9 @@ impl RenderCommand {
 /// truncating `f32 -> u8` cast (no round-to-nearest, matches C++
 /// `static_cast<uint8_t>`).
 ///
-/// Used by the `SkeletonRenderer` walker (6c) to produce
-/// `RenderCommand::colors` and `RenderCommand::dark_colors`.
-#[allow(dead_code)] // Used by 6c walker; unit-tested here in 6a.
+/// Used by the render walker to populate `RenderCommand::colors` and
+/// `RenderCommand::dark_colors`.
+#[allow(dead_code)]
 #[must_use]
 #[inline]
 pub(crate) fn pack_color(r: f32, g: f32, b: f32, a: f32) -> u32 {

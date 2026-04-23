@@ -27,9 +27,9 @@
 
 //! Skeleton-loading infrastructure shared by format-specific loaders.
 //!
-//! Phase 1b exposes the [`AttachmentLoader`] trait and the default
-//! [`AtlasAttachmentLoader`] implementation. The binary loader that drives
-//! them lands in Phase 1c.
+//! Exposes the [`AttachmentLoader`] trait, the default
+//! [`AtlasAttachmentLoader`] implementation, and the [`SkeletonBinary`]
+//! loader for `.skel` files.
 
 pub mod attachment_loader;
 pub mod binary;

@@ -38,7 +38,7 @@ use crate::data::{BoneData, BoneId, Inherit};
 /// field-for-field, with one adjustment: parent/children are stored as
 /// [`BoneId`] indices rather than pointers so the skeleton can own a flat
 /// `Vec<Bone>`. Every field is public because `Skeleton`, the constraint
-/// solvers (Phase 5), and the animation apply path (Phase 3) all need direct
+/// solvers, and the animation apply path all need direct
 /// read/write access — Rust's `pub` fields play the role of `spine-cpp`'s
 /// long list of `friend class` declarations.
 #[derive(Debug, Clone)]
@@ -104,7 +104,7 @@ impl Bone {
     ///
     /// Matches `spine::Bone::Bone(BoneData &, Skeleton &, Bone *)` followed by
     /// `setToSetupPose()` from `spine-cpp`. World-space fields are zeroed —
-    /// `Skeleton::update_world_transform` (Phase 2d) is responsible for
+    /// `Skeleton::update_world_transform` is responsible for
     /// populating them before callers inspect `a/b/c/d/world_x/world_y`.
     #[must_use]
     pub fn new(data: &BoneData) -> Self {

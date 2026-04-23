@@ -36,6 +36,23 @@
 use crate::data::AttachmentId;
 use crate::math::Color;
 
+/// Index constants for the 8-float `vertex_offset` / `uvs` arrays on a
+/// `RegionAttachment`. Memory layout matches spine-cpp: bottom-left,
+/// upper-left, upper-right, bottom-right, each with an (x, y) pair.
+///
+/// Exposed so the render walker can index into the same arrays using the
+/// same names.
+pub mod quad_corner {
+    pub const BLX: usize = 0;
+    pub const BLY: usize = 1;
+    pub const ULX: usize = 2;
+    pub const ULY: usize = 3;
+    pub const URX: usize = 4;
+    pub const URY: usize = 5;
+    pub const BRX: usize = 6;
+    pub const BRY: usize = 7;
+}
+
 /// Kind tag for an [`Attachment`]. Useful when the concrete variant has
 /// already been resolved elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -266,16 +283,7 @@ impl RegionAttachment {
     /// `Sequence` cycles the region). If `region` is `None`, only the UVs
     /// are reset to a unit square.
     pub fn update_region(&mut self) {
-        // Indices into the 8-float `vertex_offset` / `uvs` arrays. Layout
-        // matches spine-cpp: BL, UL, UR, BR in memory order.
-        const BLX: usize = 0;
-        const BLY: usize = 1;
-        const ULX: usize = 2;
-        const ULY: usize = 3;
-        const URX: usize = 4;
-        const URY: usize = 5;
-        const BRX: usize = 6;
-        const BRY: usize = 7;
+        use quad_corner::{BLX, BLY, BRX, BRY, ULX, ULY, URX, URY};
 
         let Some(region) = self.region.as_ref() else {
             self.uvs[BLX] = 0.0;
@@ -403,8 +411,8 @@ impl MeshAttachment {
     /// atlas-packing offset/crop math exactly.
     ///
     /// Called at load time (so stored `uvs` are valid for the initial
-    /// region) and will be called again by the renderer when a
-    /// `Sequence` cycles the active region (Phase 6d/f).
+    /// region) and again by the renderer when a `Sequence` cycles the
+    /// active region.
     pub fn update_region(&mut self) {
         if self.uvs.len() != self.region_uvs.len() {
             self.uvs.resize(self.region_uvs.len(), 0.0);

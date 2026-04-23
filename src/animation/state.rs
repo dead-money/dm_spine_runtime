@@ -31,17 +31,6 @@
 //! a slab (`HashMap<EntryId, TrackEntry>`) instead of spine-cpp's object
 //! pool so back-pointers (`mixing_from` / `mixing_to` / `next` /
 //! `previous`) are typed index handles rather than raw pointers.
-//!
-//! # Sub-phases
-//!
-//! Landing this port incrementally:
-//! - **4a** (current): `TrackEntry` data shape + entry slab + single-track
-//!   `set_animation` / `update` / `apply` that matches Phase 3 semantics.
-//! - **4b**: multi-track, queuing via `add_animation`, `clear_track(s)`.
-//! - **4c**: mixing (`apply_mixing_from`, `update_mixing_from`).
-//! - **4d**: `compute_hold` / `timeline_mode` + specialised rotate /
-//!   attachment applies.
-//! - **4e**: event queue, per-entry listeners, empty animations.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -134,8 +123,7 @@ pub struct TrackEntry {
     /// `mix_time / mix_duration >= mix_attachment_threshold`. Default 0.
     pub mix_attachment_threshold: f32,
     /// Attachment timelines on the mixing-in entry don't fire when
-    /// `alpha < alpha_attachment_threshold`. Default 0. (Only read by
-    /// the specialised attachment apply path in Phase 4d.)
+    /// `alpha < alpha_attachment_threshold`. Default 0.
     pub alpha_attachment_threshold: f32,
     /// `DrawOrder` timelines for the mixing-out entry don't fire if
     /// `mix_time / mix_duration >= mix_draw_order_threshold`. Default 0.
@@ -163,13 +151,13 @@ pub struct TrackEntry {
     pub mix_blend: MixBlend,
 
     /// Per-timeline classification for mixing-from (`Subsequent` / `First` /
-    /// `HoldSubsequent` / `HoldFirst` / `HoldMix`). Populated by Phase 4d's
-    /// `compute_hold`; empty until then.
+    /// `HoldSubsequent` / `HoldFirst` / `HoldMix`). Populated by
+    /// `compute_hold` whenever the track topology changes.
     pub timeline_mode: Vec<TimelineMode>,
     /// When `timeline_mode[i] == HoldMix`, the entry whose fade-out
     /// alpha contributes to timeline `i`'s hold blend.
     pub timeline_hold_mix: Vec<Option<EntryId>>,
-    /// Scratch buffer for the shortest-rotation-path mixing (Phase 4d).
+    /// Scratch buffer for the shortest-rotation-path mixing.
     pub timelines_rotation: Vec<f32>,
 }
 
@@ -280,9 +268,8 @@ impl TrackEntry {
 
 /// Multi-track animation driver.
 ///
-/// Phase 4a's shape: slab-backed entries, single `set_animation` call
-/// that replaces whatever was on the track. Crossfade (4c) and queueing
-/// (4b) layer on top.
+/// Slab-backed entries with multi-track support, queuing via `add_animation`,
+/// and crossfade via the `AnimationStateData` mix table.
 #[derive(Debug)]
 pub struct AnimationState {
     data: Arc<AnimationStateData>,
@@ -296,7 +283,7 @@ pub struct AnimationState {
     /// Global time scaling — multiplies every track's `delta` in `update`.
     pub time_scale: f32,
     /// `true` when the track topology changed since the last `apply`;
-    /// triggers `compute_hold` to re-classify every timeline (Phase 4d).
+    /// triggers `compute_hold` to re-classify every timeline.
     animations_changed: bool,
     /// Lifecycle + keyframe events queued by `update`/`apply`, drained by
     /// callers through [`Self::drain_events`].
@@ -420,7 +407,7 @@ impl AnimationState {
     ///   without marking an interrupt — matches spine-cpp's "don't mix
     ///   from an entry that was never applied" rule.
     /// - Otherwise the entry is chained as `mixing_from` on the new entry
-    ///   so [`apply`][Self::apply] crossfades between them (Phase 4c).
+    ///   so [`apply`][Self::apply] crossfades between them.
     ///
     /// Returns an [`EntryId`] the caller can keep to mutate per-entry
     /// settings via [`Self::entry_mut`].
@@ -756,7 +743,7 @@ impl AnimationState {
     /// - Promotion of queued `next` entries when their delay elapses
     ///   (chains `mix_time` advances on any `mixing_from` on the new current).
     /// - Track clearing when `track_end` is reached.
-    /// - Mixing-from decay via `update_mixing_from` (Phase 4c fills the body).
+    /// - Mixing-from decay via `update_mixing_from`.
     #[allow(clippy::too_many_lines)] // matches spine-cpp's single-function shape
     pub fn update(&mut self, delta: f32) {
         let delta = delta * self.time_scale;
@@ -1377,16 +1364,15 @@ impl AnimationState {
     /// from any `mixing_from` chain as needed, and pushing event firings
     /// into `events`.
     ///
-    /// Ports `spine::AnimationState::apply`. Phase 4c form: simple
-    /// mixing path — every timeline on the outgoing entry applies with
-    /// `MixBlend::Setup` and `alpha * (1 - mix_progress)`. Phase 4d
-    /// introduces the per-timeline `timeline_mode` specialisation
-    /// (HoldSubsequent/HoldFirst/HoldMix) for cleaner crossfades when
+    /// Ports `spine::AnimationState::apply`. Uses the per-timeline
+    /// `timeline_mode` specialisation (`Subsequent` / `First` /
+    /// `HoldSubsequent` / `HoldFirst` / `HoldMix`) for crossfades when
     /// lower tracks also key the same property.
+    ///
     /// Apply the skeleton's current track state, draining captured
     /// keyframe events and lifecycle events into the internal queue (poll
     /// via [`Self::drain_events`]). The `events` out-param is retained
-    /// for callers that want the raw Phase 3 event list; populated only
+    /// for callers that want the raw keyframe event list; populated only
     /// with per-entry firings, not `Complete`/`Start`/etc. state events.
     #[allow(clippy::too_many_lines)]
     pub fn apply(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) {

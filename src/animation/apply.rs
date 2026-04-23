@@ -84,14 +84,12 @@ impl Timeline {
     /// Write this timeline's contribution to `skeleton` for the given time.
     ///
     /// `last_time` is the previous-frame time (only used by discrete event
-    /// timelines — Phase 3c). `events` is the out-param for event firings.
+    /// timelines). `events` is the out-param for event firings.
     /// `alpha` scales the timeline's influence against the pose baseline
     /// selected by `blend`. `direction` matters for mixing crossfades.
     ///
     /// Ports the dispatch table at `spine::Animation::apply`, which in turn
-    /// delegates to each subclass's override. All variants are handled
-    /// incrementally as Phase 3 progresses — variants that haven't been
-    /// ported yet are a no-op here.
+    /// delegates to each subclass's override.
     #[allow(clippy::too_many_arguments)] // matches spine-cpp's apply signature
     pub fn apply(
         &self,

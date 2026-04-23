@@ -48,14 +48,13 @@ pub struct Slot {
     pub dark_color: Option<Color>,
 
     /// Resolved attachment for the current skin, or `None` for an empty slot.
-    /// Set by `Skeleton::set_slots_to_setup_pose` (Phase 2e) via the active
-    /// skin + default-skin fallback; animations change it through
-    /// `AttachmentTimeline` (Phase 3).
+    /// Set by `Skeleton::set_slots_to_setup_pose` via the active skin +
+    /// default-skin fallback; animations change it through `AttachmentTimeline`.
     pub attachment: Option<AttachmentId>,
 
     /// Counter used by `AttachmentTimeline` to invalidate cached deform data
     /// when the attachment changes mid-animation. Ported verbatim from
-    /// `spine-cpp`; Phase 3 consumes it.
+    /// `spine-cpp`.
     pub attachment_state: i32,
 
     /// Active sequence frame for attachments that carry a [`Sequence`]. `-1`
@@ -73,7 +72,7 @@ impl Slot {
     /// Build a runtime slot initialised to `data`'s setup pose.
     ///
     /// Attachment resolution requires the active skin and so is not done
-    /// here — `Skeleton::set_slots_to_setup_pose` (Phase 2e) handles it.
+    /// here — `Skeleton::set_slots_to_setup_pose` handles it.
     #[must_use]
     pub fn new(data: &SlotData) -> Self {
         Self {

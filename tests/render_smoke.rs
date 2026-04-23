@@ -139,29 +139,16 @@ fn renders_every_example_rig_at_setup_pose() {
                 assert!(v.is_finite(), "{rig}: cmd[{i}].uvs[{k}] = {v}");
             }
 
-            // Regression guard against the missing-regions bug: every
-            // attachment we bother emitting must cover some positive area.
-            // A zero-extent bounding box means its vertex offsets were
-            // never populated (the `RegionAttachment::update_region` bug).
-            let n = cmd.num_vertices();
-            let mut xmin = f32::INFINITY;
-            let mut xmax = f32::NEG_INFINITY;
-            let mut ymin = f32::INFINITY;
-            let mut ymax = f32::NEG_INFINITY;
-            for k in 0..n {
-                let x = cmd.positions[k * 2];
-                let y = cmd.positions[k * 2 + 1];
-                xmin = xmin.min(x);
-                xmax = xmax.max(x);
-                ymin = ymin.min(y);
-                ymax = ymax.max(y);
+            // Regression guard against attachments whose `vertex_offset` or
+            // world vertices never got populated — those emit valid-looking
+            // commands whose quads have collapsed to a single point.
+            if let Some((xmin, xmax, ymin, ymax)) = cmd.position_bounds() {
+                let degenerate = (xmax - xmin).abs() < 1e-4 && (ymax - ymin).abs() < 1e-4;
+                assert!(
+                    !degenerate,
+                    "{rig}: cmd[{i}] has zero-area bbox ({xmin},{ymin})..({xmax},{ymax})",
+                );
             }
-            let degenerate = (xmax - xmin).abs() < 1e-4 && (ymax - ymin).abs() < 1e-4;
-            assert!(
-                !degenerate,
-                "{rig}: cmd[{i}] has zero-area bbox ({xmin},{ymin})..({xmax},{ymax}) — \
-                 attachment offsets likely not populated"
-            );
         }
 
         total_commands += cmds.len();

@@ -51,7 +51,7 @@ pub enum Inherit {
 
 /// Immutable setup-pose bone, owned by [`SkeletonData`].
 ///
-/// The `Skeleton` runtime instance (Phase 2) holds mutable `Bone` snapshots
+/// The `Skeleton` runtime instance holds mutable `Bone` snapshots
 /// initialised from this data.
 ///
 /// [`SkeletonData`]: crate::data::SkeletonData

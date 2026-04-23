@@ -26,7 +26,7 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Setup-pose data for the four constraint kinds: IK, Transform, Path,
-//! Physics. The actual solvers land in Phase 5.
+//! Physics. The runtime solvers live in [`crate::skeleton`].
 
 use crate::data::{
     BoneId, IkConstraintId, PathConstraintId, PhysicsConstraintId, SlotId, TransformConstraintId,

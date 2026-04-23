@@ -38,8 +38,8 @@ use crate::data::{
 
 /// One entry in the per-skeleton update order.
 ///
-/// Built by `Skeleton::update_cache` (Phase 2c) and consumed by
-/// `Skeleton::update_world_transform` (Phase 2d). Ordering reflects the
+/// Built by `Skeleton::update_cache` and consumed by
+/// `Skeleton::update_world_transform`. Ordering reflects the
 /// constraint dependency graph: a bone appears after every constraint it
 /// depends on and before every constraint that reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

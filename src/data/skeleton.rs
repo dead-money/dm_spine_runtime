@@ -46,7 +46,7 @@ pub struct SkeletonData {
     pub hash: String,
 
     /// Bones sorted with parents before children; the root bone is always
-    /// first. This ordering is relied on by `Skeleton::update_cache` (Phase 2).
+    /// first. This ordering is relied on by `Skeleton::update_cache`.
     pub bones: Vec<BoneData>,
     /// Slots in setup-pose draw order.
     pub slots: Vec<SlotData>,

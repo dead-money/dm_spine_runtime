@@ -54,8 +54,8 @@ use crate::data::EventId;
 /// [`AnimationEvent`][crate::data::AnimationEvent].
 ///
 /// Pushed into the `events` out-param by [`Timeline::Event`][crate::data::Timeline::Event]
-/// during `Animation::apply`. Phase 4 wires these into `AnimationState`'s
-/// listener queue.
+/// during `Animation::apply`. [`AnimationState`] also drains these into its
+/// lifecycle event queue.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// Index into [`SkeletonData::events`][crate::data::SkeletonData::events].

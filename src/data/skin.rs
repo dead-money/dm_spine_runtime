@@ -26,9 +26,9 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Named collection of attachments plus skin-specific bone / constraint
-//! membership. A skeleton applies one skin at a time (Spine supports merging
-//! multiple skins into a "virtual" skin at runtime — that composition will
-//! happen on the `Skeleton` side in Phase 2).
+//! membership. A skeleton applies one skin at a time; Spine also supports
+//! merging multiple skins into a "virtual" skin at runtime via the
+//! `Skeleton` API.
 
 use std::collections::HashMap;
 

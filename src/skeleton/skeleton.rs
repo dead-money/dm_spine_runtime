@@ -64,7 +64,7 @@ pub struct Skeleton {
 
     /// Current render-order permutation over `slots`. `draw_order[i]` is the
     /// slot drawn i-th from the back. Reset to `0..slots.len()` on setup pose;
-    /// `DrawOrderTimeline` (Phase 3) permutes it per animation.
+    /// `DrawOrderTimeline` permutes it per animation.
     pub draw_order: Vec<SlotId>,
 
     /// Currently applied skin, or `None`. Attachment resolution walks the
@@ -711,8 +711,8 @@ impl Skeleton {
 
     // ----- pose pipeline ---------------------------------------------------
 
-    /// Advance simulation time by `delta` seconds. Physics constraints
-    /// (Phase 5) read `time` on update; in Phase 2 this is the entire body.
+    /// Advance simulation time by `delta` seconds. Physics constraints read
+    /// `time` on [`Self::update_world_transform`] to compute per-step deltas.
     pub fn update(&mut self, delta: f32) {
         self.time += delta;
     }
@@ -721,8 +721,8 @@ impl Skeleton {
     ///
     /// Literal port of `spine::Skeleton::updateWorldTransform(Physics)`:
     /// first copies every bone's local TRS into its "applied" counterpart,
-    /// then dispatches each cache entry. Constraints no-op in Phase 2 —
-    /// Phase 5 will replace their stubs with real solvers.
+    /// then dispatches each cache entry, running bone transforms and
+    /// constraint solvers in dependency order.
     pub fn update_world_transform(&mut self, physics: Physics) {
         let physics_arg = physics;
         for bone in &mut self.bones {

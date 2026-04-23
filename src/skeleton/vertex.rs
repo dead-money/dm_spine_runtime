@@ -30,9 +30,8 @@
 //! slot's bone (unweighted) or a weighted sum over multiple bones
 //! (weighted), optionally adding the slot's per-vertex deform offsets.
 //!
-//! Used by mesh rendering (Phase 6a+), path constraints (Phase 5c),
-//! bounding-box hit tests (Phase 6f), and clipping-polygon construction
-//! (Phase 6e). Literal port of
+//! Used by mesh rendering, path constraints, bounding-box hit tests, and
+//! clipping-polygon construction. Literal port of
 //! `spine-cpp/src/spine/VertexAttachment.cpp::computeWorldVertices`.
 
 use crate::data::{SlotId, VertexData};

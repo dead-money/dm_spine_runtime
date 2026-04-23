@@ -29,8 +29,6 @@
 //!
 //! Each struct mirrors the private fields of the matching class in
 //! `spine-cpp/include/spine/{Ik,Transform,Path,Physics}Constraint.h`.
-//! Solvers are stubbed out in Phase 2 — `update` is a no-op — so the bodies
-//! land in Phase 5 without any `Skeleton` API changes.
 
 use crate::data::{
     BoneId, IkConstraintData, IkConstraintId, PathConstraintData, PathConstraintId,
@@ -41,7 +39,7 @@ use crate::data::{
 // --- IkConstraint ----------------------------------------------------------
 
 /// Runtime-mutable IK constraint. Animations overwrite `mix`, `softness`, and
-/// `bend_direction`; the solver (Phase 5) reads them to pose `bones` toward
+/// `bend_direction`; the solver reads them to pose `bones` toward
 /// `target`.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)] // domain flags, not API flags
@@ -75,8 +73,8 @@ impl IkConstraint {
         }
     }
 
-    /// Solver stub. Phase 5 replaces this with the port of
-    /// `spine::IkConstraint::update`.
+    /// No-op placeholder. Solving happens inside
+    /// `Skeleton::update_world_transform`; see `spine::IkConstraint::update`.
     pub fn update(&mut self) {}
 
     /// Port of `spine::IkConstraint::setToSetupPose`. Resets every
@@ -206,7 +204,7 @@ impl PathConstraint {
 // --- PhysicsConstraint ------------------------------------------------------
 
 /// Runtime-mutable physics constraint (new in Spine 4.2). Simulates damped
-/// inertia on one bone; solver lives in Phase 5.
+/// inertia on one bone.
 #[derive(Debug, Clone)]
 pub struct PhysicsConstraint {
     pub data_index: PhysicsConstraintId,
