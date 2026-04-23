@@ -266,6 +266,12 @@ impl AttachmentLoader for AtlasAttachmentLoader<'_> {
         r.path = path.to_string();
         if let Some(seq) = sequence {
             self.load_sequence(path, seq);
+            // Seed the attachment with the first sequence frame so
+            // `update_region` has something to size against. The runtime
+            // overrides `region` when the sequence cycles at apply time.
+            if let Some(Some(first)) = seq.regions.first() {
+                r.region = Some(first.clone());
+            }
         } else {
             r.region = Some(self.resolve_region(slot_name, attachment_name, path)?);
         }
@@ -284,6 +290,12 @@ impl AttachmentLoader for AtlasAttachmentLoader<'_> {
         m.path = path.to_string();
         if let Some(seq) = sequence {
             self.load_sequence(path, seq);
+            // Same seeding logic as new_region_attachment: gives
+            // `update_region` / `compute_world_vertices` a reasonable
+            // default UV frame for setup pose before the sequence cycles.
+            if let Some(Some(first)) = seq.regions.first() {
+                m.region = Some(first.clone());
+            }
         } else {
             m.region = Some(self.resolve_region(slot_name, attachment_name, path)?);
         }
@@ -408,18 +420,22 @@ region02
         sequence.digits = 2;
         sequence.setup_index = 0;
 
-        // Pass the sequence in; the loader should populate its `regions` and
-        // leave the attachment's direct region as None.
+        // Pass the sequence in; the loader should populate its `regions`
+        // AND seed the attachment's `region` with the first frame so
+        // `update_region` has something to size against.
         let attachment = loader
             .new_region_attachment("default", "slot", "region", "region", Some(&mut sequence))
             .unwrap();
         let Attachment::Region(r) = attachment else {
             panic!("expected Region");
         };
-        assert!(r.region.is_none(), "base region should be unresolved");
         assert_eq!(sequence.regions.len(), 2);
         assert!(sequence.regions[0].is_some());
         assert!(sequence.regions[1].is_some());
+        assert!(
+            r.region.is_some(),
+            "base region should be seeded from sequence.regions[0]"
+        );
     }
 
     #[test]

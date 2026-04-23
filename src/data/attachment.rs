@@ -254,6 +254,89 @@ impl RegionAttachment {
             region: None,
         }
     }
+
+    /// Recompute `vertex_offset` (the four corners in attachment-local
+    /// space) and `uvs` (atlas-space coords) from the attachment's
+    /// `x`/`y`/`rotation`/`scale`/`width`/`height` and its currently
+    /// resolved `region`. Literal port of
+    /// `spine-cpp/src/spine/RegionAttachment.cpp::updateRegion`.
+    ///
+    /// Must be called after the attachment's pose / region fields are
+    /// populated (at load time by the binary loader, and again if a
+    /// `Sequence` cycles the region). If `region` is `None`, only the UVs
+    /// are reset to a unit square.
+    pub fn update_region(&mut self) {
+        // Indices into the 8-float `vertex_offset` / `uvs` arrays. Layout
+        // matches spine-cpp: BL, UL, UR, BR in memory order.
+        const BLX: usize = 0;
+        const BLY: usize = 1;
+        const ULX: usize = 2;
+        const ULY: usize = 3;
+        const URX: usize = 4;
+        const URY: usize = 5;
+        const BRX: usize = 6;
+        const BRY: usize = 7;
+
+        let Some(region) = self.region.as_ref() else {
+            self.uvs[BLX] = 0.0;
+            self.uvs[BLY] = 0.0;
+            self.uvs[ULX] = 0.0;
+            self.uvs[ULY] = 1.0;
+            self.uvs[URX] = 1.0;
+            self.uvs[URY] = 1.0;
+            self.uvs[BRX] = 1.0;
+            self.uvs[BRY] = 0.0;
+            return;
+        };
+
+        let region_scale_x = self.width / region.original_width * self.scale_x;
+        let region_scale_y = self.height / region.original_height * self.scale_y;
+        let local_x = -self.width / 2.0 * self.scale_x + region.offset_x * region_scale_x;
+        let local_y = -self.height / 2.0 * self.scale_y + region.offset_y * region_scale_y;
+        let local_x2 = local_x + region.width * region_scale_x;
+        let local_y2 = local_y + region.height * region_scale_y;
+
+        let rot_rad = self.rotation.to_radians();
+        let cos = rot_rad.cos();
+        let sin = rot_rad.sin();
+        let local_x_cos = local_x * cos + self.x;
+        let local_x_sin = local_x * sin;
+        let local_y_cos = local_y * cos + self.y;
+        let local_y_sin = local_y * sin;
+        let local_x2_cos = local_x2 * cos + self.x;
+        let local_x2_sin = local_x2 * sin;
+        let local_y2_cos = local_y2 * cos + self.y;
+        let local_y2_sin = local_y2 * sin;
+
+        self.vertex_offset[BLX] = local_x_cos - local_y_sin;
+        self.vertex_offset[BLY] = local_y_cos + local_x_sin;
+        self.vertex_offset[ULX] = local_x_cos - local_y2_sin;
+        self.vertex_offset[ULY] = local_y2_cos + local_x_sin;
+        self.vertex_offset[URX] = local_x2_cos - local_y2_sin;
+        self.vertex_offset[URY] = local_y2_cos + local_x2_sin;
+        self.vertex_offset[BRX] = local_x2_cos - local_y_sin;
+        self.vertex_offset[BRY] = local_y_cos + local_x2_sin;
+
+        if region.degrees == 90 {
+            self.uvs[URX] = region.u;
+            self.uvs[URY] = region.v2;
+            self.uvs[BRX] = region.u;
+            self.uvs[BRY] = region.v;
+            self.uvs[BLX] = region.u2;
+            self.uvs[BLY] = region.v;
+            self.uvs[ULX] = region.u2;
+            self.uvs[ULY] = region.v2;
+        } else {
+            self.uvs[ULX] = region.u;
+            self.uvs[ULY] = region.v2;
+            self.uvs[URX] = region.u;
+            self.uvs[URY] = region.v;
+            self.uvs[BRX] = region.u2;
+            self.uvs[BRY] = region.v;
+            self.uvs[BLX] = region.u2;
+            self.uvs[BLY] = region.v2;
+        }
+    }
 }
 
 // --- MeshAttachment ---------------------------------------------------------

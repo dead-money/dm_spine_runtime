@@ -85,6 +85,17 @@ impl SkeletonRenderer {
     /// the 6c phase covers the [`RegionAttachment`] branch; meshes
     /// (6d) and clipping (6e) follow.
     pub fn render(&mut self, skeleton: &Skeleton) -> &[RenderCommand] {
+        self.render_unbatched(skeleton);
+        self.batch_commands();
+        &self.render_commands
+    }
+
+    /// Walk `skeleton`'s draw-order and emit one [`RenderCommand`] per
+    /// visible attachment, **without** running the adjacency batcher. The
+    /// resulting slice in [`Self::commands`] is in one-to-one correspondence
+    /// with the drawable slots — useful for diagnostics and custom
+    /// downstream batching strategies.
+    pub fn render_unbatched(&mut self, skeleton: &Skeleton) -> &[RenderCommand] {
         self.render_commands.clear();
         self.world_vertices.clear();
 
@@ -123,7 +134,6 @@ impl SkeletonRenderer {
             self.clipping.clip_end_on(slot_id);
         }
         self.clipping.clip_end();
-        self.batch_commands();
         &self.render_commands
     }
 

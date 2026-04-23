@@ -698,6 +698,12 @@ impl<'loader> SkeletonBinary<'loader> {
                     reg.height = height;
                     reg.color = color;
                     reg.sequence = sequence;
+                    // spine-cpp's binary loader calls updateRegion once the
+                    // pose fields + resolved region are in place, so the
+                    // cached corner offsets and atlas UVs are ready for
+                    // rendering. Without this, every region renders as a
+                    // degenerate quad (all four vertices at the bone origin).
+                    reg.update_region();
                 }
                 Ok(attachment)
             }

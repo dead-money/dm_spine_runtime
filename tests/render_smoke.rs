@@ -111,7 +111,10 @@ fn renders_every_example_rig_at_setup_pose() {
         sk.update_world_transform(Physics::None);
 
         let mut renderer = SkeletonRenderer::new();
-        let cmds = renderer.render(&sk);
+        // Render unbatched so degenerate-command regressions surface per-slot
+        // — the batcher would otherwise merge a zero-area slot into an
+        // adjacent real command and hide the problem.
+        let cmds = renderer.render_unbatched(&sk);
 
         for (i, cmd) in cmds.iter().enumerate() {
             assert_eq!(
@@ -135,6 +138,30 @@ fn renders_every_example_rig_at_setup_pose() {
             for (k, v) in cmd.uvs.iter().enumerate() {
                 assert!(v.is_finite(), "{rig}: cmd[{i}].uvs[{k}] = {v}");
             }
+
+            // Regression guard against the missing-regions bug: every
+            // attachment we bother emitting must cover some positive area.
+            // A zero-extent bounding box means its vertex offsets were
+            // never populated (the `RegionAttachment::update_region` bug).
+            let n = cmd.num_vertices();
+            let mut xmin = f32::INFINITY;
+            let mut xmax = f32::NEG_INFINITY;
+            let mut ymin = f32::INFINITY;
+            let mut ymax = f32::NEG_INFINITY;
+            for k in 0..n {
+                let x = cmd.positions[k * 2];
+                let y = cmd.positions[k * 2 + 1];
+                xmin = xmin.min(x);
+                xmax = xmax.max(x);
+                ymin = ymin.min(y);
+                ymax = ymax.max(y);
+            }
+            let degenerate = (xmax - xmin).abs() < 1e-4 && (ymax - ymin).abs() < 1e-4;
+            assert!(
+                !degenerate,
+                "{rig}: cmd[{i}] has zero-area bbox ({xmin},{ymin})..({xmax},{ymax}) — \
+                 attachment offsets likely not populated"
+            );
         }
 
         total_commands += cmds.len();
