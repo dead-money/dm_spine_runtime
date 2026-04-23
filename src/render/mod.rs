@@ -49,8 +49,10 @@
 
 use crate::data::BlendMode;
 
+pub mod clipping;
 pub mod renderer;
 
+pub use clipping::SkeletonClipping;
 pub use renderer::SkeletonRenderer;
 
 /// Opaque texture identifier emitted on every [`RenderCommand`]. Wraps

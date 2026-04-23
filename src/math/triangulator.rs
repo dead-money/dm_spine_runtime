@@ -63,7 +63,7 @@
 /// optionally [`Self::decompose`] to merge those triangles back into the
 /// smallest set of convex polygons — used by `SkeletonClipping` to minimise
 /// fragmentation when clipping against skeleton polygons.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Triangulator {
     // Scratch state, reused across calls to avoid reallocation.
     triangles: Vec<u16>,

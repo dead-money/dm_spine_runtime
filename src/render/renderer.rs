@@ -35,6 +35,7 @@
 
 use crate::data::attachment::TextureRegionRef;
 use crate::data::{Attachment, MeshAttachment, RegionAttachment};
+use crate::render::clipping::SkeletonClipping;
 use crate::render::{pack_color, RenderCommand, TextureId};
 use crate::skeleton::{Skeleton, Slot};
 
@@ -56,8 +57,10 @@ pub struct SkeletonRenderer {
     /// Accumulator for the per-slot commands emitted during a single
     /// `render` call. Cleared at the start of every call.
     render_commands: Vec<RenderCommand>,
-    // TODO(6e): `clipping: SkeletonClipping` scratch buffers land
-    // here once the clipper is ported.
+    /// Triangle-polygon clipper. Stores per-region scratch state
+    /// between `clip_start` and `clip_end`; active for every
+    /// `ClippingAttachment`-bounded slot range (Phase 6e).
+    clipping: SkeletonClipping,
 }
 
 impl SkeletonRenderer {
@@ -70,6 +73,7 @@ impl SkeletonRenderer {
             world_vertices: Vec::new(),
             quad_indices: [0, 1, 2, 2, 3, 0],
             render_commands: Vec::new(),
+            clipping: SkeletonClipping::new(),
         }
     }
 
@@ -87,6 +91,7 @@ impl SkeletonRenderer {
         for &slot_id in &skeleton.draw_order {
             let slot = &skeleton.slots[slot_id.index()];
             let Some(attachment_id) = slot.attachment else {
+                self.clipping.clip_end_on(slot_id);
                 continue;
             };
 
@@ -98,6 +103,7 @@ impl SkeletonRenderer {
             let attachment = &skeleton.data.attachments[attachment_id.index()];
             let is_clipping = matches!(attachment, Attachment::Clipping(_));
             if !is_clipping && (slot.color.a == 0.0 || !bone_active) {
+                self.clipping.clip_end_on(slot_id);
                 continue;
             }
 
@@ -108,12 +114,15 @@ impl SkeletonRenderer {
                 Attachment::Mesh(mesh) => {
                     self.emit_mesh(skeleton, slot_id, slot, mesh);
                 }
-                // Phase 6e (Clipping): hook clipStart/clipEnd here.
+                Attachment::Clipping(_) => {
+                    self.clipping.clip_start(skeleton, slot_id);
+                    continue;
+                }
                 _ => {}
             }
-            // Phase 6e: clipper.clipEnd(slot) at end of every slot iteration.
+            self.clipping.clip_end_on(slot_id);
         }
-        // Phase 6e: clipper.clipEnd() at end of frame.
+        self.clipping.clip_end();
         // Phase 6g: batch same-(texture, blend, color) runs.
 
         &self.render_commands
@@ -131,23 +140,13 @@ impl SkeletonRenderer {
         slot: &Slot,
         region: &RegionAttachment,
     ) {
-        // Attachment alpha 0 → skip (matches spine-cpp).
         if region.color.a == 0.0 {
             return;
         }
-
-        // Resolve active region + uv buffer. When a `Sequence` is
-        // present the active frame is chosen from the slot's
-        // `sequence_index`; otherwise the attachment's stored
-        // region/UVs are used directly.
         let Some((texture, uvs)) = resolve_region_texture(region, slot.sequence_index) else {
-            // No resolved region (loader couldn't match this
-            // attachment to an atlas page) — skip silently.
             return;
         };
 
-        // Transform the 4 stored corner offsets by the slot's bone
-        // world matrix. Literal port of `computeWorldVertices`.
         let bone_id = skeleton.data.slots[slot_id.index()].bone;
         let bone = &skeleton.bones[bone_id.index()];
         let (wx, wy) = (bone.world_x, bone.world_y);
@@ -165,41 +164,22 @@ impl SkeletonRenderer {
             off[URX] * c + off[URY] * d + wy,
         ];
 
-        // Blend skeleton × slot × attachment colors (premultiplied).
-        let sc = skeleton.color;
-        let scol = slot.color;
-        let acol = region.color;
-        let color = pack_color(
-            sc.r * scol.r * acol.r,
-            sc.g * scol.g * acol.g,
-            sc.b * scol.b * acol.b,
-            sc.a * scol.a * acol.a,
-        );
-        let dark_color = if let Some(dark) = slot.dark_color {
-            // spine-cpp forces alpha to 1.0 in the dark-color pack
-            // (the upper byte is `0xff`).
-            pack_color(dark.r, dark.g, dark.b, 1.0)
-        } else {
-            0xff00_0000
-        };
+        let color = pack_slot_colors(skeleton, slot, region.color);
+        let dark_color = pack_dark_color(slot);
+        let blend = skeleton.data.slots[slot_id.index()].blend_mode;
 
-        // UVs are 8 floats BR/BL/UL/UR same as positions.
-        let mut cmd = RenderCommand::with_capacity(
-            4,
-            6,
-            skeleton.data.slots[slot_id.index()].blend_mode,
-            texture,
-        );
-        cmd.positions.copy_from_slice(&v);
-        cmd.uvs.copy_from_slice(&uvs);
-        for c in &mut cmd.colors {
-            *c = color;
-        }
-        for c in &mut cmd.dark_colors {
-            *c = dark_color;
-        }
-        cmd.indices.copy_from_slice(&self.quad_indices);
-        self.render_commands.push(cmd);
+        // Collect quad indices into a local buffer — can't borrow
+        // `self.quad_indices` while calling `self.push_command`.
+        let indices = [
+            self.quad_indices[0],
+            self.quad_indices[1],
+            self.quad_indices[2],
+            self.quad_indices[3],
+            self.quad_indices[4],
+            self.quad_indices[5],
+        ];
+
+        self.push_command(&v, &uvs, &indices, color, dark_color, blend, texture);
     }
 
     /// Emit a `MeshAttachment` — N-vertex / M-index triangle list.
@@ -240,38 +220,68 @@ impl SkeletonRenderer {
             0,
             2,
         );
-        let num_vertices = world_len / 2;
 
-        let sc = skeleton.color;
-        let scol = slot.color;
-        let acol = mesh.color;
-        let color = pack_color(
-            sc.r * scol.r * acol.r,
-            sc.g * scol.g * acol.g,
-            sc.b * scol.b * acol.b,
-            sc.a * scol.a * acol.a,
-        );
-        let dark_color = if let Some(dark) = slot.dark_color {
-            pack_color(dark.r, dark.g, dark.b, 1.0)
-        } else {
-            0xff00_0000
-        };
+        let color = pack_slot_colors(skeleton, slot, mesh.color);
+        let dark_color = pack_dark_color(slot);
+        let blend = skeleton.data.slots[slot_id.index()].blend_mode;
 
-        let mut cmd = RenderCommand::with_capacity(
-            num_vertices,
-            mesh.triangles.len(),
-            skeleton.data.slots[slot_id.index()].blend_mode,
+        // Re-borrow world_vertices as a fresh slice to satisfy the
+        // borrow checker (push_command takes &mut self).
+        let world_slice = self.world_vertices[..world_len].to_vec();
+        let triangles = mesh.triangles.clone();
+        let uvs = mesh.uvs.clone();
+        self.push_command(
+            &world_slice,
+            &uvs,
+            &triangles,
+            color,
+            dark_color,
+            blend,
             TextureId(region.page_index),
         );
-        cmd.positions.copy_from_slice(&self.world_vertices[..world_len]);
-        cmd.uvs.copy_from_slice(&mesh.uvs);
+    }
+
+    /// Route a triangle list + uvs through the clipper (if active)
+    /// and emit one `RenderCommand` with the final geometry.
+    #[allow(clippy::too_many_arguments)]
+    fn push_command(
+        &mut self,
+        positions: &[f32],
+        uvs: &[f32],
+        indices: &[u16],
+        color: u32,
+        dark_color: u32,
+        blend: crate::data::BlendMode,
+        texture: TextureId,
+    ) {
+        let (positions, uvs, indices) = if self.clipping.is_clipping() {
+            self.clipping.clip_triangles(positions, indices, uvs, 2);
+            if self.clipping.clipped_vertices().is_empty() {
+                return;
+            }
+            (
+                self.clipping.clipped_vertices(),
+                self.clipping.clipped_uvs(),
+                self.clipping.clipped_triangles(),
+            )
+        } else {
+            (positions, uvs, indices)
+        };
+        let num_vertices = positions.len() / 2;
+        let num_indices = indices.len();
+        if num_vertices == 0 || num_indices == 0 {
+            return;
+        }
+        let mut cmd = RenderCommand::with_capacity(num_vertices, num_indices, blend, texture);
+        cmd.positions.copy_from_slice(positions);
+        cmd.uvs.copy_from_slice(uvs);
         for c in &mut cmd.colors {
             *c = color;
         }
         for c in &mut cmd.dark_colors {
             *c = dark_color;
         }
-        cmd.indices.copy_from_slice(&mesh.triangles);
+        cmd.indices.copy_from_slice(indices);
         self.render_commands.push(cmd);
     }
 
@@ -293,6 +303,31 @@ impl SkeletonRenderer {
 impl Default for SkeletonRenderer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pack the skeleton × slot × attachment-color blend into a single
+/// `u32`. Literal port of the `SkeletonRenderer` color math.
+fn pack_slot_colors(skeleton: &Skeleton, slot: &Slot, attachment_color: crate::math::Color) -> u32 {
+    let sc = skeleton.color;
+    let scol = slot.color;
+    let acol = attachment_color;
+    pack_color(
+        sc.r * scol.r * acol.r,
+        sc.g * scol.g * acol.g,
+        sc.b * scol.b * acol.b,
+        sc.a * scol.a * acol.a,
+    )
+}
+
+/// Pack the slot's dark-color (tint-black). Fixed alpha = 1.0 per
+/// spine-cpp. Defaults to `0xff00_0000` when the slot carries no
+/// dark color.
+fn pack_dark_color(slot: &Slot) -> u32 {
+    if let Some(dark) = slot.dark_color {
+        pack_color(dark.r, dark.g, dark.b, 1.0)
+    } else {
+        0xff00_0000
     }
 }
 
