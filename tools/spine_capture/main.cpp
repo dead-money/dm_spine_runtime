@@ -172,7 +172,42 @@ int main(int argc, char **argv) {
 
         // Full constraint pipeline: IK, Transform, Path, Physics all run.
         // Phase 5 goldens diff against this output.
+        if (getenv("DUMP_CACHE")) {
+            skeleton.printUpdateCache();
+        }
+        if (getenv("DUMP_TC")) {
+            Vector<TransformConstraint *> &tcs = skeleton.getTransformConstraints();
+            for (size_t tc_i = 0; tc_i < tcs.size(); ++tc_i) {
+                TransformConstraint *tc = tcs[tc_i];
+                fprintf(stderr, "TC[%zu] name=%s active=%d data.local=%d data.relative=%d "
+                               "mixR=%.6g mixX=%.6g mixY=%.6g mixSX=%.6g mixSY=%.6g mixShY=%.6g "
+                               "offR=%.6g offX=%.6g offY=%.6g bones=[",
+                        tc_i, tc->getData().getName().buffer(),
+                        tc->isActive() ? 1 : 0,
+                        tc->getData().isLocal() ? 1 : 0,
+                        tc->getData().isRelative() ? 1 : 0,
+                        tc->getMixRotate(), tc->getMixX(), tc->getMixY(),
+                        tc->getMixScaleX(), tc->getMixScaleY(), tc->getMixShearY(),
+                        tc->getData().getOffsetRotation(),
+                        tc->getData().getOffsetX(),
+                        tc->getData().getOffsetY());
+                Vector<Bone *> &bs = tc->getBones();
+                for (size_t j = 0; j < bs.size(); ++j) {
+                    fprintf(stderr, "%s%s", j ? "," : "", bs[j]->getData().getName().buffer());
+                }
+                fprintf(stderr, "] target=%s\n", tc->getTarget()->getData().getName().buffer());
+            }
+        }
         skeleton.updateWorldTransform(Physics_None);
+        if (getenv("DUMP_TC")) {
+            // Re-dump mix values AFTER updateWorldTransform to see if anything changed.
+            Vector<TransformConstraint *> &tcs = skeleton.getTransformConstraints();
+            for (size_t tc_i = 0; tc_i < tcs.size(); ++tc_i) {
+                TransformConstraint *tc = tcs[tc_i];
+                fprintf(stderr, "POST TC[%zu] mixR=%.6g mixX=%.6g mixY=%.6g\n",
+                        tc_i, tc->getMixRotate(), tc->getMixX(), tc->getMixY());
+            }
+        }
         Vector<Bone *> &bones_for_pose = skeleton.getBones();
 
         fprintf(out, "{\n");
