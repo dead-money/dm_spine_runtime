@@ -1341,6 +1341,8 @@ impl<'loader> SkeletonBinary<'loader> {
                     match ttype {
                         ATTACHMENT_DEFORM => {
                             let vertices_len = deform_frame_len(sd, attachment_id);
+                            let (weighted, setup_vertices) =
+                                deform_context(sd, attachment_id);
                             let bezier_count = r.read_uvarint()?;
                             let (frames, curves, deform_vertices) = read_deform_timeline(
                                 r,
@@ -1348,11 +1350,8 @@ impl<'loader> SkeletonBinary<'loader> {
                                 bezier_count,
                                 vertices_len,
                                 self.scale,
-                                // For non-weighted attachments we need the
-                                // setup pose vertices to layer the deltas on
-                                // top of, to match spine-cpp's apply semantics.
-                                // Phase 3 evaluation will perform that layering
-                                // — we just store the deltas verbatim.
+                                weighted,
+                                &setup_vertices,
                             )?;
                             anim.timelines.push(Timeline::Deform {
                                 slot: SlotId(slot_idx as u16),
@@ -1824,42 +1823,82 @@ fn read_ik_timeline(
 }
 
 /// Deform timeline: each frame is a sparse vertex-offset array. Returns
-/// `(frame_times, curve_data, per_frame_vertex_deltas)`.
-/// Return value of [`read_deform_timeline`]: frame times, per-segment curve
-/// data, and one Vec-of-vertex-deltas per frame.
+/// `(frame_times, curve_data, per_frame_vertices)`. Vertex storage
+/// matches spine-cpp's in-memory layout:
+///
+/// - Weighted: per-frame deltas in the mesh's local bone-space
+///   (absent-frames are `vec![0.0; deform_length]`).
+/// - Unweighted: per-frame **absolute** vertex positions with the
+///   attachment's setup-pose vertices pre-added to each non-absent
+///   frame (and the setup-pose vertices themselves used verbatim when
+///   a frame has no deltas). `DeformTimeline::apply` treats these as
+///   "setup-pose vertices" during `MixBlend::Add` / `MixBlend::Setup`
+///   so the pre-add is load-bearing.
+///
+/// `curves` follows the `CurveFrames` / spine-cpp `CurveTimeline`
+/// convention: `curves[0..frame_count]` carries the per-frame curve
+/// flag (LINEAR / STEPPED / BEZIER + tail offset), followed by
+/// `bezier_count * BEZIER_SIZE` pre-sampled bezier floats.
 type DeformTimelineData = (Vec<f32>, Vec<f32>, Vec<Vec<f32>>);
 
 fn read_deform_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
-    _bezier_count: usize,
+    bezier_count: usize,
     deform_length: usize,
     scale: f32,
+    weighted: bool,
+    setup_vertices: &[f32],
 ) -> Result<DeformTimelineData, BinaryError> {
-    let mut frames = Vec::with_capacity(frame_count);
-    let mut curves: Vec<f32> = Vec::new();
+    let mut frames: Vec<f32> = Vec::with_capacity(frame_count);
+    let curves_len = frame_count + bezier_count * BEZIER_SIZE;
+    let mut curves: Vec<f32> = vec![0.0_f32; curves_len];
     let mut vertices: Vec<Vec<f32>> = Vec::with_capacity(frame_count);
     if frame_count == 0 {
         return Ok((frames, curves, vertices));
     }
+    // Safety default matching spine-cpp CurveTimeline ctor: last frame's
+    // curve type is STEPPED so a LINEAR read past the end is well-defined.
+    curves[frame_count - 1] = CURVE_STEPPED as f32;
+
     let frame_last = frame_count - 1;
     let mut time = r.read_float()?;
+    let mut bezier_seg_idx: usize = 0;
+
     for frame in 0..frame_count {
-        let mut deform = vec![0.0f32; deform_length];
         let end = r.read_uvarint()?;
-        if end != 0 {
+        let deform = if end == 0 {
+            if weighted {
+                vec![0.0_f32; deform_length]
+            } else {
+                // spine-cpp: `deform.clearAndAddAll(vertices)` — absent
+                // frames in unweighted meshes resolve to the setup-pose
+                // vertex positions.
+                setup_vertices.to_vec()
+            }
+        } else {
             let start = r.read_uvarint()?;
-            let end = start + end;
+            let mut deform = vec![0.0_f32; deform_length];
+            let read_end = start + end;
             if (scale - 1.0).abs() < f32::EPSILON {
-                for slot in &mut deform[start..end] {
+                for slot in &mut deform[start..read_end] {
                     *slot = r.read_float()?;
                 }
             } else {
-                for slot in &mut deform[start..end] {
+                for slot in &mut deform[start..read_end] {
                     *slot = r.read_float()? * scale;
                 }
             }
-        }
+            if !weighted {
+                // Convert per-vertex deltas to absolute positions by
+                // pre-adding the setup pose. spine-cpp does this at
+                // load time; `DeformTimeline::apply` relies on it.
+                for (d, s) in deform.iter_mut().zip(setup_vertices.iter()) {
+                    *d += *s;
+                }
+            }
+            deform
+        };
         frames.push(time);
         vertices.push(deform);
         if frame == frame_last {
@@ -1867,16 +1906,61 @@ fn read_deform_timeline(
         }
         let time2 = r.read_float()?;
         let ctype = r.read_sbyte()?;
-        curves.push(ctype as f32);
-        if ctype == CURVE_BEZIER {
-            curves.push(r.read_float()?);
-            curves.push(r.read_float()?);
-            curves.push(r.read_float()?);
-            curves.push(r.read_float()?);
+        match ctype {
+            CURVE_LINEAR => curves[frame] = CURVE_LINEAR as f32,
+            CURVE_STEPPED => curves[frame] = CURVE_STEPPED as f32,
+            CURVE_BEZIER => {
+                // DeformTimeline has a single (time→percent) channel —
+                // one bezier segment per BEZIER frame.
+                let tail_offset = frame_count + bezier_seg_idx * BEZIER_SIZE;
+                curves[frame] = (i32::from(CURVE_BEZIER) + tail_offset as i32) as f32;
+                let cx1 = r.read_float()?;
+                let cy1 = r.read_float()?;
+                let cx2 = r.read_float()?;
+                let cy2 = r.read_float()?;
+                // spine-cpp passes (value1=0, value2=1) to setBezier:
+                // the percent channel runs 0 → 1 between frames.
+                let samples = compute_bezier_samples(time, 0.0, cx1, cy1, cx2, cy2, time2, 1.0);
+                curves[tail_offset..tail_offset + BEZIER_SIZE].copy_from_slice(&samples);
+                bezier_seg_idx += 1;
+            }
+            other => {
+                return Err(BinaryError::UnknownDiscriminant {
+                    at: r.position(),
+                    entity: "deform curve type",
+                    value: other as u32,
+                });
+            }
         }
         time = time2;
     }
     Ok((frames, curves, vertices))
+}
+
+/// Pull the deform-relevant `(weighted, setup_vertices_clone)` from an
+/// attachment. `weighted` drives the load-time pre-add of setup
+/// vertices for unweighted meshes; `setup_vertices` is cloned so the
+/// caller can hand it to [`read_deform_timeline`] without holding a
+/// borrow of `sd` across the reader call.
+fn deform_context(sd: &SkeletonData, att: AttachmentId) -> (bool, Vec<f32>) {
+    let Some(attachment) = sd.attachments.get(att.index()) else {
+        return (false, Vec::new());
+    };
+    let vd: &VertexData = match attachment {
+        Attachment::Mesh(m) => &m.vertex_data,
+        Attachment::BoundingBox(b) => &b.vertex_data,
+        Attachment::Path(p) => &p.vertex_data,
+        Attachment::Clipping(c) => &c.vertex_data,
+        _ => return (false, Vec::new()),
+    };
+    // For weighted meshes spine-cpp uses an all-zero setup buffer (the
+    // stored `vertices` are bone-local weight triples, not positions),
+    // so we only clone setup vertices when unweighted.
+    if vd.bones.is_empty() {
+        (false, vd.vertices.clone())
+    } else {
+        (true, Vec::new())
+    }
 }
 
 /// Deform-frame length for a given attachment. Matches spine-cpp:

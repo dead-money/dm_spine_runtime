@@ -38,8 +38,9 @@ use crate::animation::{
     BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, Event, MixBlend, MixDirection,
 };
 use crate::data::{
-    Animation, AnimationEvent, BoneId, CurveFrames, Inherit, PhysicsConstraintData,
-    PhysicsConstraintId, PhysicsProperty, SlotId, Timeline,
+    Animation, AnimationEvent, Attachment, AttachmentId, BoneId, CurveFrames, Inherit,
+    PhysicsConstraintData, PhysicsConstraintId, PhysicsProperty, SequenceMode, SlotId, Timeline,
+    VertexData,
 };
 use crate::math::Color;
 use crate::skeleton::{PhysicsConstraint, Skeleton};
@@ -207,7 +208,27 @@ impl Timeline {
                 apply_physics_reset(skeleton, *constraint, frames, last_time, time);
             }
 
-            // --- Deform / Sequence remain stubbed pending mesh-attachment plumbing ---
+            // --- Deform / Sequence (Phase 6b) --------------------------------
+            Timeline::Deform {
+                slot,
+                attachment,
+                curves,
+                vertices,
+            } => {
+                apply_deform(skeleton, *slot, *attachment, curves, vertices, time, alpha, blend);
+            }
+            Timeline::Sequence {
+                slot,
+                attachment,
+                frames,
+            } => {
+                apply_sequence(skeleton, *slot, *attachment, frames, time, blend, direction);
+            }
+
+            // Other variants either don't exist yet or are handled by the
+            // matchers above. An explicit catch-all keeps the compiler
+            // honest while Phase 6 continues to land.
+            #[allow(unreachable_patterns)]
             _ => {}
         }
     }
@@ -1604,6 +1625,502 @@ fn apply_physics_reset(
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deform (Phase 6b) — literal port of `spine-cpp/src/spine/DeformTimeline.cpp`
+// ---------------------------------------------------------------------------
+
+/// Returns `Some(&VertexData)` for a `VertexAttachment`-style attachment,
+/// `None` otherwise. Used by `apply_deform` / `apply_sequence` to
+/// resolve the slot's currently-attached geometry.
+fn vertex_attachment(att: &Attachment) -> Option<&VertexData> {
+    match att {
+        Attachment::Mesh(m) => Some(&m.vertex_data),
+        Attachment::BoundingBox(b) => Some(&b.vertex_data),
+        Attachment::Path(p) => Some(&p.vertex_data),
+        Attachment::Clipping(c) => Some(&c.vertex_data),
+        _ => None,
+    }
+}
+
+/// Returns the attachment's **effective** timeline-attachment target.
+/// `None` in the stored field means "self" (matches spine-cpp's
+/// constructor default `_timelineAttachment(this)`).
+fn effective_timeline_attachment(vd: &VertexData, own_id: AttachmentId) -> AttachmentId {
+    vd.timeline_attachment.unwrap_or(own_id)
+}
+
+/// `DeformTimeline`'s bespoke `getCurvePercent` — returns the 0..1
+/// interpolation factor between `frame` and `frame+1` based on
+/// `time`. Different from the generic `curve_value*` helpers because
+/// Deform keyframes carry vertex arrays rather than scalar values.
+fn deform_curve_percent(curves: &CurveFrames, frame: usize, time: f32) -> f32 {
+    let frames = &curves.frames;
+    let curve_arr = &curves.curves;
+    let i = curve_arr[frame] as i32;
+    if i == CURVE_LINEAR {
+        let x = frames[frame];
+        return (time - x) / (frames[frame + 1] - x);
+    }
+    if i == CURVE_STEPPED {
+        return 0.0;
+    }
+    // BEZIER: `i - CURVE_BEZIER` is the offset into the samples tail.
+    let mut j = (i - CURVE_BEZIER) as usize;
+    if curve_arr[j] > time {
+        let x = frames[frame];
+        return curve_arr[j + 1] * (time - x) / (curve_arr[j] - x);
+    }
+    let n = j + BEZIER_SIZE;
+    j += 2;
+    while j < n {
+        if curve_arr[j] >= time {
+            let x = curve_arr[j - 2];
+            let y = curve_arr[j - 1];
+            return y + (time - x) / (curve_arr[j] - x) * (curve_arr[j + 1] - y);
+        }
+        j += 2;
+    }
+    let x = curve_arr[n - 2];
+    let y = curve_arr[n - 1];
+    y + (1.0 - y) * (time - x) / (frames[frame + 1] - x)
+}
+
+// Literal port — spine-cpp `DeformTimeline::apply` is a single ~125-line
+// function. Splitting it into helpers breaks diff-ability.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::needless_range_loop)]
+fn apply_deform(
+    skeleton: &mut Skeleton,
+    slot_id: SlotId,
+    timeline_target: AttachmentId,
+    curves: &CurveFrames,
+    vertices: &[Vec<f32>],
+    time: f32,
+    mut alpha: f32,
+    mut blend: MixBlend,
+) {
+    // Slot's bone must be active.
+    let slot_bone = skeleton.data.slots[slot_id.index()].bone;
+    if !skeleton.bones[slot_bone.index()].active {
+        return;
+    }
+
+    // Resolve the slot's currently-attached VertexAttachment and
+    // compare its timeline-attachment against the timeline's stored
+    // target. Bail if the current attachment isn't a vertex
+    // attachment or points somewhere else.
+    let Some(slot_attachment_id) = skeleton.slots[slot_id.index()].attachment else {
+        return;
+    };
+    let (bones_empty, setup_vertex_len, setup_vertices_ptr_offset) = {
+        let att = &skeleton.data.attachments[slot_attachment_id.index()];
+        let Some(vd) = vertex_attachment(att) else {
+            return;
+        };
+        if effective_timeline_attachment(vd, slot_attachment_id) != timeline_target {
+            return;
+        }
+        (vd.bones.is_empty(), vd.vertices.len(), slot_attachment_id.index())
+    };
+
+    // Read `vertexCount` from the first keyframe (spine-cpp:
+    // `vertices[0].size()`). With zero frames we'd have bailed; with a
+    // non-empty timeline every frame stores the same length.
+    let Some(vertex_count) = vertices.first().map(Vec::len) else {
+        return;
+    };
+    if vertex_count == 0 {
+        return;
+    }
+
+    // If the slot's deform buffer is empty, spine-cpp forces Setup
+    // blend — there's nothing to blend against.
+    if skeleton.slots[slot_id.index()].deform.is_empty() {
+        blend = MixBlend::Setup;
+    }
+
+    let frames = &curves.frames;
+
+    // --- Before first frame -----------------------------------------------
+    if time < frames[0] {
+        let deform = &mut skeleton.slots[slot_id.index()].deform;
+        match blend {
+            MixBlend::Setup => {
+                deform.clear();
+            }
+            MixBlend::First => {
+                if (alpha - 1.0).abs() < f32::EPSILON {
+                    deform.clear();
+                    return;
+                }
+                deform.resize(vertex_count, 0.0);
+                if bones_empty {
+                    // Unweighted: blend toward setup-pose vertices.
+                    // Re-borrow `setup` via the known attachment index.
+                    let setup = match &skeleton.data.attachments[setup_vertices_ptr_offset] {
+                        Attachment::Mesh(m) => &m.vertex_data.vertices,
+                        Attachment::BoundingBox(b) => &b.vertex_data.vertices,
+                        Attachment::Path(p) => &p.vertex_data.vertices,
+                        Attachment::Clipping(c) => &c.vertex_data.vertices,
+                        _ => return,
+                    };
+                    for i in 0..vertex_count {
+                        deform[i] += (setup[i] - deform[i]) * alpha;
+                    }
+                } else {
+                    // Weighted: scale existing offsets toward zero.
+                    let factor = 1.0 - alpha;
+                    for i in 0..vertex_count {
+                        deform[i] *= factor;
+                    }
+                }
+            }
+            MixBlend::Replace | MixBlend::Add => {}
+        }
+        // Silence unused-var warning when the only branch taken was
+        // Replace/Add which uses nothing.
+        let _ = setup_vertex_len;
+        return;
+    }
+
+    // --- After or at last frame / interpolated ----------------------------
+    {
+        let deform = &mut skeleton.slots[slot_id.index()].deform;
+        deform.resize(vertex_count, 0.0);
+    }
+
+    // After the last frame: snap to the last keyframe.
+    if time >= frames[frames.len() - 1] {
+        let last = &vertices[frames.len() - 1];
+        apply_deform_frame(
+            skeleton,
+            slot_id,
+            setup_vertices_ptr_offset,
+            bones_empty,
+            vertex_count,
+            last,
+            last,
+            /* percent = */ 1.0,
+            alpha,
+            blend,
+            /* after_last = */ true,
+        );
+        return;
+    }
+
+    // Interpolate between `frame` and `frame + 1`.
+    let frame = search(frames, time, 1);
+    let percent = deform_curve_percent(curves, frame, time);
+    let prev = &vertices[frame];
+    let next = &vertices[frame + 1];
+    apply_deform_frame(
+        skeleton,
+        slot_id,
+        setup_vertices_ptr_offset,
+        bones_empty,
+        vertex_count,
+        prev,
+        next,
+        percent,
+        alpha,
+        blend,
+        /* after_last = */ false,
+    );
+
+    // If `alpha` was mutated into `1 - alpha` inside the "before first"
+    // branch, avoid leaking the change.
+    alpha = alpha.clamp(0.0, 1.0);
+    let _ = alpha;
+}
+
+/// Core of the per-vertex deform blend. `prev`/`next` are already
+/// slot-aware vertex arrays (pre-added setup for unweighted).
+/// `after_last` short-circuits when `percent == 1` and there's no
+/// interpolation to do (matches spine-cpp's post-last-frame branch).
+// Also a direct port of spine-cpp's branchy per-frame blend body.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::needless_range_loop)]
+fn apply_deform_frame(
+    skeleton: &mut Skeleton,
+    slot_id: SlotId,
+    attachment_idx: usize,
+    bones_empty: bool,
+    vertex_count: usize,
+    prev: &[f32],
+    next: &[f32],
+    percent: f32,
+    alpha: f32,
+    blend: MixBlend,
+    after_last: bool,
+) {
+    // Helper: read setup vertices for the current attachment.
+    // Returns empty slice when the attachment kind doesn't carry
+    // vertex data — callers only reach this code when it does.
+    let setup_vertices: &[f32] = match &skeleton.data.attachments[attachment_idx] {
+        Attachment::Mesh(m) => &m.vertex_data.vertices,
+        Attachment::BoundingBox(b) => &b.vertex_data.vertices,
+        Attachment::Path(p) => &p.vertex_data.vertices,
+        Attachment::Clipping(c) => &c.vertex_data.vertices,
+        _ => &[],
+    };
+
+    // Clone into locals so we can take `&mut deform` without holding a
+    // borrow on skeleton.data.
+    let setup_vec: Vec<f32> = if bones_empty && !setup_vertices.is_empty() {
+        setup_vertices.to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let deform = &mut skeleton.slots[slot_id.index()].deform;
+
+    if (alpha - 1.0).abs() < f32::EPSILON {
+        if blend == MixBlend::Add {
+            if bones_empty {
+                if after_last {
+                    // Unweighted, alpha=1, after last, Add.
+                    for i in 0..vertex_count {
+                        deform[i] += next[i] - setup_vec[i];
+                    }
+                } else {
+                    for i in 0..vertex_count {
+                        let p = prev[i];
+                        deform[i] += p + (next[i] - p) * percent - setup_vec[i];
+                    }
+                }
+            } else if after_last {
+                for i in 0..vertex_count {
+                    deform[i] += next[i];
+                }
+            } else {
+                for i in 0..vertex_count {
+                    let p = prev[i];
+                    deform[i] += p + (next[i] - p) * percent;
+                }
+            }
+        } else {
+            // Setup/First/Replace, alpha=1 → overwrite.
+            if after_last {
+                deform.copy_from_slice(&next[..vertex_count]);
+            } else {
+                for i in 0..vertex_count {
+                    let p = prev[i];
+                    deform[i] = p + (next[i] - p) * percent;
+                }
+            }
+        }
+        return;
+    }
+
+    match blend {
+        MixBlend::Setup => {
+            if bones_empty {
+                if after_last {
+                    for i in 0..vertex_count {
+                        let s = setup_vec[i];
+                        deform[i] = s + (next[i] - s) * alpha;
+                    }
+                } else {
+                    for i in 0..vertex_count {
+                        let p = prev[i];
+                        let s = setup_vec[i];
+                        deform[i] = s + (p + (next[i] - p) * percent - s) * alpha;
+                    }
+                }
+            } else if after_last {
+                for i in 0..vertex_count {
+                    deform[i] = next[i] * alpha;
+                }
+            } else {
+                for i in 0..vertex_count {
+                    let p = prev[i];
+                    deform[i] = (p + (next[i] - p) * percent) * alpha;
+                }
+            }
+        }
+        MixBlend::First | MixBlend::Replace => {
+            if after_last {
+                for i in 0..vertex_count {
+                    deform[i] += (next[i] - deform[i]) * alpha;
+                }
+            } else {
+                for i in 0..vertex_count {
+                    let p = prev[i];
+                    deform[i] += (p + (next[i] - p) * percent - deform[i]) * alpha;
+                }
+            }
+        }
+        MixBlend::Add => {
+            if bones_empty {
+                if after_last {
+                    for i in 0..vertex_count {
+                        deform[i] += (next[i] - setup_vec[i]) * alpha;
+                    }
+                } else {
+                    for i in 0..vertex_count {
+                        let p = prev[i];
+                        deform[i] += (p + (next[i] - p) * percent - setup_vec[i]) * alpha;
+                    }
+                }
+            } else if after_last {
+                for i in 0..vertex_count {
+                    deform[i] += next[i] * alpha;
+                }
+            } else {
+                for i in 0..vertex_count {
+                    let p = prev[i];
+                    deform[i] += (p + (next[i] - p) * percent) * alpha;
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sequence (Phase 6b) — literal port of
+// `spine-cpp/src/spine/SequenceTimeline.cpp`.
+// ---------------------------------------------------------------------------
+
+const SEQUENCE_ENTRIES: usize = 3;
+const SEQUENCE_MODE: usize = 1;
+const SEQUENCE_DELAY: usize = 2;
+
+#[allow(clippy::too_many_arguments)]
+fn apply_sequence(
+    skeleton: &mut Skeleton,
+    slot_id: SlotId,
+    timeline_target: AttachmentId,
+    frames: &[f32],
+    time: f32,
+    blend: MixBlend,
+    direction: MixDirection,
+) {
+    // Bone-active check.
+    let slot_bone = skeleton.data.slots[slot_id.index()].bone;
+    if !skeleton.bones[slot_bone.index()].active {
+        return;
+    }
+
+    // Resolve the slot's current attachment; it must either *be* the
+    // timeline target, or be a vertex attachment whose
+    // timeline-attachment points at the target (linked mesh).
+    let Some(slot_attachment_id) = skeleton.slots[slot_id.index()].attachment else {
+        return;
+    };
+    let sequence_regions_count: i32 = {
+        let att = &skeleton.data.attachments[slot_attachment_id.index()];
+        let matched = slot_attachment_id == timeline_target
+            || match att {
+                Attachment::Mesh(_)
+                | Attachment::BoundingBox(_)
+                | Attachment::Path(_)
+                | Attachment::Clipping(_) => {
+                    let vd = vertex_attachment(att).expect("matched a vertex attachment above");
+                    effective_timeline_attachment(vd, slot_attachment_id) == timeline_target
+                }
+                _ => false,
+            };
+        if !matched {
+            return;
+        }
+
+        // Pull the sequence off the *timeline target* attachment
+        // (mirrors spine-cpp, which uses `_attachment->getSequence()`).
+        let target_att = &skeleton.data.attachments[timeline_target.index()];
+        let seq_opt = match target_att {
+            Attachment::Region(r) => r.sequence.as_ref(),
+            Attachment::Mesh(m) => m.sequence.as_ref(),
+            _ => None,
+        };
+        let Some(seq) = seq_opt else {
+            return;
+        };
+        seq.regions.len() as i32
+    };
+
+    if direction == MixDirection::Out {
+        if blend == MixBlend::Setup {
+            skeleton.slots[slot_id.index()].sequence_index = -1;
+        }
+        return;
+    }
+
+    // Before first frame: reset on Setup/First, hold otherwise.
+    if time < frames[0] {
+        if matches!(blend, MixBlend::Setup | MixBlend::First) {
+            skeleton.slots[slot_id.index()].sequence_index = -1;
+        }
+        return;
+    }
+
+    let i = search(frames, time, SEQUENCE_ENTRIES);
+    let before = frames[i];
+    let mode_and_index = frames[i + SEQUENCE_MODE] as i32;
+    let delay = frames[i + SEQUENCE_DELAY];
+
+    let mut index = mode_and_index >> 4;
+    let count = sequence_regions_count;
+    let mode_bits = mode_and_index & 0xf;
+    let mode = sequence_mode_from_bits(mode_bits);
+
+    if mode != SequenceMode::Hold {
+        index += ((time - before) / delay + 0.0001) as i32;
+        match mode {
+            SequenceMode::Hold => {}
+            SequenceMode::Once => {
+                index = (count - 1).min(index);
+            }
+            SequenceMode::Loop => {
+                if count > 0 {
+                    index = index.rem_euclid(count);
+                }
+            }
+            SequenceMode::PingPong => {
+                let n = (count << 1) - 2;
+                index = if n == 0 { 0 } else { index.rem_euclid(n) };
+                if index >= count {
+                    index = n - index;
+                }
+            }
+            SequenceMode::OnceReverse => {
+                index = (count - 1 - index).max(0);
+            }
+            SequenceMode::LoopReverse => {
+                if count > 0 {
+                    index = count - 1 - index.rem_euclid(count);
+                }
+            }
+            SequenceMode::PingPongReverse => {
+                let n = (count << 1) - 2;
+                index = if n == 0 {
+                    0
+                } else {
+                    (index + count - 1).rem_euclid(n)
+                };
+                if index >= count {
+                    index = n - index;
+                }
+            }
+        }
+    }
+    skeleton.slots[slot_id.index()].sequence_index = index;
+}
+
+/// Decode the low nibble of spine-cpp's `modeAndIndex` into the
+/// corresponding `SequenceMode` variant. Matches the enum order in
+/// `spine-cpp/include/spine/Sequence.h`.
+fn sequence_mode_from_bits(bits: i32) -> SequenceMode {
+    match bits {
+        1 => SequenceMode::Once,
+        2 => SequenceMode::Loop,
+        3 => SequenceMode::PingPong,
+        4 => SequenceMode::OnceReverse,
+        5 => SequenceMode::LoopReverse,
+        6 => SequenceMode::PingPongReverse,
+        // 0 is the canonical Hold; unknown bits also fall through to
+        // Hold since the apply loop treats it as "preserve frame".
+        _ => SequenceMode::Hold,
     }
 }
 
