@@ -25,11 +25,51 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Native Rust port of the Spine 4.2 runtime.
-//!
-//! Renderer-agnostic. Bevy integration lives in the sibling `dm_spine_bevy` crate.
+//! Setup-pose event definition. Runtime `Event` instances (produced during
+//! animation apply in Phase 3) inherit these defaults and may override them
+//! per-keyframe.
 
-pub mod atlas;
-pub mod data;
-pub mod load;
-pub mod math;
+use crate::data::EventId;
+
+/// Named event declared on the skeleton. Animations fire runtime events that
+/// reference one of these by index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventData {
+    pub index: EventId,
+    pub name: String,
+    pub int_value: i32,
+    pub float_value: f32,
+    pub string_value: String,
+    pub audio_path: String,
+    pub volume: f32,
+    pub balance: f32,
+}
+
+impl EventData {
+    #[must_use]
+    pub fn new(index: EventId, name: impl Into<String>) -> Self {
+        Self {
+            index,
+            name: name.into(),
+            int_value: 0,
+            float_value: 0.0,
+            string_value: String::new(),
+            audio_path: String::new(),
+            volume: 1.0,
+            balance: 0.0,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)] // Literal default comparisons only.
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_event_defaults() {
+        let e = EventData::new(EventId(0), "footstep");
+        assert_eq!(e.volume, 1.0);
+        assert_eq!(e.balance, 0.0);
+    }
+}

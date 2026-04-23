@@ -25,11 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Native Rust port of the Spine 4.2 runtime.
+//! Skeleton-loading infrastructure shared by format-specific loaders.
 //!
-//! Renderer-agnostic. Bevy integration lives in the sibling `dm_spine_bevy` crate.
+//! Phase 1b exposes the [`AttachmentLoader`] trait and the default
+//! [`AtlasAttachmentLoader`] implementation. The binary loader that drives
+//! them lands in Phase 1c.
 
-pub mod atlas;
-pub mod data;
-pub mod load;
-pub mod math;
+pub mod attachment_loader;
+
+pub use attachment_loader::{AtlasAttachmentLoader, AttachmentLoader, AttachmentLoaderError};
