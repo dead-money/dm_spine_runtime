@@ -739,44 +739,66 @@ impl Skeleton {
                 UpdateCacheEntry::Bone(bone_id) => {
                     self.update_bone_world_transform(bone_id);
                 }
-                UpdateCacheEntry::IkConstraint(_)
-                | UpdateCacheEntry::TransformConstraint(_)
+                UpdateCacheEntry::IkConstraint(id) => {
+                    // Map data index → runtime slot. Our tracks are the same
+                    // order as data.ik_constraints, so .index() is the runtime
+                    // index (mirrors how the cache was built).
+                    let runtime_idx = id.index();
+                    crate::skeleton::ik::solve_ik_constraint(self, runtime_idx);
+                }
+                UpdateCacheEntry::TransformConstraint(_)
                 | UpdateCacheEntry::PathConstraint(_)
                 | UpdateCacheEntry::PhysicsConstraint(_) => {
-                    // Phase 5: call the matching solver. For Phase 2 every
-                    // constraint's `update()` is a no-op, so the cache entry
-                    // is inert — the bones around it already carry the right
-                    // values from the local→applied seed pass above.
+                    // Phase 5b/5c/5d ship the remaining solvers.
                 }
             }
         }
     }
 
     /// `Bone::updateWorldTransform()` — computes `bone`'s world matrix from
-    /// its own local TRS and its parent's world matrix. Root bones use the
-    /// skeleton's `x/y/scale_x/scale_y` as their parent transform.
+    /// its own local TRS and its parent's world matrix. Matches spine-cpp's
+    /// zero-arg overload that reads local TRS from the bone itself.
+    pub(crate) fn update_bone_world_transform(&mut self, bone_id: BoneId) {
+        let (x, y, rotation, scale_x, scale_y, shear_x, shear_y) = {
+            let b = &self.bones[bone_id.index()];
+            (
+                b.x, b.y, b.rotation, b.scale_x, b.scale_y, b.shear_x, b.shear_y,
+            )
+        };
+        self.update_bone_world_transform_with(
+            bone_id, x, y, rotation, scale_x, scale_y, shear_x, shear_y,
+        );
+    }
+
+    /// `Bone::updateWorldTransform(x, y, rotation, scaleX, scaleY, shearX, shearY)`
+    /// — the 7-arg overload that IK + Transform constraints call with
+    /// solver-derived TRS. Also stores the passed TRS as the bone's
+    /// "applied" fields so downstream readers see what was actually used.
     ///
     /// Literal port of `spine-cpp/src/spine/Bone.cpp` `Bone::updateWorldTransform`
-    /// (the one-arg overload fans into the multi-arg overload with the bone's
-    /// own local TRS; we inline both here). All five [`Inherit`] modes
-    /// follow — reflection check, per-axis sign handling, post-multiply
-    /// block — ported as-is without refactoring the math.
+    /// (the multi-arg overload). All five [`Inherit`] modes follow —
+    /// reflection check, per-axis sign handling, post-multiply block —
+    /// ported as-is without refactoring the math.
     // spine-cpp keeps this as one ~120-line function; splitting breaks the
     // port-verbatim rule and makes diffing harder for no correctness gain.
-    #[allow(clippy::too_many_lines)]
-    fn update_bone_world_transform(&mut self, bone_id: BoneId) {
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    pub(crate) fn update_bone_world_transform_with(
+        &mut self,
+        bone_id: BoneId,
+        x: f32,
+        y: f32,
+        rotation: f32,
+        scale_x: f32,
+        scale_y: f32,
+        shear_x: f32,
+        shear_y: f32,
+    ) {
         let idx = bone_id.index();
 
-        // Snapshot the local TRS and parent/inherit once. Everything below
-        // either reads from the parent bone (a different index) or writes
-        // to this bone; interleaving those borrows needs care, so we pull
-        // the inputs out as bare floats up front.
-        let (x, y, rotation, scale_x, scale_y, shear_x, shear_y, parent, inherit) = {
+        // Snapshot parent/inherit once.
+        let (parent, inherit) = {
             let b = &self.bones[idx];
-            (
-                b.x, b.y, b.rotation, b.scale_x, b.scale_y, b.shear_x, b.shear_y, b.parent,
-                b.inherit,
-            )
+            (b.parent, b.inherit)
         };
 
         // spine-cpp's first act is copying the passed-in TRS into the
