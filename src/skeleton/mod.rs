@@ -25,12 +25,38 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Native Rust port of the Spine 4.2 runtime.
+//! Runtime-mutable skeleton pose.
 //!
-//! Renderer-agnostic. Bevy integration lives in the sibling `dm_spine_bevy` crate.
+//! Counterpart to [`crate::data`]: where `data` is the immutable,
+//! `Arc`-shared setup-pose asset, this module owns the per-instance mutable
+//! state every `Skeleton` needs to animate and be rendered.
 
-pub mod atlas;
-pub mod data;
-pub mod load;
-pub mod math;
+pub mod bone;
+pub mod constraint;
+// 1:1 port parity with `spine-cpp/src/spine/Skeleton.cpp`. The inner module
+// name matches the file it came from; the inception is intentional.
+#[allow(clippy::module_inception)]
 pub mod skeleton;
+pub mod slot;
+pub mod update_cache;
+
+pub use bone::Bone;
+pub use constraint::{IkConstraint, PathConstraint, PhysicsConstraint, TransformConstraint};
+pub use skeleton::{Skeleton, SkinNotFound};
+pub use slot::Slot;
+pub use update_cache::UpdateCacheEntry;
+
+/// Controls how physics constraints behave on this `update_world_transform`
+/// pass. Ported verbatim from `spine-cpp/include/spine/Physics.h`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Physics {
+    /// Physics are not updated or applied.
+    #[default]
+    None,
+    /// Physics are reset to the current pose.
+    Reset,
+    /// Physics are updated and the pose from physics is applied.
+    Update,
+    /// Physics are not updated but the pose from physics is applied.
+    Pose,
+}

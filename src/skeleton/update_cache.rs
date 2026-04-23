@@ -25,12 +25,28 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Native Rust port of the Spine 4.2 runtime.
+//! Unified update order for `Skeleton::update_world_transform`.
 //!
-//! Renderer-agnostic. Bevy integration lives in the sibling `dm_spine_bevy` crate.
+//! `spine-cpp` stores update-cache entries as a `Vector<Updatable *>` where
+//! `Updatable` is a polymorphic base class. Our tagged-enum equivalent keeps
+//! dispatch cache-friendly and matches the "no `Box<dyn ...>` in hot paths"
+//! invariant from `CLAUDE.md`.
 
-pub mod atlas;
-pub mod data;
-pub mod load;
-pub mod math;
-pub mod skeleton;
+use crate::data::{
+    BoneId, IkConstraintId, PathConstraintId, PhysicsConstraintId, TransformConstraintId,
+};
+
+/// One entry in the per-skeleton update order.
+///
+/// Built by `Skeleton::update_cache` (Phase 2c) and consumed by
+/// `Skeleton::update_world_transform` (Phase 2d). Ordering reflects the
+/// constraint dependency graph: a bone appears after every constraint it
+/// depends on and before every constraint that reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCacheEntry {
+    Bone(BoneId),
+    IkConstraint(IkConstraintId),
+    TransformConstraint(TransformConstraintId),
+    PathConstraint(PathConstraintId),
+    PhysicsConstraint(PhysicsConstraintId),
+}
