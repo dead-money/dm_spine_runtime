@@ -28,16 +28,18 @@
 // spine_capture — dumps spine-cpp's bone transforms as JSON so the
 // dm_spine_runtime Rust port can compare against bit-for-bit goldens.
 //
+// Phase 5 upgrade: the full constraint pipeline is now enabled (IK,
+// Transform, Path, Physics) via Skeleton::updateWorldTransform. Phase
+// 2 / 3 goldens were captured without this — 5e re-captures them.
+//
 // usage:
 //   spine_capture <atlas> <skel> <out.json>
-//       Setup-pose snapshot. No animation, no constraints run.
+//       Setup-pose snapshot with constraints applied.
 //
 //   spine_capture --anim <atlas> <skel> <out.json> <anim> <time>
 //       Animation sample: set to setup pose, apply <anim> at <time>
-//       seconds against setup pose, then pose each active bone via
-//       Bone::updateWorldTransform (no constraints). Matches the
-//       dm_spine_runtime Phase 3 semantics: timeline apply directly
-//       against setup pose, bones-only world transforms.
+//       seconds, then updateWorldTransform(Physics_None). Matches the
+//       dm_spine_runtime Phase 5 pipeline end-to-end.
 
 #include <spine/spine.h>
 
@@ -152,12 +154,9 @@ int main(int argc, char **argv) {
         Skeleton skeleton(data);
         skeleton.setToSetupPose();
 
-        // Animation mode: apply the named animation at `anim_time` AGAINST
-        // setup pose (MixBlend_Setup, alpha 1, direction In). Timeline::apply
-        // writes into bone local TRS, then the same two-step bones-only pose
-        // pipeline below computes world transforms. No constraints run
-        // (dm_spine_runtime Phase 3 stubs them), matching the Phase 3
-        // golden test expectations.
+        // Animation mode: apply the named animation at `anim_time` against
+        // setup pose (MixBlend_Setup, alpha 1, direction In) so timelines
+        // overwrite local TRS before the constraint pipeline runs.
         if (anim_mode) {
             Animation *anim = data->findAnimation(anim_name);
             if (!anim) {
@@ -171,39 +170,10 @@ int main(int argc, char **argv) {
                         1.0f, MixBlend_Setup, MixDirection_In);
         }
 
-        // Bones-only pose, two-step to match dm_spine_runtime Phase 2
-        // semantics exactly:
-        //
-        //   1. seed `applied = local` on EVERY bone (spine-cpp's
-        //      `Skeleton::updateWorldTransform` does this unconditionally,
-        //      before walking the cache);
-        //   2. compute world transforms for ACTIVE bones only, in stored
-        //      order (parent-first by invariant). No constraints participate.
-        //
-        // Inactive bones keep their post-ctor world defaults (identity,
-        // world=(0,0)), which matches what Skeleton::updateWorldTransform
-        // produces in spine-cpp because inactive bones are excluded from the
-        // update cache.
-        //
-        // Phase 5's golden tests will replace this with
-        // `Skeleton::updateWorldTransform(Physics_None)` to exercise the
-        // constraint pipeline.
+        // Full constraint pipeline: IK, Transform, Path, Physics all run.
+        // Phase 5 goldens diff against this output.
+        skeleton.updateWorldTransform(Physics_None);
         Vector<Bone *> &bones_for_pose = skeleton.getBones();
-        for (size_t i = 0; i < bones_for_pose.size(); ++i) {
-            Bone *b = bones_for_pose[i];
-            b->setAX(b->getX());
-            b->setAY(b->getY());
-            b->setAppliedRotation(b->getRotation());
-            b->setAScaleX(b->getScaleX());
-            b->setAScaleY(b->getScaleY());
-            b->setAShearX(b->getShearX());
-            b->setAShearY(b->getShearY());
-        }
-        for (size_t i = 0; i < bones_for_pose.size(); ++i) {
-            if (bones_for_pose[i]->isActive()) {
-                bones_for_pose[i]->updateWorldTransform();
-            }
-        }
 
         fprintf(out, "{\n");
         fprintf(out, "  \"source_skel\": \"%s\",\n",
