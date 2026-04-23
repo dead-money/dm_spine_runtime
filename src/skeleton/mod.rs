@@ -43,6 +43,7 @@ pub mod skeleton;
 pub mod slot;
 pub mod transform;
 pub mod update_cache;
+pub mod vertex;
 
 pub use bone::Bone;
 pub use constraint::{IkConstraint, PathConstraint, PhysicsConstraint, TransformConstraint};

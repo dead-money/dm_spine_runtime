@@ -324,7 +324,7 @@ fn compute_spaces(
 /// plus a preamble of `[x0, y0]`; matches spine-cpp's spacing).
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn compute_world_positions(
-    skeleton: &mut Skeleton,
+    skeleton: &Skeleton,
     path_attachment: crate::data::AttachmentId,
     slot: crate::data::SlotId,
     initial_position: f32,
@@ -607,7 +607,7 @@ fn compute_world_positions(
 /// Precompute world vertex positions + per-curve arc lengths for the
 /// constant-speed branch. Returns `(world, curve_lengths, path_length)`.
 fn precompute_curves(
-    skeleton: &mut Skeleton,
+    skeleton: &Skeleton,
     path_attachment: crate::data::AttachmentId,
     slot: crate::data::SlotId,
     closed: bool,
@@ -694,12 +694,12 @@ fn precompute_curves(
     (world, curve_lengths, path_length)
 }
 
-/// Port of `spine::VertexAttachment::computeWorldVertices` on the path
-/// attachment. Transforms the attachment's stored vertex data into world
-/// space via the slot's bone (unweighted) or a weighted sum over
-/// multiple bones.
+/// Thin wrapper that pulls the path attachment's `VertexData` out of
+/// `skeleton.data.attachments[…]` and delegates to the shared
+/// `Skeleton::compute_world_vertices` helper (Phase 6a). Path solvers
+/// always want stride = 2.
 fn compute_world_vertices(
-    skeleton: &mut Skeleton,
+    skeleton: &Skeleton,
     path_attachment: crate::data::AttachmentId,
     slot_id: crate::data::SlotId,
     start: usize,
@@ -707,100 +707,10 @@ fn compute_world_vertices(
     world_vertices: &mut [f32],
     offset: usize,
 ) {
-    let (bones_vec, vertices_vec) = match &skeleton.data.attachments[path_attachment.index()] {
-        Attachment::Path(p) => (p.vertex_data.bones.clone(), p.vertex_data.vertices.clone()),
-        _ => return,
-    };
-    // Snapshot the slot's deform + bone-index as inputs.
-    let deform = skeleton.slots[slot_id.index()].deform.clone();
-    let slot_bone = skeleton.data.slots[slot_id.index()].bone;
-
-    let stride = 2;
-    let end = offset + (count >> 1) * stride;
-
-    if bones_vec.is_empty() {
-        let vertices = if deform.is_empty() {
-            &vertices_vec
-        } else {
-            &deform
-        };
-        let b = &skeleton.bones[slot_bone.index()];
-        let (x, y, a, bb, c, d) = (b.world_x, b.world_y, b.a, b.b, b.c, b.d);
-        let mut vv = start;
-        let mut w = offset;
-        while w < end {
-            let vx = vertices[vv];
-            let vy = vertices[vv + 1];
-            world_vertices[w] = vx * a + vy * bb + x;
-            world_vertices[w + 1] = vx * c + vy * d + y;
-            vv += 2;
-            w += stride;
-        }
+    let Attachment::Path(p) = &skeleton.data.attachments[path_attachment.index()] else {
         return;
-    }
-
-    // Weighted vertices: skip past the first `start / 2` weighted groups.
-    let mut v = 0_usize;
-    let mut skip = 0_usize;
-    let mut i = 0_usize;
-    while i < start {
-        let n = bones_vec[v] as usize;
-        v += n + 1;
-        skip += n;
-        i += 2;
-    }
-
-    if deform.is_empty() {
-        let mut w = offset;
-        let mut b_idx = skip * 3;
-        while w < end {
-            let mut wx = 0.0_f32;
-            let mut wy = 0.0_f32;
-            let n_here = bones_vec[v] as usize;
-            v += 1;
-            let n_end = v + n_here;
-            while v < n_end {
-                let bone_index = bones_vec[v] as usize;
-                let bone = &skeleton.bones[bone_index];
-                let vx = vertices_vec[b_idx];
-                let vy = vertices_vec[b_idx + 1];
-                let weight = vertices_vec[b_idx + 2];
-                wx += (vx * bone.a + vy * bone.b + bone.world_x) * weight;
-                wy += (vx * bone.c + vy * bone.d + bone.world_y) * weight;
-                v += 1;
-                b_idx += 3;
-            }
-            world_vertices[w] = wx;
-            world_vertices[w + 1] = wy;
-            w += stride;
-        }
-    } else {
-        let mut w = offset;
-        let mut b_idx = skip * 3;
-        let mut f = skip << 1;
-        while w < end {
-            let mut wx = 0.0_f32;
-            let mut wy = 0.0_f32;
-            let n_here = bones_vec[v] as usize;
-            v += 1;
-            let n_end = v + n_here;
-            while v < n_end {
-                let bone_index = bones_vec[v] as usize;
-                let bone = &skeleton.bones[bone_index];
-                let vx = vertices_vec[b_idx] + deform[f];
-                let vy = vertices_vec[b_idx + 1] + deform[f + 1];
-                let weight = vertices_vec[b_idx + 2];
-                wx += (vx * bone.a + vy * bone.b + bone.world_x) * weight;
-                wy += (vx * bone.c + vy * bone.d + bone.world_y) * weight;
-                v += 1;
-                b_idx += 3;
-                f += 2;
-            }
-            world_vertices[w] = wx;
-            world_vertices[w + 1] = wy;
-            w += stride;
-        }
-    }
+    };
+    skeleton.compute_world_vertices(&p.vertex_data, slot_id, start, count, world_vertices, offset, 2);
 }
 
 fn add_before_position(p: f32, temp: &[f32], i: usize, output: &mut [f32], o: usize) {

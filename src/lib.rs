@@ -34,4 +34,5 @@ pub mod atlas;
 pub mod data;
 pub mod load;
 pub mod math;
+pub mod render;
 pub mod skeleton;
