@@ -1,5 +1,8 @@
 /target
 
+# Build artefacts from the spine_capture harness (phase-2 golden generator).
+/tools/spine_capture/build/
+
 # Editor / IDE
 .vscode/
 .idea/
