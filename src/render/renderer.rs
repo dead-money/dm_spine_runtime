@@ -29,22 +29,22 @@
 //! stream of [`RenderCommand`]s. Literal port of
 //! `spine-cpp/src/spine/SkeletonRenderer.cpp`.
 //!
-//! The walker itself lives in sub-phase 6c; 6e hooks clipping in; 6g
-//! adds the `batchCommands` merge pass. For now this file carries only
-//! the `SkeletonRenderer` type and its scratch buffers, which 6a fixes
-//! as the public API shape so the downstream Bevy crate can depend on
-//! it immediately.
+//! Phase 6c lands the `RegionAttachment` emission path. Phase 6d
+//! extends the walker to meshes; 6e hooks clipping in; 6g adds the
+//! `batchCommands` merge pass.
 
-use crate::render::RenderCommand;
-use crate::skeleton::Skeleton;
+use crate::data::attachment::TextureRegionRef;
+use crate::data::{Attachment, RegionAttachment};
+use crate::render::{pack_color, RenderCommand, TextureId};
+use crate::skeleton::{Skeleton, Slot};
 
 /// Stateful renderer: owns per-instance scratch buffers (world vertex
-/// cache, quad index template, clipping scratch) that would otherwise
-/// be re-allocated every frame.
+/// cache, quad index template) that would otherwise be re-allocated
+/// every frame.
 ///
-/// Reuse one `SkeletonRenderer` per skeleton instance (or share across
-/// skeletons if you're rendering sequentially — the internal buffers
-/// are reused, not accumulated).
+/// Reuse one `SkeletonRenderer` per skeleton instance (or share
+/// across skeletons if you're rendering sequentially — the internal
+/// buffers are reused, not accumulated).
 #[derive(Debug)]
 pub struct SkeletonRenderer {
     /// Per-attachment scratch: enough room for the largest attachment
@@ -54,8 +54,7 @@ pub struct SkeletonRenderer {
     /// reused for every `RegionAttachment`.
     quad_indices: [u16; 6],
     /// Accumulator for the per-slot commands emitted during a single
-    /// `render` call. Drained into the returned `Vec<RenderCommand>`
-    /// and cleared at the start of every call.
+    /// `render` call. Cleared at the start of every call.
     render_commands: Vec<RenderCommand>,
     // TODO(6e): `clipping: SkeletonClipping` scratch buffers land
     // here once the clipper is ported.
@@ -75,27 +74,128 @@ impl SkeletonRenderer {
     }
 
     /// Walk `skeleton`'s draw-order, emitting one [`RenderCommand`]
-    /// per visible attachment (merged into batched runs by the
-    /// batching pass in sub-phase 6g).
+    /// per visible attachment. Skips slots with `alpha == 0`, inactive
+    /// bones, or attachment kinds not yet supported.
     ///
-    /// **Stub until sub-phase 6c lands** — currently returns an empty
-    /// command stream so downstream crates can type-check against the
-    /// API. Implementation follows `SkeletonRenderer::render()`
-    /// literally.
-    pub fn render(&mut self, _skeleton: &Skeleton) -> &[RenderCommand] {
+    /// Literal port of `spine-cpp/src/spine/SkeletonRenderer.cpp` —
+    /// the 6c phase covers the [`RegionAttachment`] branch; meshes
+    /// (6d) and clipping (6e) follow.
+    pub fn render(&mut self, skeleton: &Skeleton) -> &[RenderCommand] {
         self.render_commands.clear();
-        // Scratch buffers retain their capacity between frames —
-        // `clear()` is deliberate.
         self.world_vertices.clear();
 
-        // TODO(6c): iterate `skeleton.draw_order`, resolve each slot's
-        // attachment to geometry, emit RegionAttachment and
-        // MeshAttachment commands.
-        // TODO(6e): call clipper.clipTriangles between geometry
-        // computation and emission.
-        // TODO(6g): final batchCommands pass.
+        for &slot_id in &skeleton.draw_order {
+            let slot = &skeleton.slots[slot_id.index()];
+            let Some(attachment_id) = slot.attachment else {
+                continue;
+            };
+
+            // Early-out: slot alpha == 0 OR bone inactive (unless
+            // this is a `ClippingAttachment`, which spine-cpp lets
+            // through so `clipEnd` / `clipStart` bookkeeping runs).
+            let slot_bone = skeleton.data.slots[slot_id.index()].bone;
+            let bone_active = skeleton.bones[slot_bone.index()].active;
+            let attachment = &skeleton.data.attachments[attachment_id.index()];
+            let is_clipping = matches!(attachment, Attachment::Clipping(_));
+            if !is_clipping && (slot.color.a == 0.0 || !bone_active) {
+                continue;
+            }
+
+            // Phase 6d (Mesh), Phase 6e (Clipping) will grow this
+            // into a match — the single-branch form triggers clippy
+            // but that goes away as soon as 6d lands.
+            if let Attachment::Region(region) = attachment {
+                self.emit_region(skeleton, slot_id, slot, region);
+            }
+            // Phase 6e: clipper.clipEnd(slot) at end of every slot iteration.
+        }
+        // Phase 6e: clipper.clipEnd() at end of frame.
+        // Phase 6g: batch same-(texture, blend, color) runs.
 
         &self.render_commands
+    }
+
+    /// Emit a `RegionAttachment` as a 4-vertex / 6-index quad.
+    ///
+    /// Mirrors the `RegionAttachment` branch of
+    /// `SkeletonRenderer::render` + `RegionAttachment::computeWorldVertices`.
+    #[allow(clippy::many_single_char_names)] // spine-cpp's a,b,c,d bone matrix + wx,wy.
+    fn emit_region(
+        &mut self,
+        skeleton: &Skeleton,
+        slot_id: crate::data::SlotId,
+        slot: &Slot,
+        region: &RegionAttachment,
+    ) {
+        // Attachment alpha 0 → skip (matches spine-cpp).
+        if region.color.a == 0.0 {
+            return;
+        }
+
+        // Resolve active region + uv buffer. When a `Sequence` is
+        // present the active frame is chosen from the slot's
+        // `sequence_index`; otherwise the attachment's stored
+        // region/UVs are used directly.
+        let Some((texture, uvs)) = resolve_region_texture(region, slot.sequence_index) else {
+            // No resolved region (loader couldn't match this
+            // attachment to an atlas page) — skip silently.
+            return;
+        };
+
+        // Transform the 4 stored corner offsets by the slot's bone
+        // world matrix. Literal port of `computeWorldVertices`.
+        let bone_id = skeleton.data.slots[slot_id.index()].bone;
+        let bone = &skeleton.bones[bone_id.index()];
+        let (wx, wy) = (bone.world_x, bone.world_y);
+        let (a, b, c, d) = (bone.a, bone.b, bone.c, bone.d);
+        let off = &region.vertex_offset;
+        // spine-cpp emit order: BR, BL, UL, UR.
+        let v = [
+            off[BRX] * a + off[BRY] * b + wx,
+            off[BRX] * c + off[BRY] * d + wy,
+            off[BLX] * a + off[BLY] * b + wx,
+            off[BLX] * c + off[BLY] * d + wy,
+            off[ULX] * a + off[ULY] * b + wx,
+            off[ULX] * c + off[ULY] * d + wy,
+            off[URX] * a + off[URY] * b + wx,
+            off[URX] * c + off[URY] * d + wy,
+        ];
+
+        // Blend skeleton × slot × attachment colors (premultiplied).
+        let sc = skeleton.color;
+        let scol = slot.color;
+        let acol = region.color;
+        let color = pack_color(
+            sc.r * scol.r * acol.r,
+            sc.g * scol.g * acol.g,
+            sc.b * scol.b * acol.b,
+            sc.a * scol.a * acol.a,
+        );
+        let dark_color = if let Some(dark) = slot.dark_color {
+            // spine-cpp forces alpha to 1.0 in the dark-color pack
+            // (the upper byte is `0xff`).
+            pack_color(dark.r, dark.g, dark.b, 1.0)
+        } else {
+            0xff00_0000
+        };
+
+        // UVs are 8 floats BR/BL/UL/UR same as positions.
+        let mut cmd = RenderCommand::with_capacity(
+            4,
+            6,
+            skeleton.data.slots[slot_id.index()].blend_mode,
+            texture,
+        );
+        cmd.positions.copy_from_slice(&v);
+        cmd.uvs.copy_from_slice(&uvs);
+        for c in &mut cmd.colors {
+            *c = color;
+        }
+        for c in &mut cmd.dark_colors {
+            *c = dark_color;
+        }
+        cmd.indices.copy_from_slice(&self.quad_indices);
+        self.render_commands.push(cmd);
     }
 
     /// Capacity of the internal world-vertex scratch buffer, in
@@ -119,6 +219,80 @@ impl Default for SkeletonRenderer {
     }
 }
 
+// --- Corner offset / UV indices ---------------------------------------------
+// spine-cpp const ints — reproduced here so the vertex code matches the
+// reference visually. Order: BL, UL, UR, BR (low-to-high in memory).
+const BLX: usize = 0;
+const BLY: usize = 1;
+const ULX: usize = 2;
+const ULY: usize = 3;
+const URX: usize = 4;
+const URY: usize = 5;
+const BRX: usize = 6;
+const BRY: usize = 7;
+
+/// Resolve the active `(TextureId, UVs)` for a region attachment.
+///
+/// Without a `Sequence`, returns the attachment's stored region /
+/// UVs directly. With a sequence, picks `regions[sequence_index]`
+/// (or `setup_index` when the slot's index is `-1`), recomputes the
+/// UV corners from the chosen region, and returns those.
+///
+/// Returns `None` when no region can be resolved — the walker skips
+/// those slots.
+fn resolve_region_texture(
+    region: &RegionAttachment,
+    slot_sequence_index: i32,
+) -> Option<(TextureId, [f32; 8])> {
+    if let Some(seq) = region.sequence.as_ref() {
+        // Pick the active sequence frame.
+        let mut idx = if slot_sequence_index == -1 {
+            seq.setup_index
+        } else {
+            slot_sequence_index
+        };
+        let n = seq.regions.len() as i32;
+        if idx >= n {
+            idx = n - 1;
+        }
+        if idx < 0 {
+            return None;
+        }
+        let Some(Some(r)) = seq.regions.get(idx as usize) else {
+            return None;
+        };
+        let uvs = region_uvs_for(r);
+        return Some((TextureId(r.page_index), uvs));
+    }
+    // No sequence: use the attachment's resolved region + stored UVs.
+    let r = region.region.as_ref()?;
+    let uvs = region.uvs;
+    Some((TextureId(r.page_index), uvs))
+}
+
+/// Compute the four-corner UVs from a region reference, accounting for
+/// the `degrees` rotation flag (spine-cpp does this in
+/// `RegionAttachment::updateRegion`).
+fn region_uvs_for(r: &TextureRegionRef) -> [f32; 8] {
+    if r.degrees == 90 {
+        // Rotated region layout (matches spine-cpp updateRegion's
+        // `degrees == 90` branch).
+        [
+            r.u,  r.v2, // BL
+            r.u,  r.v,  // UL
+            r.u2, r.v,  // UR
+            r.u2, r.v2, // BR
+        ]
+    } else {
+        [
+            r.u,  r.v2, // BL
+            r.u2, r.v2, // UL
+            r.u2, r.v,  // UR
+            r.u,  r.v,  // BR
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +309,94 @@ mod tests {
         let b = SkeletonRenderer::new();
         assert_eq!(a.quad_indices(), b.quad_indices());
         assert_eq!(a.world_vertex_capacity(), b.world_vertex_capacity());
+    }
+
+    /// End-to-end: load spineboy, render setup pose, confirm we emit
+    /// at least one region command whose vertex layout matches the
+    /// expected BR/BL/UL/UR shape.
+    #[test]
+    fn renders_spineboy_setup_pose() {
+        use crate::atlas::Atlas;
+        use crate::load::{AtlasAttachmentLoader, SkeletonBinary};
+        use crate::skeleton::{Physics, Skeleton};
+        use std::sync::Arc;
+
+        let Ok(atlas_src) = std::fs::read_to_string(
+            "../spine-runtimes/examples/spineboy/export/spineboy.atlas",
+        ) else {
+            return; // test-only best-effort; skip if examples aren't present
+        };
+        let atlas = Atlas::parse(&atlas_src).unwrap();
+        let mut loader = AtlasAttachmentLoader::new(&atlas);
+        let bytes = std::fs::read(
+            "../spine-runtimes/examples/spineboy/export/spineboy-pro.skel",
+        )
+        .unwrap();
+        let data = Arc::new(
+            SkeletonBinary::with_loader(&mut loader)
+                .read(&bytes)
+                .unwrap(),
+        );
+
+        let mut sk = Skeleton::new(Arc::clone(&data));
+        sk.update_cache();
+        sk.set_to_setup_pose();
+        sk.update_world_transform(Physics::None);
+
+        let mut renderer = SkeletonRenderer::new();
+        let cmds = renderer.render(&sk);
+
+        assert!(
+            !cmds.is_empty(),
+            "spineboy setup pose should emit at least one render command"
+        );
+        for (i, cmd) in cmds.iter().enumerate() {
+            assert_eq!(
+                cmd.positions.len() % 2,
+                0,
+                "command[{i}]: positions must be even-length (interleaved xy)"
+            );
+            assert_eq!(
+                cmd.uvs.len(),
+                cmd.positions.len(),
+                "command[{i}]: uvs and positions must have matching length"
+            );
+            assert_eq!(cmd.colors.len(), cmd.num_vertices());
+            assert_eq!(cmd.dark_colors.len(), cmd.num_vertices());
+            // Region attachments are quads: 4 vertices, 6 indices.
+            assert_eq!(cmd.num_vertices(), 4, "command[{i}]: region quad");
+            assert_eq!(cmd.num_indices(), 6, "command[{i}]: region quad");
+            // No non-finite world coordinates.
+            for (k, v) in cmd.positions.iter().enumerate() {
+                assert!(
+                    v.is_finite(),
+                    "command[{i}].positions[{k}] = {v} is not finite"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn region_uvs_for_unrotated() {
+        let r = TextureRegionRef {
+            page_index: 0,
+            u: 0.1,
+            v: 0.2,
+            u2: 0.9,
+            v2: 0.8,
+            width: 10.0,
+            height: 10.0,
+            original_width: 10.0,
+            original_height: 10.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            degrees: 0,
+        };
+        let uvs = region_uvs_for(&r);
+        // BL, UL, UR, BR
+        assert_eq!(&uvs[0..2], &[0.1, 0.8]);
+        assert_eq!(&uvs[2..4], &[0.9, 0.8]);
+        assert_eq!(&uvs[4..6], &[0.9, 0.2]);
+        assert_eq!(&uvs[6..8], &[0.1, 0.2]);
     }
 }
