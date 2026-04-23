@@ -1,0 +1,14 @@
+/target
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Claude Code personal overrides (team settings.json is committed)
+.claude/settings.local.json
