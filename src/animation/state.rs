@@ -53,6 +53,41 @@ use crate::animation::{
 use crate::data::{AnimationId, SkeletonData};
 use crate::skeleton::Skeleton;
 
+/// Sentinel `AnimationId` marking a track entry as empty (no timelines,
+/// used by [`AnimationState::set_empty_animation`] and friends to fade
+/// back to setup pose).
+///
+/// spine-cpp represents this as a singleton `<empty>` Animation object;
+/// we use an out-of-range id to avoid threading a static through the
+/// `Arc<SkeletonData>` model.
+pub const EMPTY_ANIMATION_ID: AnimationId = AnimationId(u16::MAX);
+
+/// Classifies a [`StateEvent`] by lifecycle stage.
+///
+/// Ports `spine::EventType`. `Start`/`Interrupt`/`End`/`Complete`/`Dispose`
+/// report `TrackEntry` state changes; `Event` is the animation keyframe
+/// firing (the event timeline's output, wrapped into a queue entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventType {
+    Start,
+    Interrupt,
+    End,
+    Complete,
+    Dispose,
+    Event,
+}
+
+/// One lifecycle or keyframe event emitted by [`AnimationState`]. Drain
+/// after each `update` / `apply` pair via [`AnimationState::drain_events`].
+#[derive(Debug, Clone)]
+pub struct StateEvent {
+    pub kind: EventType,
+    pub entry: EntryId,
+    /// Only present when `kind == EventType::Event` — the keyframe that
+    /// fired on the corresponding track's event timeline.
+    pub event: Option<Event>,
+}
+
 /// Typed handle into the [`AnimationState`] entry slab. Identifies a
 /// track entry for the lifetime of its state; dropped when its owning
 /// state removes it.
@@ -263,6 +298,9 @@ pub struct AnimationState {
     /// `true` when the track topology changed since the last `apply`;
     /// triggers `compute_hold` to re-classify every timeline (Phase 4d).
     animations_changed: bool,
+    /// Lifecycle + keyframe events queued by `update`/`apply`, drained by
+    /// callers through [`Self::drain_events`].
+    event_queue: Vec<StateEvent>,
 }
 
 impl AnimationState {
@@ -276,7 +314,33 @@ impl AnimationState {
             next_id: 0,
             time_scale: 1.0,
             animations_changed: false,
+            event_queue: Vec::new(),
         }
+    }
+
+    /// Take every queued [`StateEvent`] since the last drain. Typical
+    /// use: call once after each `update` + `apply` pair in the game
+    /// loop; poll for Start / Complete / Event / … to drive SFX or
+    /// gameplay state. Events queued during a listener callback in
+    /// spine-cpp's model become "just the next drain" here.
+    pub fn drain_events(&mut self) -> Vec<StateEvent> {
+        std::mem::take(&mut self.event_queue)
+    }
+
+    fn queue_lifecycle(&mut self, kind: EventType, entry: EntryId) {
+        self.event_queue.push(StateEvent {
+            kind,
+            entry,
+            event: None,
+        });
+    }
+
+    fn queue_event(&mut self, entry: EntryId, event: Event) {
+        self.event_queue.push(StateEvent {
+            kind: EventType::Event,
+            entry,
+            event: Some(event),
+        });
     }
 
     /// Peek at a track's current entry, or `None` when the track is empty.
@@ -382,7 +446,8 @@ impl AnimationState {
             if never_applied {
                 let mixing_from = self.entries.get(&current_id).and_then(|e| e.mixing_from);
                 self.tracks[track_index] = mixing_from;
-                // queue->interrupt(current) + queue->end(current) land in 4e.
+                self.queue_lifecycle(EventType::Interrupt, current_id);
+                self.queue_lifecycle(EventType::End, current_id);
                 self.clear_next(current_id);
                 self.dispose_entry_chain(current_id);
                 last_for_mix = mixing_from;
@@ -497,9 +562,55 @@ impl AnimationState {
         Ok(self.add_animation(track_index, id, loop_, delay))
     }
 
+    /// Set an empty animation for `track_index`, discarding any queued
+    /// entries and crossfading to setup pose over `mix_duration` seconds.
+    ///
+    /// Ports `spine::AnimationState::setEmptyAnimation`. The sentinel
+    /// [`EMPTY_ANIMATION_ID`] identifies empty entries; their apply step
+    /// skips the timeline loop, and their `track_end` equals
+    /// `mix_duration` so the track auto-clears when the fade completes.
+    pub fn set_empty_animation(&mut self, track_index: usize, mix_duration: f32) -> EntryId {
+        let id = self.set_animation(track_index, EMPTY_ANIMATION_ID, false);
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.mix_duration = mix_duration;
+            entry.track_end = mix_duration;
+        }
+        id
+    }
+
+    /// Queue an empty animation `delay` seconds after the current/last
+    /// queued entry. If `delay <= 0`, the effective delay accounts for
+    /// the previous entry's `mix_duration`.
+    pub fn add_empty_animation(
+        &mut self,
+        track_index: usize,
+        mix_duration: f32,
+        delay: f32,
+    ) -> EntryId {
+        let id = self.add_animation(track_index, EMPTY_ANIMATION_ID, false, delay);
+        if let Some(entry) = self.entries.get_mut(&id) {
+            // spine-cpp: if (delay <= 0) entry->_delay = max(entry->_delay +
+            // entry->_mixDuration - mixDuration, 0.0f);
+            if delay <= 0.0 {
+                entry.delay = (entry.delay + entry.mix_duration - mix_duration).max(0.0);
+            }
+            entry.mix_duration = mix_duration;
+            entry.track_end = mix_duration;
+        }
+        id
+    }
+
+    /// Crossfade every active track back to setup pose.
+    pub fn set_empty_animations(&mut self, mix_duration: f32) {
+        for i in 0..self.tracks.len() {
+            if self.tracks[i].is_some() {
+                self.set_empty_animation(i, mix_duration);
+            }
+        }
+    }
+
     /// Remove the entry on `track_index`, leaving the skeleton at its
-    /// current pose. Matches `spine::AnimationState::clearTrack` minus
-    /// the event queue (Phase 4e).
+    /// current pose. Matches `spine::AnimationState::clearTrack`.
     pub fn clear_track(&mut self, track_index: usize) {
         if track_index >= self.tracks.len() {
             return;
@@ -507,18 +618,14 @@ impl AnimationState {
         let Some(current_id) = self.tracks[track_index].take() else {
             return;
         };
-
-        // Walk down the mixing_from chain and dispose each entry.
+        self.queue_lifecycle(EventType::End, current_id);
         self.clear_next(current_id);
-        let mut entry_id = Some(current_id);
+
+        // Walk the mixing_from chain: fire End per entry, unlink.
+        let mut entry_id = self.entries.get(&current_id).and_then(|e| e.mixing_from);
         while let Some(id) = entry_id {
-            let from_id = self.entries.get(&id).and_then(|e| e.mixing_from);
-            // Break the mixing_from/mixing_to link before disposing.
-            if let Some(e) = self.entries.get_mut(&id) {
-                e.mixing_from = None;
-                e.mixing_to = None;
-            }
-            entry_id = from_id;
+            self.queue_lifecycle(EventType::End, id);
+            entry_id = self.entries.get(&id).and_then(|e| e.mixing_from);
         }
         // Now dispose the whole chain.
         self.dispose_entry_chain(current_id);
@@ -548,7 +655,7 @@ impl AnimationState {
 
         if let Some(from_id) = from {
             if interrupt {
-                // queue->interrupt(from) lands in Phase 4e.
+                self.queue_lifecycle(EventType::Interrupt, from_id);
             }
 
             // Link mixing_from ↔ mixing_to.
@@ -577,6 +684,8 @@ impl AnimationState {
                 from_entry.mixing_to = Some(current);
             }
         }
+        // `start` on the new current triggers the animationsChanged rebuild.
+        self.queue_lifecycle(EventType::Start, current);
         self.animations_changed = true;
     }
 
@@ -589,12 +698,21 @@ impl AnimationState {
         loop_: bool,
         last: Option<EntryId>,
     ) -> EntryId {
-        let duration = self.skeleton_data().animations[animation.index()].duration;
+        // Empty-animation sentinel has no backing data; its duration is 0.
+        let duration = if animation == EMPTY_ANIMATION_ID {
+            0.0
+        } else {
+            self.skeleton_data().animations[animation.index()].duration
+        };
         let mut entry = TrackEntry::new(track_index, animation, duration, loop_);
         // mix_duration defaults to 0 when there's no predecessor, else
         // pulled from the AnimationStateData's (last_anim → new_anim) lookup.
+        // The EMPTY sentinel is invalid as a key in the mix table, so
+        // empty-animation entries get the default mix (caller overrides).
         if let Some(last_id) = last
             && let Some(last_entry) = self.entries.get(&last_id)
+            && last_entry.animation != EMPTY_ANIMATION_ID
+            && animation != EMPTY_ANIMATION_ID
         {
             entry.mix_duration = self.data.mix(last_entry.animation, animation);
         }
@@ -604,11 +722,11 @@ impl AnimationState {
     /// Dispose every entry queued behind `entry_id` (via `next` pointers).
     /// Matches `spine::AnimationState::clearNext`.
     fn clear_next(&mut self, entry_id: EntryId) {
-        // Walk the `next` chain, disposing each.
+        // Walk the `next` chain, firing Dispose on each then freeing.
         let mut next = self.entries.get(&entry_id).and_then(|e| e.next);
         while let Some(next_id) = next {
             let after = self.entries.get(&next_id).and_then(|e| e.next);
-            // queue->dispose(next) lands in Phase 4e.
+            self.queue_lifecycle(EventType::Dispose, next_id);
             self.free_entry(next_id);
             next = after;
         }
@@ -639,6 +757,7 @@ impl AnimationState {
     ///   (chains `mix_time` advances on any `mixing_from` on the new current).
     /// - Track clearing when `track_end` is reached.
     /// - Mixing-from decay via `update_mixing_from` (Phase 4c fills the body).
+    #[allow(clippy::too_many_lines)] // matches spine-cpp's single-function shape
     pub fn update(&mut self, delta: f32) {
         let delta = delta * self.time_scale;
         for i in 0..self.tracks.len() {
@@ -717,7 +836,7 @@ impl AnimationState {
             } else if track_last >= track_end && mixing_from.is_none() {
                 // No next + track_end reached + no mixing_from → clear the track.
                 self.tracks[i] = None;
-                // queue->end(currentP) lands in Phase 4e.
+                self.queue_lifecycle(EventType::End, current_id);
                 self.clear_next(current_id);
                 self.dispose_entry_chain(current_id);
                 self.animations_changed = true;
@@ -737,6 +856,13 @@ impl AnimationState {
                     if let Some(from_id) = chain_root {
                         if let Some(f) = self.entries.get_mut(&from_id) {
                             f.mixing_to = None;
+                        }
+                        // End events for every entry in the chain before disposal.
+                        let mut walk = Some(from_id);
+                        while let Some(id) = walk {
+                            let prev = self.entries.get(&id).and_then(|e| e.mixing_from);
+                            self.queue_lifecycle(EventType::End, id);
+                            walk = prev;
                         }
                         self.dispose_entry_chain(from_id);
                     }
@@ -867,9 +993,13 @@ impl AnimationState {
             };
             (e.animation, e.mixing_to, e.hold_previous)
         };
-        let timelines = self.skeleton_data().animations[animation_id.index()]
-            .timelines
-            .clone();
+        let timelines = if animation_id == EMPTY_ANIMATION_ID {
+            Vec::new()
+        } else {
+            self.skeleton_data().animations[animation_id.index()]
+                .timelines
+                .clone()
+        };
         let n = timelines.len();
 
         // Pre-size the per-entry scratch vecs.
@@ -929,7 +1059,8 @@ impl AnimationState {
             );
             let to_anim_id = self.entries.get(&to_id).map(|e| e.animation);
             let to_has_timeline = to_anim_id.is_some_and(|aid| {
-                animation_has_timeline(&self.skeleton_data().animations[aid.index()], &ids)
+                aid != EMPTY_ANIMATION_ID
+                    && animation_has_timeline(&self.skeleton_data().animations[aid.index()], &ids)
             });
             if uses_first || !to_has_timeline {
                 // HoldFirst: timeline ramps down under its own mix but
@@ -968,6 +1099,75 @@ impl AnimationState {
                 e.timeline_mode[i] = mode;
                 e.timeline_hold_mix[i] = hold_mix;
             }
+        }
+    }
+
+    /// Fire the events captured during the current entry's apply and
+    /// emit a Complete event if the track just finished a loop or (for
+    /// non-looping) reached its end.
+    ///
+    /// Ports `spine::AnimationState::queueEvents`.
+    #[allow(clippy::float_cmp)] // tag/sentinel comparisons
+    fn queue_events_for(&mut self, entry_id: EntryId, animation_time: f32, captured: &[Event]) {
+        let (animation_start, animation_end, track_time, track_last, animation_last, loop_) = {
+            let Some(e) = self.entries.get(&entry_id) else {
+                return;
+            };
+            (
+                e.animation_start,
+                e.animation_end,
+                e.track_time,
+                e.track_last,
+                e.animation_last,
+                e.loop_,
+            )
+        };
+        let duration = animation_end - animation_start;
+        let track_last_wrapped = if duration == 0.0 {
+            f32::NAN
+        } else {
+            track_last % duration
+        };
+
+        // Queue events before Complete.
+        let mut i = 0;
+        while i < captured.len() {
+            let e = &captured[i];
+            if e.time < track_last_wrapped {
+                break;
+            }
+            if e.time > animation_end {
+                i += 1;
+                continue;
+            }
+            self.queue_event(entry_id, e.clone());
+            i += 1;
+        }
+
+        // Complete detection.
+        let complete = if loop_ {
+            if duration == 0.0 {
+                true
+            } else {
+                let cycles = (track_time / duration).floor() as i64;
+                cycles > 0 && cycles > (track_last / duration).floor() as i64
+            }
+        } else {
+            animation_time >= animation_end && animation_last < animation_end
+        };
+        if complete {
+            self.queue_lifecycle(EventType::Complete, entry_id);
+        }
+
+        // Queue events after Complete.
+        while i < captured.len() {
+            let e = &captured[i];
+            if e.time < animation_start {
+                i += 1;
+                continue;
+            }
+            self.queue_event(entry_id, e.clone());
+            i += 1;
         }
     }
 
@@ -1033,7 +1233,11 @@ impl AnimationState {
             let Some(from_entry) = self.entries.get(&from) else {
                 return mix;
             };
-            let anim = &self.skeleton_data().animations[from_entry.animation.index()];
+            let duration = if from_entry.animation == EMPTY_ANIMATION_ID {
+                0.0
+            } else {
+                self.skeleton_data().animations[from_entry.animation.index()].duration
+            };
             (
                 from_entry.alpha,
                 from_entry.event_threshold,
@@ -1041,7 +1245,7 @@ impl AnimationState {
                 from_entry.animation_last,
                 from_entry.animation_time(),
                 from_entry.animation,
-                anim.duration,
+                duration,
             )
         };
         let to_interrupt_alpha = self.entries.get(&to).map_or(1.0, |e| e.interrupt_alpha);
@@ -1074,9 +1278,13 @@ impl AnimationState {
             &mut scratch
         };
 
-        let timelines = self.skeleton_data().animations[from_animation_id.index()]
-            .timelines
-            .clone();
+        let timelines = if from_animation_id == EMPTY_ANIMATION_ID {
+            Vec::new()
+        } else {
+            self.skeleton_data().animations[from_animation_id.index()]
+                .timelines
+                .clone()
+        };
 
         if blend == MixBlend::Add {
             // Add-blend entries: every timeline applies with the entry's
@@ -1175,6 +1383,12 @@ impl AnimationState {
     /// introduces the per-timeline `timeline_mode` specialisation
     /// (HoldSubsequent/HoldFirst/HoldMix) for cleaner crossfades when
     /// lower tracks also key the same property.
+    /// Apply the skeleton's current track state, draining captured
+    /// keyframe events and lifecycle events into the internal queue (poll
+    /// via [`Self::drain_events`]). The `events` out-param is retained
+    /// for callers that want the raw Phase 3 event list; populated only
+    /// with per-entry firings, not `Complete`/`Start`/etc. state events.
+    #[allow(clippy::too_many_lines)]
     pub fn apply(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) {
         // Phase 4d: re-classify timelines when the track topology
         // changed. Populates every entry's timeline_mode/timeline_hold_mix
@@ -1230,7 +1444,12 @@ impl AnimationState {
                     entry.animation,
                 )
             };
-            let duration = self.skeleton_data().animations[animation_id.index()].duration;
+            let is_empty = animation_id == EMPTY_ANIMATION_ID;
+            let duration = if is_empty {
+                0.0
+            } else {
+                self.skeleton_data().animations[animation_id.index()].duration
+            };
             let apply_time = if reverse {
                 duration - animation_time
             } else {
@@ -1243,25 +1462,35 @@ impl AnimationState {
                 blend = MixBlend::First;
             }
 
-            let mut scratch: Vec<Event> = Vec::new();
-            // Clone timelines so the apply loop doesn't hold a borrow
-            // through `self.skeleton_data()`.
-            let timelines = self.skeleton_data().animations[animation_id.index()]
-                .timelines
-                .clone();
-            let ev_ref: &mut Vec<Event> = if reverse { &mut scratch } else { &mut *events };
+            // Capture timeline firings into a scratch Vec, then route
+            // through queue_events_for (which emits Complete + Event
+            // lifecycle entries on the state queue).
+            let mut captured: Vec<Event> = Vec::new();
+            let timelines = if is_empty {
+                Vec::new()
+            } else {
+                self.skeleton_data().animations[animation_id.index()]
+                    .timelines
+                    .clone()
+            };
 
             for tl in &timelines {
                 tl.apply(
                     skeleton,
                     animation_last,
                     apply_time,
-                    ev_ref,
+                    &mut captured,
                     effective_alpha,
                     blend,
                     MixDirection::In,
                 );
             }
+
+            // Keep the caller's out-param populated for Phase 3 API
+            // compat; the state queue also gets them (routed through
+            // queue_events_for which handles Complete detection).
+            events.extend(captured.iter().cloned());
+            self.queue_events_for(current_id, animation_time, &captured);
 
             if let Some(entry) = self.entries.get_mut(&current_id) {
                 entry.next_animation_last = animation_time;
@@ -1529,6 +1758,76 @@ mod tests {
         assert!(
             r > 20.0 && r < 45.0,
             "expected mid-crossfade rotation, got {r}"
+        );
+    }
+
+    #[test]
+    fn set_animation_queues_start_event() {
+        let sd = one_bone_rotate();
+        let state_data = Arc::new(AnimationStateData::new(Arc::clone(&sd)));
+        let mut state = AnimationState::new(state_data);
+        let id = state.set_animation(0, AnimationId(0), false);
+
+        let events = state.drain_events();
+        assert_eq!(events.len(), 1, "expected one Start event, got {events:?}");
+        assert_eq!(events[0].kind, EventType::Start);
+        assert_eq!(events[0].entry, id);
+        assert!(events[0].event.is_none());
+    }
+
+    #[test]
+    fn set_animation_over_applied_queues_interrupt_and_start() {
+        let sd = two_anim_skeleton();
+        let mut state_data = AnimationStateData::new(Arc::clone(&sd));
+        state_data.set_default_mix(0.2);
+        let state_data = Arc::new(state_data);
+        let mut state = AnimationState::new(state_data);
+
+        state.set_animation(0, AnimationId(0), false);
+        let mut sk = Skeleton::new(Arc::clone(&sd));
+        sk.update_cache();
+        let mut events = Vec::new();
+        state.apply(&mut sk, &mut events);
+        // Discard the Start event from the first set_animation.
+        let _ = state.drain_events();
+
+        state.set_animation(0, AnimationId(1), false);
+        let kinds: Vec<_> = state.drain_events().into_iter().map(|e| e.kind).collect();
+        assert!(kinds.contains(&EventType::Interrupt));
+        assert!(kinds.contains(&EventType::Start));
+    }
+
+    #[test]
+    fn set_empty_animation_crossfades_to_setup() {
+        let sd = two_anim_skeleton();
+        let state_data = Arc::new(AnimationStateData::new(Arc::clone(&sd)));
+        let mut state = AnimationState::new(state_data);
+        state.set_animation(0, AnimationId(0), false);
+        let mut sk = Skeleton::new(Arc::clone(&sd));
+        sk.update_cache();
+        let mut events = Vec::new();
+        state.update(0.5);
+        state.apply(&mut sk, &mut events);
+        // Rotation at t=0.5 on animation `a` is 15.
+
+        let empty_id = state.set_empty_animation(0, 0.3);
+        assert_eq!(state.current(0).unwrap().animation, EMPTY_ANIMATION_ID);
+        assert!((state.entry(empty_id).unwrap().mix_duration - 0.3).abs() < 1e-6);
+        assert!((state.entry(empty_id).unwrap().track_end - 0.3).abs() < 1e-6);
+
+        // Advance past the mix duration. spine-cpp's update clears the
+        // mixing_from chain *inside* update_mixing_from but defers the
+        // track-clear by one more update tick (the clear-on-end check
+        // runs before update_mixing_from each call). So it takes two
+        // update calls to fully unload the empty track.
+        state.update(0.4);
+        state.apply(&mut sk, &mut events);
+        state.update(0.1);
+        state.apply(&mut sk, &mut events);
+        state.update(0.0);
+        assert!(
+            state.current(0).is_none(),
+            "empty-animation track should clear after mix_duration"
         );
     }
 
