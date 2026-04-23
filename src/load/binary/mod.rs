@@ -25,14 +25,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Skeleton-loading infrastructure shared by format-specific loaders.
-//!
-//! Phase 1b exposes the [`AttachmentLoader`] trait and the default
-//! [`AtlasAttachmentLoader`] implementation. The binary loader that drives
-//! them lands in Phase 1c.
+//! Binary `.skel` loader, ported from `spine-cpp/SkeletonBinary.cpp`.
 
-pub mod attachment_loader;
-pub mod binary;
+mod parse;
+mod reader;
 
-pub use attachment_loader::{AtlasAttachmentLoader, AttachmentLoader, AttachmentLoaderError};
-pub use binary::{BinaryError, SkeletonBinary};
+pub use parse::SkeletonBinary;
+pub use reader::BinaryError;

@@ -160,6 +160,10 @@ pub struct Sequence {
     pub setup_index: i32,
     /// Number of frames in the sequence.
     pub count: i32,
+    /// Resolved atlas regions, one per frame. Populated by the
+    /// `AttachmentLoader` during skeleton load. Frames where the region
+    /// couldn't be found are `None`.
+    pub regions: Vec<Option<TextureRegionRef>>,
 }
 
 impl Sequence {
@@ -171,7 +175,27 @@ impl Sequence {
             digits: 0,
             setup_index: 0,
             count,
+            regions: Vec::new(),
         }
+    }
+
+    /// Format the atlas region name for frame `index` in this sequence —
+    /// matches `spine-cpp/Sequence::getPath`.
+    ///
+    /// Returns `base_path` + `(start + index)` as a decimal, left-padded
+    /// with zeros to at least `digits` characters.
+    #[must_use]
+    pub fn frame_path(&self, base_path: &str, index: i32) -> String {
+        let frame = (self.start + index).to_string();
+        let digits = self.digits.max(0) as usize;
+        let pad = digits.saturating_sub(frame.len());
+        let mut out = String::with_capacity(base_path.len() + pad + frame.len());
+        out.push_str(base_path);
+        for _ in 0..pad {
+            out.push('0');
+        }
+        out.push_str(&frame);
+        out
     }
 }
 

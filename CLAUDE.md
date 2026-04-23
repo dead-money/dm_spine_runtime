@@ -38,7 +38,7 @@ Every ported source file must retain the **Spine Runtimes License header block**
 ## Phase tracker
 
 - [x] 0 — math (`Color`, deg/rad trig helpers), triangulator (ear-clipping + convex decompose). Curves deferred to Phase 3 with timelines.
-- [ ] 1 — data types + atlas + JSON/binary loaders (can load all `examples/*/export/*.skel`)
+- [x] 1 — atlas parser (1a), data-type scaffold (1b), binary `.skel` loader (1c). All 25 example skeletons load through `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
 - [ ] 2 — `Skeleton` pose (bones, slots, skin, `updateWorldTransform` with all `Inherit` modes)
 - [ ] 3 — property timelines + single-track `AnimationState`
 - [ ] 4 — full `AnimationState` (tracks, mixing, events, queue)

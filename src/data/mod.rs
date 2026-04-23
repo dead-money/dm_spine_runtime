@@ -48,7 +48,7 @@ pub mod skeleton;
 pub mod skin;
 pub mod slot;
 
-pub use animation::{Animation, Timeline};
+pub use animation::{Animation, AnimationEvent, CurveFrames, PhysicsProperty, Timeline};
 pub use attachment::{
     Attachment, AttachmentType, BoundingBoxAttachment, ClippingAttachment, MeshAttachment,
     PathAttachment, PointAttachment, RegionAttachment, Sequence, SequenceMode, VertexData,

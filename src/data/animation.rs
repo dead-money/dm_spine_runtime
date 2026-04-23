@@ -236,9 +236,11 @@ pub enum Timeline {
         curves: CurveFrames,
     },
     /// A single physics-property curve. One constraint can have multiple
-    /// timeline instances — one per animated property.
+    /// timeline instances — one per animated property. `constraint = None`
+    /// means the timeline applies to every physics constraint in the
+    /// skeleton (matches spine-cpp's `index = -1` sentinel).
     Physics {
-        constraint: PhysicsConstraintId,
+        constraint: Option<PhysicsConstraintId>,
         property: PhysicsProperty,
         curves: CurveFrames,
     },
@@ -310,7 +312,7 @@ mod tests {
                 curves: CurveFrames::default(),
             },
             Timeline::Physics {
-                constraint: PhysicsConstraintId(0),
+                constraint: Some(PhysicsConstraintId(0)),
                 property: PhysicsProperty::Wind,
                 curves: CurveFrames::default(),
             },

@@ -41,7 +41,7 @@ use crate::atlas::Atlas;
 use crate::data::SlotId;
 use crate::data::attachment::{
     Attachment, BoundingBoxAttachment, ClippingAttachment, MeshAttachment, PathAttachment,
-    PointAttachment, RegionAttachment, TextureRegionRef,
+    PointAttachment, RegionAttachment, Sequence, TextureRegionRef,
 };
 
 /// Errors surfaced by an [`AttachmentLoader`]. Loaders can define richer
@@ -78,9 +78,17 @@ pub trait AttachmentLoader {
     /// Build a region attachment. `path` defaults to `name` when the
     /// skeleton didn't override it.
     ///
+    /// When `sequence` is `Some`, the loader should populate
+    /// `sequence.regions` with per-frame atlas regions derived from
+    /// `path` (via [`Sequence::frame_path`]), and leave the attachment's
+    /// direct region reference unset — matching spine-cpp's
+    /// `AtlasAttachmentLoader::loadSequence`. When `sequence` is `None`,
+    /// the loader resolves `path` to a single region and stores it on the
+    /// attachment.
+    ///
     /// # Errors
-    /// Returns [`AttachmentLoaderError::RegionNotFound`] if `path` cannot be
-    /// resolved against the loader's atlas (or other backing store), or
+    /// Returns [`AttachmentLoaderError::RegionNotFound`] if any required
+    /// region cannot be resolved against the loader's atlas, or
     /// [`AttachmentLoaderError::Unsupported`] if the loader explicitly
     /// declines this attachment type.
     fn new_region_attachment(
@@ -89,10 +97,12 @@ pub trait AttachmentLoader {
         slot_name: &str,
         attachment_name: &str,
         path: &str,
+        sequence: Option<&mut Sequence>,
     ) -> Result<Attachment, AttachmentLoaderError>;
 
     /// Build a mesh attachment with resolved region UVs. The caller fills
-    /// in vertex / triangle / uv data afterwards.
+    /// in vertex / triangle / uv data afterwards. Sequence semantics
+    /// match [`Self::new_region_attachment`].
     ///
     /// # Errors
     /// Same conditions as [`Self::new_region_attachment`].
@@ -102,6 +112,7 @@ pub trait AttachmentLoader {
         slot_name: &str,
         attachment_name: &str,
         path: &str,
+        sequence: Option<&mut Sequence>,
     ) -> Result<Attachment, AttachmentLoaderError>;
 
     /// Build a bounding-box attachment. Loaders typically return this
@@ -205,6 +216,43 @@ impl<'atlas> AtlasAttachmentLoader<'atlas> {
     }
 }
 
+impl AtlasAttachmentLoader<'_> {
+    /// Populate a sequence's per-frame regions from the atlas. Every frame
+    /// path is formed as `sequence.frame_path(base, i)` and looked up in
+    /// the atlas. Missing regions are stored as `None` rather than failing,
+    /// matching spine-cpp's permissive fallback (which would `return NULL`
+    /// at the skeleton level but allows individual frames to be optional
+    /// in practice — this is the same behaviour).
+    fn load_sequence(&self, base_path: &str, sequence: &mut Sequence) {
+        let frame_count = sequence.count.max(0) as usize;
+        sequence.regions.clear();
+        sequence.regions.reserve(frame_count);
+        for i in 0..frame_count {
+            // i is bounded by frame_count which comes from sequence.count (i32),
+            // so this fits in i32 by construction.
+            let path = sequence.frame_path(base_path, i32::try_from(i).unwrap_or(i32::MAX));
+            let resolved = self.atlas.find_region(&path).map(|r| {
+                let page = &self.atlas.pages[r.page as usize];
+                TextureRegionRef {
+                    page_index: page.index,
+                    u: r.u,
+                    v: r.v,
+                    u2: r.u2,
+                    v2: r.v2,
+                    width: r.width as f32,
+                    height: r.height as f32,
+                    original_width: r.original_width as f32,
+                    original_height: r.original_height as f32,
+                    offset_x: r.offset_x,
+                    offset_y: r.offset_y,
+                    degrees: r.degrees,
+                }
+            });
+            sequence.regions.push(resolved);
+        }
+    }
+}
+
 impl AttachmentLoader for AtlasAttachmentLoader<'_> {
     fn new_region_attachment(
         &mut self,
@@ -212,11 +260,15 @@ impl AttachmentLoader for AtlasAttachmentLoader<'_> {
         slot_name: &str,
         attachment_name: &str,
         path: &str,
+        sequence: Option<&mut Sequence>,
     ) -> Result<Attachment, AttachmentLoaderError> {
-        let region = self.resolve_region(slot_name, attachment_name, path)?;
         let mut r = RegionAttachment::new(attachment_name);
         r.path = path.to_string();
-        r.region = Some(region);
+        if let Some(seq) = sequence {
+            self.load_sequence(path, seq);
+        } else {
+            r.region = Some(self.resolve_region(slot_name, attachment_name, path)?);
+        }
         Ok(Attachment::Region(r))
     }
 
@@ -226,11 +278,15 @@ impl AttachmentLoader for AtlasAttachmentLoader<'_> {
         slot_name: &str,
         attachment_name: &str,
         path: &str,
+        sequence: Option<&mut Sequence>,
     ) -> Result<Attachment, AttachmentLoaderError> {
-        let region = self.resolve_region(slot_name, attachment_name, path)?;
         let mut m = MeshAttachment::new(attachment_name);
         m.path = path.to_string();
-        m.region = Some(region);
+        if let Some(seq) = sequence {
+            self.load_sequence(path, seq);
+        } else {
+            m.region = Some(self.resolve_region(slot_name, attachment_name, path)?);
+        }
         Ok(Attachment::Mesh(m))
     }
 
@@ -297,7 +353,7 @@ region-a
         let atlas = sample_atlas();
         let mut loader = AtlasAttachmentLoader::new(&atlas);
         let attachment = loader
-            .new_region_attachment("default", "slot", "region-a", "region-a")
+            .new_region_attachment("default", "slot", "region-a", "region-a", None)
             .unwrap();
         let Attachment::Region(r) = attachment else {
             panic!("expected Region");
@@ -315,7 +371,7 @@ region-a
         let atlas = sample_atlas();
         let mut loader = AtlasAttachmentLoader::new(&atlas);
         let err = loader
-            .new_region_attachment("default", "slot", "missing", "missing")
+            .new_region_attachment("default", "slot", "missing", "missing", None)
             .unwrap_err();
         assert!(matches!(err, AttachmentLoaderError::RegionNotFound { .. }));
         if let AttachmentLoaderError::RegionNotFound {
@@ -328,6 +384,42 @@ region-a
             assert_eq!(slot, "slot");
             assert_eq!(attachment, "missing");
         }
+    }
+
+    #[test]
+    fn sequence_populates_frame_regions_and_skips_base_lookup() {
+        // Atlas with sequence-style regions. Spine's Sequence::frame_path
+        // concatenates `base + zero_padded_frame_number` with no separator,
+        // so for base="region" with digits=2 the atlas must contain
+        // "region01", "region02" (no dash before the frame number).
+        let atlas = Atlas::parse(
+            "p.png
+\tsize: 64, 64
+region01
+\tbounds: 0, 0, 16, 16
+region02
+\tbounds: 16, 0, 16, 16
+",
+        )
+        .unwrap();
+        let mut loader = AtlasAttachmentLoader::new(&atlas);
+        let mut sequence = Sequence::new(2);
+        sequence.start = 1;
+        sequence.digits = 2;
+        sequence.setup_index = 0;
+
+        // Pass the sequence in; the loader should populate its `regions` and
+        // leave the attachment's direct region as None.
+        let attachment = loader
+            .new_region_attachment("default", "slot", "region", "region", Some(&mut sequence))
+            .unwrap();
+        let Attachment::Region(r) = attachment else {
+            panic!("expected Region");
+        };
+        assert!(r.region.is_none(), "base region should be unresolved");
+        assert_eq!(sequence.regions.len(), 2);
+        assert!(sequence.regions[0].is_some());
+        assert!(sequence.regions[1].is_some());
     }
 
     #[test]
