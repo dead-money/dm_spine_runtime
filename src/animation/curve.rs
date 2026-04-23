@@ -45,6 +45,54 @@ use crate::animation::{
     BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, MixBlend, MixDirection,
 };
 
+/// Compute the 9 `(x, y)` bezier samples spine-cpp stores as an 18-float
+/// segment in `CurveFrames::curves`. Inputs are the wire-format control
+/// points plus the surrounding frames' `(time, value)` pairs; output matches
+/// `spine::CurveTimeline::setBezier`'s layout (x0, y0, x1, y1, …).
+///
+/// Used by the binary loader to materialise the runtime `_curves` layout
+/// that [`curve_value1`] / [`curve_value2`] / [`bezier_value`] expect.
+#[must_use]
+#[allow(clippy::too_many_arguments)] // matches spine-cpp's 10-param setBezier signature
+pub fn compute_bezier_samples(
+    time1: f32,
+    value1: f32,
+    cx1: f32,
+    cy1: f32,
+    cx2: f32,
+    cy2: f32,
+    time2: f32,
+    value2: f32,
+) -> [f32; BEZIER_SIZE] {
+    // Taylor-series-style bezier subdivision, copied literally from
+    // `spine-cpp/src/spine/CurveTimeline.cpp` `CurveTimeline::setBezier`.
+    // The magic fractions (0.03, 0.006, 0.3, 0.16666667) fall out of
+    // 9-segment uniform sampling of a cubic bezier; changing them breaks
+    // the bit-for-bit match against fixtures.
+    let tmpx = (time1 - cx1 * 2.0 + cx2) * 0.03;
+    let tmpy = (value1 - cy1 * 2.0 + cy2) * 0.03;
+    let dddx = ((cx1 - cx2) * 3.0 - time1 + time2) * 0.006;
+    let dddy = ((cy1 - cy2) * 3.0 - value1 + value2) * 0.006;
+    let mut ddx = tmpx * 2.0 + dddx;
+    let mut ddy = tmpy * 2.0 + dddy;
+    let mut dx = (cx1 - time1) * 0.3 + tmpx + dddx * 0.166_666_67;
+    let mut dy = (cy1 - value1) * 0.3 + tmpy + dddy * 0.166_666_67;
+    let mut x = time1 + dx;
+    let mut y = value1 + dy;
+    let mut out = [0.0_f32; BEZIER_SIZE];
+    for k in 0..(BEZIER_SIZE / 2) {
+        out[k * 2] = x;
+        out[k * 2 + 1] = y;
+        dx += ddx;
+        dy += ddy;
+        ddx += dddx;
+        ddy += dddy;
+        x += dx;
+        y += dy;
+    }
+    out
+}
+
 /// Find the largest `i` in `step, 2*step, 3*step, …` with `frames[i] <= target`.
 ///
 /// Returns `frames.len() - step` when every frame after index 0 is still

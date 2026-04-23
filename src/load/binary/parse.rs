@@ -53,6 +53,7 @@
     clippy::missing_panics_doc
 )]
 
+use crate::animation::{BEZIER_SIZE, compute_bezier_samples};
 use crate::data::attachment::{Attachment, Sequence, VertexData};
 use crate::data::{
     Animation, AnimationEvent, AttachmentId, BlendMode, BoneData, BoneId, CurveFrames, EventData,
@@ -1581,6 +1582,11 @@ fn read_short_array(r: &mut BinaryReader<'_>, n: usize) -> Result<Vec<u16>, Bina
 
 /// Read a CurveTimelineN where each frame has `entries` floats (time + values).
 /// Scale is applied to every value (not time).
+///
+/// Produces the runtime `_curves` layout (per-frame type code in slots
+/// `[0, frame_count)` followed by bezier samples in
+/// `[frame_count, frame_count + bezier_count * BEZIER_SIZE)`) so the
+/// Phase 3 apply path can consume it without further decoding.
 fn read_curve_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
@@ -1588,25 +1594,30 @@ fn read_curve_timeline(
     entries: usize,
     scale: f32,
 ) -> Result<CurveFrames, BinaryError> {
-    // Spine-cpp stores frames and curve metadata as separate arrays built up
-    // incrementally. We replicate that: `frames` holds `(time, v1, [v2..])`
-    // per frame, and `curves` is a free-form f32 stream of per-segment
-    // curve data (type code + optional bezier samples). For Phase 1b we
-    // preserve the raw stream the file contained, so Phase 3's evaluator
-    // can read back bit-exactly what spine-cpp wrote.
+    let channels = entries - 1;
     let mut frames: Vec<f32> = Vec::with_capacity(frame_count * entries);
-    let mut curves: Vec<f32> = Vec::new();
+    let curves_len = frame_count + bezier_count * BEZIER_SIZE;
+    let mut curves: Vec<f32> = vec![0.0_f32; curves_len];
 
     if frame_count == 0 {
         return Ok(CurveFrames { frames, curves });
     }
+    // spine-cpp CurveTimeline ctor sets `_curves[frameCount - 1] = STEPPED`
+    // as the safety default — a LINEAR read past the last frame would walk
+    // past end-of-frames otherwise.
+    curves[frame_count - 1] = CURVE_STEPPED as f32;
 
     let frame_last = frame_count - 1;
     let mut time = r.read_float()?;
-    let mut values: Vec<f32> = Vec::with_capacity(entries - 1);
-    for _ in 0..(entries - 1) {
+    let mut values: Vec<f32> = Vec::with_capacity(channels);
+    for _ in 0..channels {
         values.push(r.read_float()? * scale);
     }
+
+    // Running count of bezier *channel segments* (not frames) emitted into
+    // the samples tail. Each BEZIER frame consumes `channels` segments.
+    let mut bezier_seg_idx: usize = 0;
+
     for frame in 0..frame_count {
         frames.push(time);
         for v in &values {
@@ -1616,22 +1627,32 @@ fn read_curve_timeline(
             break;
         }
         let time2 = r.read_float()?;
-        let mut values2: Vec<f32> = Vec::with_capacity(entries - 1);
-        for _ in 0..(entries - 1) {
+        let mut values2: Vec<f32> = Vec::with_capacity(channels);
+        for _ in 0..channels {
             values2.push(r.read_float()? * scale);
         }
         let ctype = r.read_sbyte()?;
-        curves.push(ctype as f32);
         match ctype {
-            CURVE_LINEAR | CURVE_STEPPED => {}
+            CURVE_LINEAR => curves[frame] = CURVE_LINEAR as f32,
+            CURVE_STEPPED => curves[frame] = CURVE_STEPPED as f32,
             CURVE_BEZIER => {
-                for _ in 0..(entries - 1) {
-                    // Each value channel gets 4 bezier control floats on the wire.
-                    curves.push(r.read_float()?);
-                    curves.push(r.read_float()?);
-                    curves.push(r.read_float()?);
-                    curves.push(r.read_float()?);
+                // Record the absolute offset into the samples tail for this
+                // frame's *first* channel; eval derives subsequent channels
+                // as `first + k * BEZIER_SIZE`.
+                let first_channel_abs = frame_count + bezier_seg_idx * BEZIER_SIZE;
+                curves[frame] = (i32::from(CURVE_BEZIER) + first_channel_abs as i32) as f32;
+                for k in 0..channels {
+                    let cx1 = r.read_float()?;
+                    let cy1 = r.read_float()? * scale;
+                    let cx2 = r.read_float()?;
+                    let cy2 = r.read_float()? * scale;
+                    let samples = compute_bezier_samples(
+                        time, values[k], cx1, cy1, cx2, cy2, time2, values2[k],
+                    );
+                    let dst = frame_count + (bezier_seg_idx + k) * BEZIER_SIZE;
+                    curves[dst..dst + BEZIER_SIZE].copy_from_slice(&samples);
                 }
+                bezier_seg_idx += channels;
             }
             other => {
                 return Err(BinaryError::UnknownDiscriminant {
@@ -1645,9 +1666,6 @@ fn read_curve_timeline(
         values = values2;
     }
 
-    // bezier_count is informational — we've just captured the actual bezier
-    // segment payload based on the per-frame curve type bytes.
-    let _ = bezier_count;
     Ok(CurveFrames { frames, curves })
 }
 
@@ -1657,14 +1675,16 @@ fn read_curve_timeline(
 fn read_color_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
-    _bezier_count: usize,
+    bezier_count: usize,
     channels: usize,
 ) -> Result<CurveFrames, BinaryError> {
     let mut frames: Vec<f32> = Vec::with_capacity(frame_count * (1 + channels));
-    let mut curves: Vec<f32> = Vec::new();
+    let curves_len = frame_count + bezier_count * BEZIER_SIZE;
+    let mut curves: Vec<f32> = vec![0.0_f32; curves_len];
     if frame_count == 0 {
         return Ok(CurveFrames { frames, curves });
     }
+    curves[frame_count - 1] = CURVE_STEPPED as f32;
     let frame_last = frame_count - 1;
 
     let mut time = r.read_float()?;
@@ -1672,6 +1692,7 @@ fn read_color_timeline(
     for _ in 0..channels {
         values.push(f32::from(r.read_byte()?) / 255.0);
     }
+    let mut bezier_seg_idx: usize = 0;
     for frame in 0..frame_count {
         frames.push(time);
         for v in &values {
@@ -1686,13 +1707,31 @@ fn read_color_timeline(
             values2.push(f32::from(r.read_byte()?) / 255.0);
         }
         let ctype = r.read_sbyte()?;
-        curves.push(ctype as f32);
-        if ctype == CURVE_BEZIER {
-            for _ in 0..channels {
-                curves.push(r.read_float()?);
-                curves.push(r.read_float()?);
-                curves.push(r.read_float()?);
-                curves.push(r.read_float()?);
+        match ctype {
+            CURVE_LINEAR => curves[frame] = CURVE_LINEAR as f32,
+            CURVE_STEPPED => curves[frame] = CURVE_STEPPED as f32,
+            CURVE_BEZIER => {
+                let first_channel_abs = frame_count + bezier_seg_idx * BEZIER_SIZE;
+                curves[frame] = (i32::from(CURVE_BEZIER) + first_channel_abs as i32) as f32;
+                for k in 0..channels {
+                    let cx1 = r.read_float()?;
+                    let cy1 = r.read_float()?;
+                    let cx2 = r.read_float()?;
+                    let cy2 = r.read_float()?;
+                    let samples = compute_bezier_samples(
+                        time, values[k], cx1, cy1, cx2, cy2, time2, values2[k],
+                    );
+                    let dst = frame_count + (bezier_seg_idx + k) * BEZIER_SIZE;
+                    curves[dst..dst + BEZIER_SIZE].copy_from_slice(&samples);
+                }
+                bezier_seg_idx += channels;
+            }
+            other => {
+                return Err(BinaryError::UnknownDiscriminant {
+                    at: r.position(),
+                    entity: "color curve type",
+                    value: other as u32,
+                });
             }
         }
         time = time2;
@@ -1701,22 +1740,27 @@ fn read_color_timeline(
     Ok(CurveFrames { frames, curves })
 }
 
-/// IK constraint timeline: per-frame (time, flags, mix?, softness?) with two
+/// IK constraint timeline: per-frame `(time, flags, mix?, softness?)` with two
 /// bezier channels on bezier frames (mix, softness).
+///
+/// Produces the runtime `_curves` layout (per-frame type code + bezier
+/// samples tail) — same format as [`read_curve_timeline`] but with the
+/// IK-specific stride-6 frame shape.
 fn read_ik_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
-    _bezier_count: usize,
+    bezier_count: usize,
     scale: f32,
 ) -> Result<CurveFrames, BinaryError> {
-    // We capture as: frames = [time, mix, softness, bend_direction,
-    // compress_flag, stretch_flag], curves = per-frame-pair curve data.
-    // Phase 3 decodes these back into solver-ready fields.
+    // Frames = [time, mix, softness, bend_direction, compress, stretch];
+    // curves = [per_frame_type; frame_count] + bezier samples tail.
     let mut frames: Vec<f32> = Vec::with_capacity(frame_count * 6);
-    let mut curves: Vec<f32> = Vec::new();
+    let curves_len = frame_count + bezier_count * BEZIER_SIZE;
+    let mut curves: Vec<f32> = vec![0.0_f32; curves_len];
     if frame_count == 0 {
         return Ok(CurveFrames { frames, curves });
     }
+    curves[frame_count - 1] = CURVE_STEPPED as f32;
     let frame_last = frame_count - 1;
     let mut flags = r.read_byte()?;
     let mut time = r.read_float()?;
@@ -1730,6 +1774,7 @@ fn read_ik_timeline(
     } else {
         0.0
     };
+    let mut bezier_seg_idx: usize = 0;
     for frame in 0..frame_count {
         frames.push(time);
         frames.push(mix);
@@ -1753,17 +1798,23 @@ fn read_ik_timeline(
             0.0
         };
         if flags & 64 != 0 {
-            curves.push(CURVE_STEPPED as f32);
+            curves[frame] = CURVE_STEPPED as f32;
         } else if flags & 128 != 0 {
-            curves.push(CURVE_BEZIER as f32);
-            for _ in 0..2 {
-                curves.push(r.read_float()?);
-                curves.push(r.read_float()?);
-                curves.push(r.read_float()?);
-                curves.push(r.read_float()?);
+            let first_channel_abs = frame_count + bezier_seg_idx * BEZIER_SIZE;
+            curves[frame] = (i32::from(CURVE_BEZIER) + first_channel_abs as i32) as f32;
+            for (k, (value1, value2)) in [(mix, mix2), (softness, softness2)].iter().enumerate() {
+                let cx1 = r.read_float()?;
+                let cy1 = r.read_float()?;
+                let cx2 = r.read_float()?;
+                let cy2 = r.read_float()?;
+                let samples =
+                    compute_bezier_samples(time, *value1, cx1, cy1, cx2, cy2, time2, *value2);
+                let dst = frame_count + (bezier_seg_idx + k) * BEZIER_SIZE;
+                curves[dst..dst + BEZIER_SIZE].copy_from_slice(&samples);
             }
+            bezier_seg_idx += 2;
         } else {
-            curves.push(CURVE_LINEAR as f32);
+            curves[frame] = CURVE_LINEAR as f32;
         }
         time = time2;
         mix = mix2;
@@ -1852,48 +1903,59 @@ fn deform_frame_len(sd: &SkeletonData, att: AttachmentId) -> usize {
 /// Duration of an animation = max timestamp of any timeline's last frame.
 /// Used before Phase 3 can properly compute durations per-variant.
 fn timeline_duration(anim: &Animation) -> f32 {
+    // spine-cpp's `Timeline::getDuration` returns `frames[len - stride]`,
+    // i.e. the last frame's time. Port that per-variant using the known
+    // stride for each timeline kind.
+    fn last_time_stride(frames: &[f32], stride: usize) -> f32 {
+        if frames.len() < stride {
+            return 0.0;
+        }
+        frames[frames.len() - stride]
+    }
+
     let mut max = 0.0f32;
     for t in &anim.timelines {
         let last = match t {
+            // CurveTimeline1 — stride 2 (time + 1 value).
             Timeline::Rotate { curves, .. }
-            | Timeline::Translate { curves, .. }
             | Timeline::TranslateX { curves, .. }
             | Timeline::TranslateY { curves, .. }
-            | Timeline::Scale { curves, .. }
             | Timeline::ScaleX { curves, .. }
             | Timeline::ScaleY { curves, .. }
-            | Timeline::Shear { curves, .. }
             | Timeline::ShearX { curves, .. }
             | Timeline::ShearY { curves, .. }
-            | Timeline::Rgba { curves, .. }
-            | Timeline::Rgb { curves, .. }
             | Timeline::Alpha { curves, .. }
-            | Timeline::Rgba2 { curves, .. }
-            | Timeline::Rgb2 { curves, .. }
-            | Timeline::IkConstraint { curves, .. }
-            | Timeline::TransformConstraint { curves, .. }
             | Timeline::PathConstraintPosition { curves, .. }
             | Timeline::PathConstraintSpacing { curves, .. }
-            | Timeline::PathConstraintMix { curves, .. }
-            | Timeline::Physics { curves, .. } => {
-                curves.frames.first().copied().unwrap_or(0.0).max(
-                    // Last frame's time is frames[len - stride], but we don't
-                    // know stride here. Use the max f32 in the entire frames
-                    // vector as a conservative duration estimate — it'll be at
-                    // least the last keyframe's time since frames are monotonic.
-                    curves.frames.iter().copied().fold(0.0f32, f32::max),
-                )
-            }
+            | Timeline::Physics { curves, .. } => last_time_stride(&curves.frames, 2),
+
+            // CurveTimeline2 — stride 3 (time + 2 values).
+            Timeline::Translate { curves, .. }
+            | Timeline::Scale { curves, .. }
+            | Timeline::Shear { curves, .. } => last_time_stride(&curves.frames, 3),
+
+            Timeline::Rgba { curves, .. } => last_time_stride(&curves.frames, 5),
+            Timeline::Rgb { curves, .. } => last_time_stride(&curves.frames, 4),
+            Timeline::Rgba2 { curves, .. } => last_time_stride(&curves.frames, 8),
+            Timeline::Rgb2 { curves, .. } => last_time_stride(&curves.frames, 7),
+            Timeline::IkConstraint { curves, .. } => last_time_stride(&curves.frames, 6),
+            Timeline::TransformConstraint { curves, .. } => last_time_stride(&curves.frames, 7),
+            Timeline::PathConstraintMix { curves, .. } => last_time_stride(&curves.frames, 4),
+
+            // Non-CurveFrames variants store times in a standalone `frames` vec.
             Timeline::Inherit { frames, .. }
             | Timeline::PhysicsReset { frames, .. }
-            | Timeline::DrawOrder { frames, .. } => frames.last().copied().unwrap_or(0.0),
-            Timeline::Attachment { frames, .. } => frames.last().copied().unwrap_or(0.0),
-            Timeline::Deform { curves, .. } => curves.frames.last().copied().unwrap_or(0.0),
-            Timeline::Sequence { frames, .. } => {
-                // Sequence frames are interleaved (time, packed, delay); step 3.
-                frames.iter().step_by(3).copied().fold(0.0f32, f32::max)
-            }
-            Timeline::Event { frames, .. } => frames.last().copied().unwrap_or(0.0),
+            | Timeline::DrawOrder { frames, .. }
+            | Timeline::Attachment { frames, .. }
+            | Timeline::Event { frames, .. } => frames.last().copied().unwrap_or(0.0),
+
+            // Deform uses CurveFrames; stride 2 (time + packed vertex index
+            // into the per-frame `vertices[i]`). Last frame's time sits at
+            // `frames[len - 2]`.
+            Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 2),
+
+            // Sequence frames are interleaved (time, packed, delay); stride 3.
+            Timeline::Sequence { frames, .. } => last_time_stride(frames, 3),
         };
         max = max.max(last);
     }

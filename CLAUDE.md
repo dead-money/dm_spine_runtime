@@ -40,7 +40,7 @@ Every ported source file must retain the **Spine Runtimes License header block**
 - [x] 0 — math (`Color`, deg/rad trig helpers), triangulator (ear-clipping + convex decompose). Curves deferred to Phase 3 with timelines.
 - [x] 1 — atlas parser (1a), data-type scaffold (1b), binary `.skel` loader (1c). All 25 example skeletons load through `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
 - [x] 2 — `Skeleton` runtime pose: update-cache ordering (2c), bone world transforms with all five `Inherit` modes (2d), skin activation + setup-pose + attachment resolution (2e). All 25 example skeletons match spine-cpp bit-for-bit on setup pose via `tests/golden_pose.rs`; constraints are stubs until Phase 5.
-- [ ] 3 — property timelines + single-track `AnimationState`
+- [x] 3 — property timeline apply + single-track `AnimationState`: curve eval (3a), bone timelines (3b), slot + skeleton timelines (3c), constraint timelines (3d), `Animation::apply` + `AnimationState` (3e), binary-loader curves rework + animation goldens for 7 animations across 3 rigs (3f). Deform and Sequence timelines are no-op fallthroughs pending mesh-attachment plumbing. Constraint solvers still stubs (Phase 5).
 - [ ] 4 — full `AnimationState` (tracks, mixing, events, queue)
 - [ ] 5 — constraints (IK → Transform → Path → Physics)
 - [ ] 6 — clipping, bounds, render-command emission

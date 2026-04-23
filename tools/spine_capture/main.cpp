@@ -25,10 +25,19 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// spine_capture — dumps spine-cpp's setup-pose bone transforms as JSON so
-// the dm_spine_runtime Rust port can compare against bit-for-bit goldens.
+// spine_capture — dumps spine-cpp's bone transforms as JSON so the
+// dm_spine_runtime Rust port can compare against bit-for-bit goldens.
 //
-// usage: spine_capture <atlas_path> <skel_path> <out_json>
+// usage:
+//   spine_capture <atlas> <skel> <out.json>
+//       Setup-pose snapshot. No animation, no constraints run.
+//
+//   spine_capture --anim <atlas> <skel> <out.json> <anim> <time>
+//       Animation sample: set to setup pose, apply <anim> at <time>
+//       seconds against setup pose, then pose each active bone via
+//       Bone::updateWorldTransform (no constraints). Matches the
+//       dm_spine_runtime Phase 3 semantics: timeline apply directly
+//       against setup pose, bones-only world transforms.
 
 #include <spine/spine.h>
 
@@ -93,13 +102,32 @@ static std::string json_escape(const char *s) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        fprintf(stderr, "usage: %s <atlas> <skel> <out.json>\n", argv[0]);
+    bool anim_mode = false;
+    const char *atlas_path = nullptr;
+    const char *skel_path = nullptr;
+    const char *out_path = nullptr;
+    const char *anim_name = nullptr;
+    float anim_time = 0.0f;
+
+    if (argc == 4) {
+        atlas_path = argv[1];
+        skel_path = argv[2];
+        out_path = argv[3];
+    } else if (argc == 7 && strcmp(argv[1], "--anim") == 0) {
+        anim_mode = true;
+        atlas_path = argv[2];
+        skel_path = argv[3];
+        out_path = argv[4];
+        anim_name = argv[5];
+        anim_time = static_cast<float>(atof(argv[6]));
+    } else {
+        fprintf(stderr,
+                "usage:\n"
+                "  %s <atlas> <skel> <out.json>\n"
+                "  %s --anim <atlas> <skel> <out.json> <anim> <time>\n",
+                argv[0], argv[0]);
         return 64;
     }
-    const char *atlas_path = argv[1];
-    const char *skel_path = argv[2];
-    const char *out_path = argv[3];
 
     NullTextureLoader texture_loader;
     Atlas atlas(atlas_path, &texture_loader, false);
@@ -123,6 +151,25 @@ int main(int argc, char **argv) {
     {
         Skeleton skeleton(data);
         skeleton.setToSetupPose();
+
+        // Animation mode: apply the named animation at `anim_time` AGAINST
+        // setup pose (MixBlend_Setup, alpha 1, direction In). Timeline::apply
+        // writes into bone local TRS, then the same two-step bones-only pose
+        // pipeline below computes world transforms. No constraints run
+        // (dm_spine_runtime Phase 3 stubs them), matching the Phase 3
+        // golden test expectations.
+        if (anim_mode) {
+            Animation *anim = data->findAnimation(anim_name);
+            if (!anim) {
+                fprintf(stderr, "no animation named '%s' in %s\n",
+                        anim_name, skel_path);
+                delete data;
+                fclose(out);
+                return 3;
+            }
+            anim->apply(skeleton, -1.0f, anim_time, false, nullptr,
+                        1.0f, MixBlend_Setup, MixDirection_In);
+        }
 
         // Bones-only pose, two-step to match dm_spine_runtime Phase 2
         // semantics exactly:
@@ -164,6 +211,11 @@ int main(int argc, char **argv) {
         fprintf(out, "  \"source_atlas\": \"%s\",\n",
                 json_escape(atlas_path).c_str());
         fprintf(out, "  \"physics\": \"none\",\n");
+        if (anim_mode) {
+            fprintf(out, "  \"animation\": \"%s\",\n",
+                    json_escape(anim_name).c_str());
+            fprintf(out, "  \"time\": %.9g,\n", anim_time);
+        }
         fprintf(out, "  \"skeleton_x\": %.9g,\n", skeleton.getX());
         fprintf(out, "  \"skeleton_y\": %.9g,\n", skeleton.getY());
         fprintf(out, "  \"scale_x\": %.9g,\n", skeleton.getScaleX());

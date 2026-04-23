@@ -39,7 +39,7 @@ Core design choices:
 - [x] 0 — math primitives (`Color`, deg/rad trig helpers) and triangulator (ear-clipping + convex decompose)
 - [x] 1 — atlas parser, data-type scaffold, binary `.skel` loader. Loads every rig shipped in `spine-runtimes/examples/` end-to-end through the `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
 - [x] 2 — `Skeleton` runtime pose: update-cache ordering, bone world transforms with all five `Inherit` modes, skin activation + setup pose + attachment resolution. All 25 example skeletons match spine-cpp bit-for-bit on setup pose; constraint solvers are stubs until Phase 5.
-- [ ] 3 — property timelines and single-track `AnimationState`
+- [x] 3 — property timelines + single-track `AnimationState`. Bone/slot/skeleton-wide/constraint timelines apply against setup pose with curves, MixBlend, MixDirection, and loop handling; animation goldens diff against spine-cpp for 7 animations across 3 rigs within 1e-3. Deform and Sequence timelines are no-op fallthroughs (need mesh-attachment plumbing); constraint solvers remain stubbed until Phase 5.
 - [ ] 4 — full `AnimationState` (tracks, mixing, events, queue)
 - [ ] 5 — constraints (IK → Transform → Path → Physics)
 - [ ] 6 — clipping, bounds, render-command emission
