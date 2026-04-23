@@ -32,6 +32,7 @@
 //! state every `Skeleton` needs to animate and be rendered.
 
 pub mod bone;
+pub mod bounds;
 pub mod constraint;
 pub mod ik;
 pub mod path;
@@ -46,6 +47,7 @@ pub mod update_cache;
 pub mod vertex;
 
 pub use bone::Bone;
+pub use bounds::{BoundsPolygon, SkeletonBounds};
 pub use constraint::{IkConstraint, PathConstraint, PhysicsConstraint, TransformConstraint};
 pub use skeleton::{Skeleton, SkinNotFound};
 pub use slot::Slot;
