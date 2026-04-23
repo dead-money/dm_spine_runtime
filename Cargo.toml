@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Native Rust port of the Spine 4.2 runtime. Renderer-agnostic."
 license-file = "LICENSE"
+readme = "README.md"
 repository = "https://github.com/dead-money/dm_spine_runtime"
 categories = ["game-development", "graphics"]
 keywords = ["spine", "2d", "animation", "skeletal"]
