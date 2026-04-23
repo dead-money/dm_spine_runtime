@@ -740,18 +740,164 @@ impl Skeleton {
                     self.update_bone_world_transform(bone_id);
                 }
                 UpdateCacheEntry::IkConstraint(id) => {
-                    // Map data index → runtime slot. Our tracks are the same
-                    // order as data.ik_constraints, so .index() is the runtime
-                    // index (mirrors how the cache was built).
-                    let runtime_idx = id.index();
-                    crate::skeleton::ik::solve_ik_constraint(self, runtime_idx);
+                    crate::skeleton::ik::solve_ik_constraint(self, id.index());
                 }
-                UpdateCacheEntry::TransformConstraint(_)
-                | UpdateCacheEntry::PathConstraint(_)
-                | UpdateCacheEntry::PhysicsConstraint(_) => {
-                    // Phase 5b/5c/5d ship the remaining solvers.
+                UpdateCacheEntry::TransformConstraint(id) => {
+                    crate::skeleton::transform::solve_transform_constraint(self, id.index());
+                }
+                UpdateCacheEntry::PathConstraint(_) | UpdateCacheEntry::PhysicsConstraint(_) => {
+                    // Phase 5c/5d ship the remaining solvers.
                 }
             }
+        }
+    }
+
+    /// `Bone::localToWorld(local_x, local_y) -> (world_x, world_y)`.
+    /// Projects a point in the bone's local space into skeleton world
+    /// space. Used by Transform constraints to compute offset targets.
+    pub(crate) fn bone_local_to_world(
+        &self,
+        bone_id: BoneId,
+        local_x: f32,
+        local_y: f32,
+    ) -> (f32, f32) {
+        let b = &self.bones[bone_id.index()];
+        (
+            b.a * local_x + b.b * local_y + b.world_x,
+            b.c * local_x + b.d * local_y + b.world_y,
+        )
+    }
+
+    /// `Bone::updateAppliedTransform()` — rebuilds the bone's `applied`
+    /// local TRS from its current world matrix. Inverse of
+    /// [`update_bone_world_transform_with`][Self::update_bone_world_transform_with].
+    ///
+    /// Called by constraint solvers that write to the world matrix
+    /// directly (world-space Transform constraints) so subsequent
+    /// readers of the applied-local fields see coherent values.
+    ///
+    /// Literal port of `spine-cpp/src/spine/Bone.cpp`
+    /// `Bone::updateAppliedTransform`. The per-Inherit-mode branches
+    /// mirror the forward-transform function exactly.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::float_cmp,
+        clippy::many_single_char_names
+    )]
+    pub(crate) fn update_applied_transform(&mut self, bone_id: BoneId) {
+        let idx = bone_id.index();
+        let (parent, inherit, a, b, c, d, world_x, world_y, rotation) = {
+            let bone = &self.bones[idx];
+            (
+                bone.parent,
+                bone.inherit,
+                bone.a,
+                bone.b,
+                bone.c,
+                bone.d,
+                bone.world_x,
+                bone.world_y,
+                bone.rotation,
+            )
+        };
+        let Some(parent_id) = parent else {
+            let bone = &mut self.bones[idx];
+            bone.ax = world_x - self.x;
+            bone.ay = world_y - self.y;
+            bone.a_rotation = atan2_deg(c, a);
+            bone.a_scale_x = (a * a + c * c).sqrt();
+            bone.a_scale_y = (b * b + d * d).sqrt();
+            bone.a_shear_x = 0.0;
+            bone.a_shear_y = atan2_deg(a * b + c * d, a * d - b * c);
+            return;
+        };
+
+        let (mut pa, mut pb, mut pc, mut pd, p_world_x, p_world_y) = {
+            let p = &self.bones[parent_id.index()];
+            (p.a, p.b, p.c, p.d, p.world_x, p.world_y)
+        };
+        let sk_scale_x = self.scale_x;
+        let sk_scale_y = self.scale_y;
+
+        let pid_raw = pa * pd - pb * pc;
+        let mut pid = if pid_raw == 0.0 { 0.0 } else { 1.0 / pid_raw };
+        let mut ia = pd * pid;
+        let mut ib = pb * pid;
+        let mut ic = pc * pid;
+        let mut id = pa * pid;
+        let dx = world_x - p_world_x;
+        let dy = world_y - p_world_y;
+        let ax = dx * ia - dy * ib;
+        let ay = dy * id - dx * ic;
+
+        let (ra, rb, rc, rd);
+        if inherit == Inherit::OnlyTranslation {
+            ra = a;
+            rb = b;
+            rc = c;
+            rd = d;
+        } else {
+            match inherit {
+                Inherit::NoRotationOrReflection => {
+                    let s = (pa * pd - pb * pc).abs() / (pa * pa + pc * pc);
+                    let sa = pa / sk_scale_x;
+                    let sc = pc / sk_scale_y;
+                    pb = -sc * s * sk_scale_x;
+                    pd = sa * s * sk_scale_y;
+                    pid = 1.0 / (pa * pd - pb * pc);
+                    ia = pd * pid;
+                    ib = pb * pid;
+                }
+                Inherit::NoScale | Inherit::NoScaleOrReflection => {
+                    let r = rotation.to_radians();
+                    let cos = r.cos();
+                    let sin = r.sin();
+                    pa = (pa * cos + pb * sin) / sk_scale_x;
+                    pc = (pc * cos + pd * sin) / sk_scale_y;
+                    let mut s = (pa * pa + pc * pc).sqrt();
+                    if s > 0.000_01 {
+                        s = 1.0 / s;
+                    }
+                    pa *= s;
+                    pc *= s;
+                    s = (pa * pa + pc * pc).sqrt();
+                    let inherit_flip = inherit == Inherit::NoScale
+                        && (pid < 0.0) != ((sk_scale_x < 0.0) != (sk_scale_y < 0.0));
+                    if inherit_flip {
+                        s = -s;
+                    }
+                    let rot = std::f32::consts::FRAC_PI_2 + pc.atan2(pa);
+                    pb = rot.cos() * s;
+                    pd = rot.sin() * s;
+                    pid = 1.0 / (pa * pd - pb * pc);
+                    ia = pd * pid;
+                    ib = pb * pid;
+                    ic = pc * pid;
+                    id = pa * pid;
+                }
+                Inherit::Normal | Inherit::OnlyTranslation => {}
+            }
+            ra = ia * a - ib * c;
+            rb = ia * b - ib * d;
+            rc = id * c - ic * a;
+            rd = id * d - ic * b;
+        }
+
+        let bone = &mut self.bones[idx];
+        bone.ax = ax;
+        bone.ay = ay;
+        bone.a_shear_x = 0.0;
+        bone.a_scale_x = (ra * ra + rc * rc).sqrt();
+        if bone.a_scale_x > 0.0001 {
+            let det = ra * rd - rb * rc;
+            bone.a_scale_y = det / bone.a_scale_x;
+            bone.a_shear_y = -atan2_deg(ra * rb + rc * rd, det);
+            bone.a_rotation = atan2_deg(rc, ra);
+        } else {
+            bone.a_scale_x = 0.0;
+            bone.a_scale_y = (rb * rb + rd * rd).sqrt();
+            bone.a_shear_y = 0.0;
+            bone.a_rotation = 90.0 - atan2_deg(rd, rb);
         }
     }
 

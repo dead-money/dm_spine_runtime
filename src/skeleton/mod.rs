@@ -39,6 +39,7 @@ pub mod ik;
 #[allow(clippy::module_inception)]
 pub mod skeleton;
 pub mod slot;
+pub mod transform;
 pub mod update_cache;
 
 pub use bone::Bone;
