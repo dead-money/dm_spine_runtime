@@ -84,18 +84,19 @@ fn pick_atlas(skel: &Path, atlases: &[PathBuf]) -> Option<PathBuf> {
     if atlases.is_empty() {
         return None;
     }
-    // Prefer a non-pma atlas with a matching prefix to the skel's stem.
     let skel_stem = skel.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    // Strip common rig-variant suffixes to reach the shared atlas base.
+    // `spineboy-pro.skel` + `spineboy.atlas`, `raptor-pro.skel` + `raptor.atlas`, etc.
+    let base = ["-pro", "-ess", "-ios"]
+        .into_iter()
+        .find_map(|sfx| skel_stem.strip_suffix(sfx))
+        .unwrap_or(skel_stem);
+    // Prefer an exact `<base>.atlas` match (not `<base>-run.atlas`, which
+    // some rigs ship as an animation-specific subset). Fall back to any
+    // non-pma atlas, then anything.
     atlases
         .iter()
-        .find(|a| {
-            let stem = a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            !stem.ends_with("-pma")
-                && skel_stem
-                    .split(['-', '_'])
-                    .next()
-                    .is_some_and(|p| stem.starts_with(p))
-        })
+        .find(|a| a.file_stem().and_then(|s| s.to_str()) == Some(base))
         .or_else(|| {
             atlases.iter().find(|a| {
                 !a.file_stem()
