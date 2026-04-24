@@ -25,17 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Skeleton-loading infrastructure shared by format-specific loaders.
-//!
-//! Exposes the [`AttachmentLoader`] trait, the default
-//! [`AtlasAttachmentLoader`] implementation, and format-specific loaders:
-//! [`SkeletonBinary`] for `.skel` files and [`SkeletonJson`] for `.json`
-//! files.
+//! JSON skeleton loader, ported from `spine-cpp/SkeletonJson.cpp`.
 
-pub mod attachment_loader;
-pub mod binary;
-pub mod json;
+mod parse;
 
-pub use attachment_loader::{AtlasAttachmentLoader, AttachmentLoader, AttachmentLoaderError};
-pub use binary::{BinaryError, SkeletonBinary};
-pub use json::{JsonError, SkeletonJson};
+pub use parse::{JsonError, SkeletonJson};
