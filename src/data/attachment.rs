@@ -429,10 +429,10 @@ impl MeshAttachment {
             90 => {
                 let texture_width = region.height / (region.u2 - region.u);
                 let texture_height = region.width / (region.v2 - region.v);
-                let u = u
-                    - (region.original_height - region.offset_y - region.height) / texture_width;
-                let v = v
-                    - (region.original_width - region.offset_x - region.width) / texture_height;
+                let u =
+                    u - (region.original_height - region.offset_y - region.height) / texture_width;
+                let v =
+                    v - (region.original_width - region.offset_x - region.width) / texture_height;
                 let width = region.original_height / texture_width;
                 let height = region.original_width / texture_height;
                 let mut i = 0;
@@ -445,7 +445,8 @@ impl MeshAttachment {
             180 => {
                 let texture_width = region.width / (region.u2 - region.u);
                 let texture_height = region.height / (region.v2 - region.v);
-                let u = u - (region.original_width - region.offset_x - region.width) / texture_width;
+                let u =
+                    u - (region.original_width - region.offset_x - region.width) / texture_width;
                 let v = v - region.offset_y / texture_height;
                 let width = region.original_width / texture_width;
                 let height = region.original_height / texture_height;
@@ -474,8 +475,8 @@ impl MeshAttachment {
                 let texture_width = region.width / (region.u2 - region.u);
                 let texture_height = region.height / (region.v2 - region.v);
                 let u = u - region.offset_x / texture_width;
-                let v = v
-                    - (region.original_height - region.offset_y - region.height) / texture_height;
+                let v =
+                    v - (region.original_height - region.offset_y - region.height) / texture_height;
                 let width = region.original_width / texture_width;
                 let height = region.original_height / texture_height;
                 let mut i = 0;

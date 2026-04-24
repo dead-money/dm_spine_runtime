@@ -710,7 +710,15 @@ fn compute_world_vertices(
     let Attachment::Path(p) = &skeleton.data.attachments[path_attachment.index()] else {
         return;
     };
-    skeleton.compute_world_vertices(&p.vertex_data, slot_id, start, count, world_vertices, offset, 2);
+    skeleton.compute_world_vertices(
+        &p.vertex_data,
+        slot_id,
+        start,
+        count,
+        world_vertices,
+        offset,
+        2,
+    );
 }
 
 fn add_before_position(p: f32, temp: &[f32], i: usize, output: &mut [f32], o: usize) {

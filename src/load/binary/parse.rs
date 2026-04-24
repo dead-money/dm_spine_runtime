@@ -1356,8 +1356,7 @@ impl<'loader> SkeletonBinary<'loader> {
                     match ttype {
                         ATTACHMENT_DEFORM => {
                             let vertices_len = deform_frame_len(sd, attachment_id);
-                            let (weighted, setup_vertices) =
-                                deform_context(sd, attachment_id);
+                            let (weighted, setup_vertices) = deform_context(sd, attachment_id);
                             let bezier_count = r.read_uvarint()?;
                             let (frames, curves, deform_vertices) = read_deform_timeline(
                                 r,

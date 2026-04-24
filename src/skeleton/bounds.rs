@@ -115,8 +115,7 @@ impl SkeletonBounds {
             let Some(attachment_id) = slot.attachment else {
                 continue;
             };
-            let Attachment::BoundingBox(bbox) =
-                &skeleton.data.attachments[attachment_id.index()]
+            let Attachment::BoundingBox(bbox) = &skeleton.data.attachments[attachment_id.index()]
             else {
                 continue;
             };
@@ -282,13 +281,7 @@ impl SkeletonBounds {
     /// whose polygon intersects the segment `(x1, y1) → (x2, y2)`,
     /// or `None`.
     #[must_use]
-    pub fn intersects_segment(
-        &self,
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-    ) -> Option<AttachmentId> {
+    pub fn intersects_segment(&self, x1: f32, y1: f32, x2: f32, y2: f32) -> Option<AttachmentId> {
         for (i, polygon) in self.polygons.iter().enumerate() {
             if Self::polygon_intersects_segment(polygon, x1, y1, x2, y2) {
                 return Some(self.bounding_boxes[i]);
@@ -435,9 +428,9 @@ mod tests {
         use crate::skeleton::{Physics, Skeleton};
         use std::sync::Arc;
 
-        let Ok(atlas_src) = std::fs::read_to_string(
-            "../spine-runtimes/examples/goblins/export/goblins-pma.atlas",
-        ) else {
+        let Ok(atlas_src) =
+            std::fs::read_to_string("../spine-runtimes/examples/goblins/export/goblins-pma.atlas")
+        else {
             return;
         };
         let atlas = Atlas::parse(&atlas_src).unwrap();

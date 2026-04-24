@@ -101,8 +101,14 @@ fn render_samples() -> Vec<(String, String, PathBuf, PathBuf, PathBuf)> {
         if rig_path.is_file() {
             // Single-variant rig: `render/<rig>.json`.
             let rig = rig_path.file_stem().unwrap().to_string_lossy().to_string();
-            let atlas = examples.join(&rig).join("export").join(format!("{rig}.atlas"));
-            let skel = examples.join(&rig).join("export").join(format!("{rig}.skel"));
+            let atlas = examples
+                .join(&rig)
+                .join("export")
+                .join(format!("{rig}.atlas"));
+            let skel = examples
+                .join(&rig)
+                .join("export")
+                .join(format!("{rig}.skel"));
             if atlas.exists() && skel.exists() {
                 out.push((rig.clone(), String::new(), rig_path, atlas, skel));
             }
@@ -118,7 +124,10 @@ fn render_samples() -> Vec<(String, String, PathBuf, PathBuf, PathBuf)> {
                 continue;
             }
             let variant = vp.file_stem().unwrap().to_string_lossy().to_string();
-            let atlas = examples.join(&rig).join("export").join(format!("{rig}.atlas"));
+            let atlas = examples
+                .join(&rig)
+                .join("export")
+                .join(format!("{rig}.atlas"));
             let skel = examples
                 .join(&rig)
                 .join("export")
@@ -222,8 +231,18 @@ fn setup_pose_render_commands_match_spine_cpp() {
                     "  {label}: cmd[{i}] header mismatch — want \
                      (tex={} blend={} nv={} ni={} c={:#x} d={:#x}) got \
                      (tex={} blend={} nv={} ni={} c={:#x} d={:#x})",
-                    w.texture, w.blend, w.num_vertices, w.num_indices, w.color, w.dark_color,
-                    g.texture, g.blend, g.num_vertices, g.num_indices, g.color, g.dark_color
+                    w.texture,
+                    w.blend,
+                    w.num_vertices,
+                    w.num_indices,
+                    w.color,
+                    w.dark_color,
+                    g.texture,
+                    g.blend,
+                    g.num_vertices,
+                    g.num_indices,
+                    g.color,
+                    g.dark_color
                 );
                 matched = false;
                 break;
@@ -234,7 +253,5 @@ fn setup_pose_render_commands_match_spine_cpp() {
         }
     }
 
-    eprintln!(
-        "golden_render: {rigs_matched} of {rigs_checked} rigs match"
-    );
+    eprintln!("golden_render: {rigs_matched} of {rigs_checked} rigs match");
 }

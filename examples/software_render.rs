@@ -65,7 +65,10 @@ use dm_spine_runtime::skeleton::{Physics, Skeleton};
 const FIXED_STEP: f32 = 1.0 / 60.0;
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn env_str(key: &str, default: &str) -> String {
@@ -204,7 +207,10 @@ fn main() {
     img.save(&out_path).unwrap();
     eprintln!(
         "software_render: saved {} ({width}x{height}); {} commands, {} tris drawn, {} tris off-screen / degenerate",
-        out_path, cmds.len(), total_tris_drawn, total_tris_culled,
+        out_path,
+        cmds.len(),
+        total_tris_drawn,
+        total_tris_culled,
     );
 }
 

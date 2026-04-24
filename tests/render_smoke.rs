@@ -130,10 +130,7 @@ fn renders_every_example_rig_at_setup_pose() {
             assert_eq!(cmd.colors.len(), cmd.num_vertices());
             assert_eq!(cmd.dark_colors.len(), cmd.num_vertices());
             for (k, v) in cmd.positions.iter().enumerate() {
-                assert!(
-                    v.is_finite(),
-                    "{rig}: cmd[{i}].positions[{k}] = {v}"
-                );
+                assert!(v.is_finite(), "{rig}: cmd[{i}].positions[{k}] = {v}");
             }
             for (k, v) in cmd.uvs.iter().enumerate() {
                 assert!(v.is_finite(), "{rig}: cmd[{i}].uvs[{k}] = {v}");

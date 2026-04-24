@@ -39,7 +39,9 @@ fn main() {
     let atlas = Atlas::parse(&atlas_src).unwrap();
     let mut loader = AtlasAttachmentLoader::new(&atlas);
     let bytes = std::fs::read(dir.join(format!("{skel}.skel"))).unwrap();
-    let data = SkeletonBinary::with_loader(&mut loader).read(&bytes).unwrap();
+    let data = SkeletonBinary::with_loader(&mut loader)
+        .read(&bytes)
+        .unwrap();
     let data = Arc::new(data);
 
     let mut sk = Skeleton::new(Arc::clone(&data));

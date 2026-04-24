@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dm_spine_runtime
+        uses: actions/checkout@v4
+        with:
+          path: dm_spine_runtime
+
+      # Goldens + render_smoke load rigs from a sibling spine-runtimes/
+      # clone; mirror the repo-layout assumption documented in CLAUDE.md.
+      - name: Checkout spine-runtimes (upstream)
+        uses: actions/checkout@v4
+        with:
+          repository: EsotericSoftware/spine-runtimes
+          path: spine-runtimes
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dm_spine_runtime
+
+      - name: cargo fmt
+        working-directory: dm_spine_runtime
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        working-directory: dm_spine_runtime
+        run: cargo clippy --all-targets
+
+      - name: cargo test
+        working-directory: dm_spine_runtime
+        run: cargo test --all-targets

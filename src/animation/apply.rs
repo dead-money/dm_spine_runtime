@@ -213,7 +213,16 @@ impl Timeline {
                 curves,
                 vertices,
             } => {
-                apply_deform(skeleton, *slot, *attachment, curves, vertices, time, alpha, blend);
+                apply_deform(
+                    skeleton,
+                    *slot,
+                    *attachment,
+                    curves,
+                    vertices,
+                    time,
+                    alpha,
+                    blend,
+                );
             }
             Timeline::Sequence {
                 slot,
@@ -1688,7 +1697,11 @@ fn deform_curve_percent(curves: &CurveFrames, frame: usize, time: f32) -> f32 {
 
 // Literal port — spine-cpp `DeformTimeline::apply` is a single ~125-line
 // function. Splitting it into helpers breaks diff-ability.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::needless_range_loop)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::needless_range_loop
+)]
 fn apply_deform(
     skeleton: &mut Skeleton,
     slot_id: SlotId,
@@ -1720,7 +1733,11 @@ fn apply_deform(
         if effective_timeline_attachment(vd, slot_attachment_id) != timeline_target {
             return;
         }
-        (vd.bones.is_empty(), vd.vertices.len(), slot_attachment_id.index())
+        (
+            vd.bones.is_empty(),
+            vd.vertices.len(),
+            slot_attachment_id.index(),
+        )
     };
 
     // Read `vertexCount` from the first keyframe (spine-cpp:
@@ -1838,7 +1855,11 @@ fn apply_deform(
 /// `after_last` short-circuits when `percent == 1` and there's no
 /// interpolation to do (matches spine-cpp's post-last-frame branch).
 // Also a direct port of spine-cpp's branchy per-frame blend body.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::needless_range_loop)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::needless_range_loop
+)]
 fn apply_deform_frame(
     skeleton: &mut Skeleton,
     slot_id: SlotId,

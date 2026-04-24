@@ -217,7 +217,12 @@ impl SkeletonClipping {
                 // conflict. Put it back at end of iteration.
                 let polygon = std::mem::take(&mut self.clipping_polygons[p]);
                 let clipped = clip(
-                    x1, y1, x2, y2, x3, y3,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    x3,
+                    y3,
                     &polygon,
                     &mut self.clip_output,
                     &mut self.scratch,
@@ -261,8 +266,7 @@ impl SkeletonClipping {
 
                     // Fan-triangulate the clipped polygon.
                     let t_s = self.clipped_triangles.len();
-                    self.clipped_triangles
-                        .resize(t_s + 3 * (clip_count - 2), 0);
+                    self.clipped_triangles.resize(t_s + 3 * (clip_count - 2), 0);
                     let fan_count = clip_count - 1;
                     let mut ts = t_s;
                     for ii in 1..fan_count {

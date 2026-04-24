@@ -35,7 +35,7 @@
 use crate::data::attachment::TextureRegionRef;
 use crate::data::{Attachment, MeshAttachment, RegionAttachment};
 use crate::render::clipping::SkeletonClipping;
-use crate::render::{pack_color, RenderCommand, TextureId};
+use crate::render::{RenderCommand, TextureId, pack_color};
 use crate::skeleton::{Skeleton, Slot};
 
 /// Stateful renderer: owns per-instance scratch buffers (world vertex
@@ -503,17 +503,17 @@ fn region_uvs_for(r: &TextureRegionRef) -> [f32; 8] {
         // Rotated region layout (matches spine-cpp updateRegion's
         // `degrees == 90` branch).
         [
-            r.u,  r.v2, // BL
-            r.u,  r.v,  // UL
-            r.u2, r.v,  // UR
+            r.u, r.v2, // BL
+            r.u, r.v, // UL
+            r.u2, r.v, // UR
             r.u2, r.v2, // BR
         ]
     } else {
         [
-            r.u,  r.v2, // BL
+            r.u, r.v2, // BL
             r.u2, r.v2, // UL
-            r.u2, r.v,  // UR
-            r.u,  r.v,  // BR
+            r.u2, r.v, // UR
+            r.u, r.v, // BR
         ]
     }
 }
@@ -546,17 +546,15 @@ mod tests {
         use crate::skeleton::{Physics, Skeleton};
         use std::sync::Arc;
 
-        let Ok(atlas_src) = std::fs::read_to_string(
-            "../spine-runtimes/examples/spineboy/export/spineboy.atlas",
-        ) else {
+        let Ok(atlas_src) =
+            std::fs::read_to_string("../spine-runtimes/examples/spineboy/export/spineboy.atlas")
+        else {
             return; // test-only best-effort; skip if examples aren't present
         };
         let atlas = Atlas::parse(&atlas_src).unwrap();
         let mut loader = AtlasAttachmentLoader::new(&atlas);
-        let bytes = std::fs::read(
-            "../spine-runtimes/examples/spineboy/export/spineboy-pro.skel",
-        )
-        .unwrap();
+        let bytes =
+            std::fs::read("../spine-runtimes/examples/spineboy/export/spineboy-pro.skel").unwrap();
         let data = Arc::new(
             SkeletonBinary::with_loader(&mut loader)
                 .read(&bytes)
