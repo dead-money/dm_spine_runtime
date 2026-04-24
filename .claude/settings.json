@@ -39,10 +39,6 @@
       "Bash(git blame *)",
       "Bash(git ls-files *)",
       "Bash(git ls-files)"
-    ],
-    "additionalDirectories": [
-      "/home/brandon/deadmoney/spine-runtimes",
-      "/home/brandon/deadmoney/dm_spine_bevy"
     ]
   }
 }

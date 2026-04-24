@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/powerup/export/powerup-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/powerup/export/powerup.atlas",
+  "source_skel": "spine-runtimes/examples/powerup/export/powerup-pro.skel",
+  "source_atlas": "spine-runtimes/examples/powerup/export/powerup.atlas",
   "commands": [
     {"texture": 0, "blend": 0, "num_vertices": 111, "num_indices": 438, "color": 4294967295, "dark_color": 4278190080, "first_pos": [190.951, 301.946], "last_pos": [38.8439, 215.948], "first_uv": [0.24231, 0.346302]}
   ]

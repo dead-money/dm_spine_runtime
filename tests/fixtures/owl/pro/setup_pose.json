@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/owl/export/owl-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/owl/export/owl.atlas",
+  "source_skel": "spine-runtimes/examples/owl/export/owl-pro.skel",
+  "source_atlas": "spine-runtimes/examples/owl/export/owl.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,

@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/stretchyman/export/stretchyman-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/stretchyman/export/stretchyman.atlas",
+  "source_skel": "spine-runtimes/examples/stretchyman/export/stretchyman-pro.skel",
+  "source_atlas": "spine-runtimes/examples/stretchyman/export/stretchyman.atlas",
   "physics": "none",
   "animation": "sneak",
   "time": 0.449999988,

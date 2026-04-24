@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/vine/export/vine-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/vine/export/vine.atlas",
+  "source_skel": "spine-runtimes/examples/vine/export/vine-pro.skel",
+  "source_atlas": "spine-runtimes/examples/vine/export/vine.atlas",
   "commands": [
     {"texture": 0, "blend": 0, "num_vertices": 81, "num_indices": 312, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-5.62326, 839.377], "last_pos": [10.6613, 32.3467], "first_uv": [0.015625, 0.00195312]}
   ]

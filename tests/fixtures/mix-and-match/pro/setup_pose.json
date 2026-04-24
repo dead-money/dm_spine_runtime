@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/mix-and-match/export/mix-and-match-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/mix-and-match/export/mix-and-match.atlas",
+  "source_skel": "spine-runtimes/examples/mix-and-match/export/mix-and-match-pro.skel",
+  "source_atlas": "spine-runtimes/examples/mix-and-match/export/mix-and-match.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,

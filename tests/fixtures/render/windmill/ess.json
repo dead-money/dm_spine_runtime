@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/windmill/export/windmill-ess.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/windmill/export/windmill.atlas",
+  "source_skel": "spine-runtimes/examples/windmill/export/windmill-ess.skel",
+  "source_atlas": "spine-runtimes/examples/windmill/export/windmill.atlas",
   "commands": [
     {"texture": 0, "blend": 0, "num_vertices": 132, "num_indices": 198, "color": 4294967295, "dark_color": 4278190080, "first_pos": [559.6, -335.4], "last_pos": [306.83, -64.388], "first_uv": [0.542969, 0.996094]},
     {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4291743438, "dark_color": 4278190080, "first_pos": [262.94, -108.96], "last_pos": [262.94, -86.96], "first_uv": [0.371094, 0.0898438]},

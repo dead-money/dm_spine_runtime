@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/snowglobe/export/snowglobe-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/snowglobe/export/snowglobe.atlas",
+  "source_skel": "spine-runtimes/examples/snowglobe/export/snowglobe-pro.skel",
+  "source_atlas": "spine-runtimes/examples/snowglobe/export/snowglobe.atlas",
   "commands": [
     {"texture": 3, "blend": 2, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [900.016, -1030.95], "last_pos": [900.016, -298.948], "first_uv": [0.992188, 0.0751953]},
     {"texture": 4, "blend": 0, "num_vertices": 6, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [586.016, 128.954], "last_pos": [586.016, 422.052], "first_uv": [0.59375, 0.145067]},

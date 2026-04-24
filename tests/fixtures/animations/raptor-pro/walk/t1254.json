@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/raptor/export/raptor-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/raptor/export/raptor.atlas",
+  "source_skel": "spine-runtimes/examples/raptor/export/raptor-pro.skel",
+  "source_atlas": "spine-runtimes/examples/raptor/export/raptor.atlas",
   "physics": "none",
   "animation": "walk",
   "time": 1.25399995,

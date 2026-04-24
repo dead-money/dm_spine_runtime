@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/sack/export/sack-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/sack/export/sack.atlas",
+  "source_skel": "spine-runtimes/examples/sack/export/sack-pro.skel",
+  "source_atlas": "spine-runtimes/examples/sack/export/sack.atlas",
   "commands": [
     {"texture": 0, "blend": 0, "num_vertices": 185, "num_indices": 666, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-221.815, 439.496], "last_pos": [59.4176, 446.818], "first_uv": [0.505484, 0.381555]}
   ]

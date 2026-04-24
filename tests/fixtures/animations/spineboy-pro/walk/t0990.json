@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/spineboy/export/spineboy-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/spineboy/export/spineboy.atlas",
+  "source_skel": "spine-runtimes/examples/spineboy/export/spineboy-pro.skel",
+  "source_atlas": "spine-runtimes/examples/spineboy/export/spineboy.atlas",
   "physics": "none",
   "animation": "walk",
   "time": 0.99000001,

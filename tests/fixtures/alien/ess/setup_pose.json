@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/alien/export/alien-ess.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/alien/export/alien.atlas",
+  "source_skel": "spine-runtimes/examples/alien/export/alien-ess.skel",
+  "source_atlas": "spine-runtimes/examples/alien/export/alien.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,

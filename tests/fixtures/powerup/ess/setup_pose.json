@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/powerup/export/powerup-ess.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/powerup/export/powerup.atlas",
+  "source_skel": "spine-runtimes/examples/powerup/export/powerup-ess.skel",
+  "source_atlas": "spine-runtimes/examples/powerup/export/powerup.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,

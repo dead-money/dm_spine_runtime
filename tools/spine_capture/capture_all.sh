@@ -67,7 +67,12 @@ while IFS= read -r -d '' skel; do
     mkdir -p "$out_dir"
     out="$out_dir/setup_pose.json"
 
-    if "$BIN" "$atlas" "$skel" "$out"; then
+    # Pass paths relative to the workspace root so the fixture's
+    # `source_skel` / `source_atlas` provenance fields don't leak
+    # absolute filesystem paths.
+    rel_atlas="${atlas#$RUNTIME_ROOT/../}"
+    rel_skel="${skel#$RUNTIME_ROOT/../}"
+    if (cd "$RUNTIME_ROOT/.." && "$BIN" "$rel_atlas" "$rel_skel" "$out"); then
         captured=$((captured + 1))
         rel="${out#$RUNTIME_ROOT/}"
         echo "  ok    $rel"

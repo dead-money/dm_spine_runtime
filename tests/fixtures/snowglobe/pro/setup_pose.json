@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/snowglobe/export/snowglobe-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/snowglobe/export/snowglobe.atlas",
+  "source_skel": "spine-runtimes/examples/snowglobe/export/snowglobe-pro.skel",
+  "source_atlas": "spine-runtimes/examples/snowglobe/export/snowglobe.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,

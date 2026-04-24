@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/celestial-circus/export/celestial-circus-pro.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/celestial-circus/export/celestial-circus.atlas",
+  "source_skel": "spine-runtimes/examples/celestial-circus/export/celestial-circus-pro.skel",
+  "source_atlas": "spine-runtimes/examples/celestial-circus/export/celestial-circus.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,

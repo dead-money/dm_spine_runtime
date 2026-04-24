@@ -1,6 +1,6 @@
 {
-  "source_skel": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/dragon/export/dragon-ess.skel",
-  "source_atlas": "/home/brandon/deadmoney/dm_spine_runtime/../spine-runtimes/examples/dragon/export/dragon.atlas",
+  "source_skel": "spine-runtimes/examples/dragon/export/dragon-ess.skel",
+  "source_atlas": "spine-runtimes/examples/dragon/export/dragon.atlas",
   "commands": [
     {"texture": 1, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [20.5708, -166.088], "last_pos": [20.5708, 10.9119], "first_uv": [0.949219, 0.213867]},
     {"texture": 2, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 4294967295, "dark_color": 4278190080, "first_pos": [48.0588, -114.098], "last_pos": [48.0588, 34.902], "first_uv": [0.720703, 0.358398]},

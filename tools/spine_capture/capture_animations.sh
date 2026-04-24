@@ -63,7 +63,9 @@ for row in "${ROWS[@]}"; do
         time="$(awk "BEGIN { printf \"%.6f\", $idx * $duration }")"
         ms="$(awk "BEGIN { printf \"%04d\", $idx * $duration * 1000 }")"
         out="$out_dir/t${ms}.json"
-        if "$BIN" --anim "$atlas" "$skel" "$out" "$anim" "$time"; then
+        rel_atlas="${atlas#$RUNTIME_ROOT/../}"
+        rel_skel="${skel#$RUNTIME_ROOT/../}"
+        if (cd "$RUNTIME_ROOT/.." && "$BIN" --anim "$rel_atlas" "$rel_skel" "$out" "$anim" "$time"); then
             rel="${out#$RUNTIME_ROOT/}"
             echo "  ok    $rel (t=${time}s)"
             captured=$((captured + 1))
