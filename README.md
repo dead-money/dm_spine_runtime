@@ -1,6 +1,6 @@
 # dm_spine_runtime
 
-A native Rust port of the [Spine](https://esotericsoftware.com/) 4.2 runtime. Renderer-agnostic — loads `.skel` + `.atlas` files, poses skeletons, plays animations, solves constraints, and emits draw commands that any graphics backend can consume.
+A native Rust port of the [Spine](https://esotericsoftware.com/) 4.2 runtime. Renderer-agnostic — loads `.skel` / `.json` + `.atlas` files, poses skeletons, plays animations, solves constraints, and emits draw commands that any graphics backend can consume.
 
 For Bevy 0.18 integration, see the sibling crate [`dm_spine_bevy`](https://github.com/dead-money/dm_spine_bevy).
 
@@ -18,7 +18,7 @@ If your use case is in doubt, consult the [Spine licensing page](https://esoteri
 
 ## What's in the box
 
-- **Loaders** — binary `.skel` reader and `.atlas` parser. All 25 rigs that ship under `spine-runtimes/examples/` load cleanly through `AtlasAttachmentLoader`.
+- **Loaders** — binary `.skel` reader, JSON `.json` reader, and `.atlas` parser. All 25 rigs that ship under `spine-runtimes/examples/` load cleanly through `AtlasAttachmentLoader` in either format.
 - **Skeleton + animation state** — full pose pipeline, multi-track `AnimationState` with crossfade mixing, event queue, empty animations, and all five `Inherit` modes.
 - **Constraint solvers** — IK (1-bone + 2-bone with bend/softness/stretch), Transform (absolute/relative × world/local), Path (all spacing + rotate modes), and Physics (damped spring, fixed timestep).
 - **Clipping + bounds** — `SkeletonClipping` (Sutherland-Hodgman + convex decomposition) and `SkeletonBounds` (AABB, point-in-polygon, segment-polygon hit tests).
@@ -27,8 +27,7 @@ If your use case is in doubt, consult the [Spine licensing page](https://esoteri
 ## What's explicitly out of scope
 
 - **GPU work.** The core crate has no GPU, windowing, or shader dependency. Draw commands carry plain `Vec<f32>` / `Vec<u16>` buffers and a `TextureId(u32)` (atlas page index); integration crates map that onto their backend.
-- **JSON skeletons.** Only the binary `.skel` format is supported. Add a JSON loader if you need one — the data types are public.
-- **Spine versions before 4.2.** The binary format introduced new fields and physics constraints in 4.2. Older exports won't parse.
+- **Spine versions before 4.2.** Both the binary and JSON formats introduced new fields and physics constraints in 4.2. Older exports won't parse.
 
 ## Quick start
 
@@ -40,18 +39,22 @@ dm_spine_runtime = { git = "https://github.com/dead-money/dm_spine_runtime" }
 ```rust
 use std::sync::Arc;
 use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary, SkeletonJson};
 use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 use dm_spine_runtime::render::SkeletonRenderer;
 
-// 1. Parse the atlas (text) and skeleton (binary).
+// 1. Parse the atlas (text) and skeleton. Both loaders produce identical
+//    `SkeletonData`; pick whichever format your pipeline exports.
 let atlas_src = std::fs::read_to_string("spineboy.atlas")?;
 let atlas = Atlas::parse(&atlas_src)?;
 let mut attachment_loader = AtlasAttachmentLoader::new(&atlas);
 
 let bytes = std::fs::read("spineboy-pro.skel")?;
 let data = Arc::new(SkeletonBinary::with_loader(&mut attachment_loader).read(&bytes)?);
+// Or for JSON:
+// let json = std::fs::read("spineboy-pro.json")?;
+// let data = Arc::new(SkeletonJson::with_loader(&mut attachment_loader).read_slice(&json)?);
 
 // 2. Build a skeleton + animation state sharing the immutable data.
 let mut skeleton = Skeleton::new(Arc::clone(&data));
