@@ -82,13 +82,14 @@ impl TextureId {
 /// | `colors`     | `vertices`      | Packed `0xAARRGGBB` (premultiplied alpha)   |
 /// | `dark_colors`| `vertices`      | Packed `0xAARRGGBB` for tint-black          |
 /// | `indices`    | `indices`       | Triangle-list `u16` into this command       |
+/// | `slots`      | `vertices`      | Slot index; only with [`RenderOptions::vertex_ids`] |
+/// | `tags`       | `vertices`      | Attachment [`tag`](crate::data::Attachment::tag); only with `vertex_ids` |
 ///
 /// `vertices = positions.len() / 2` and `indices = indices.len()`; the
 /// numeric counts are not stored separately.
 ///
-/// The same `color` / `dark_color` value is duplicated across every
-/// vertex. spine-cpp does this so the batcher can compare commands in
-/// O(1); we mirror the layout to keep golden-capture diffs exact.
+/// Each slot's color is repeated across its vertices. By default only slots
+/// with the same colors share a command, as in spine-cpp.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderCommand {
     pub positions: Vec<f32>,
@@ -96,8 +97,21 @@ pub struct RenderCommand {
     pub colors: Vec<u32>,
     pub dark_colors: Vec<u32>,
     pub indices: Vec<u16>,
+    pub slots: Vec<u16>,
+    pub tags: Vec<u32>,
     pub blend_mode: BlendMode,
     pub texture: TextureId,
+}
+
+/// What [`SkeletonRenderer`] emits beyond spine-cpp's output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderOptions {
+    /// Fill [`RenderCommand::slots`] and [`RenderCommand::tags`], so a
+    /// shader can tell slots apart inside a merged command.
+    pub vertex_ids: bool,
+    /// Merge adjacent slots whose colors differ, so commands break only on
+    /// texture, blend mode and index count. Colors stay per vertex.
+    pub merge_colors: bool,
 }
 
 impl RenderCommand {
@@ -141,27 +155,6 @@ impl RenderCommand {
         }
         Some((xmin, xmax, ymin, ymax))
     }
-
-    /// Empty command with the given `blend_mode` / `texture` and
-    /// `num_vertices` / `num_indices` reserved but uninitialised.
-    #[allow(dead_code)]
-    #[must_use]
-    pub(crate) fn with_capacity(
-        num_vertices: usize,
-        num_indices: usize,
-        blend_mode: BlendMode,
-        texture: TextureId,
-    ) -> Self {
-        Self {
-            positions: vec![0.0; num_vertices * 2],
-            uvs: vec![0.0; num_vertices * 2],
-            colors: vec![0; num_vertices],
-            dark_colors: vec![0; num_vertices],
-            indices: vec![0; num_indices],
-            blend_mode,
-            texture,
-        }
-    }
 }
 
 /// Pack four 0..1 floats into `0xAARRGGBB`. Matches spine-cpp's
@@ -202,17 +195,5 @@ mod tests {
     #[test]
     fn texture_id_missing_is_u32_max() {
         assert_eq!(TextureId::MISSING, TextureId(u32::MAX));
-    }
-
-    #[test]
-    fn with_capacity_allocates_zeroed_buffers() {
-        let c = RenderCommand::with_capacity(4, 6, BlendMode::Normal, TextureId(0));
-        assert_eq!(c.positions.len(), 8);
-        assert_eq!(c.uvs.len(), 8);
-        assert_eq!(c.colors.len(), 4);
-        assert_eq!(c.dark_colors.len(), 4);
-        assert_eq!(c.indices.len(), 6);
-        assert_eq!(c.num_vertices(), 4);
-        assert_eq!(c.num_indices(), 6);
     }
 }

@@ -38,7 +38,7 @@ use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::atlas::Atlas;
 use dm_spine_runtime::data::{AttachmentRef, SkeletonData, Skin};
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
+use dm_spine_runtime::render::{RenderCommand, RenderOptions, SkeletonRenderer};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 fn load(atlases: &[PathBuf], skel: &Path) -> Arc<SkeletonData> {
@@ -95,6 +95,11 @@ fn check(label: &str, sd: &Arc<SkeletonData>, template: &str, animation: &str) {
     let (mut actual, mut actual_state) = pose(Arc::clone(&custom));
     let (mut expected_renderer, mut actual_renderer) =
         (SkeletonRenderer::new(), SkeletonRenderer::new());
+    let mut merged_renderer = SkeletonRenderer::with_options(RenderOptions {
+        vertex_ids: true,
+        merge_colors: true,
+    });
+    let (mut plain_commands, mut merged_commands) = (0, 0);
     let mut events = Vec::new();
     let mut owned_shown = 0;
     for frame in 0..90 {
@@ -117,7 +122,31 @@ fn check(label: &str, sd: &Arc<SkeletonData>, template: &str, animation: &str) {
             expected_renderer.render(&expected) == actual_renderer.render(&actual),
             "{label}: frame {frame} renders differently"
         );
+
+        let plain = actual_renderer.commands();
+        let merged = merged_renderer.render(&actual);
+        let flat = |cmds: &[RenderCommand], f: fn(&RenderCommand) -> &[f32]| -> Vec<f32> {
+            cmds.iter().flat_map(|c| f(c).iter().copied()).collect()
+        };
+        assert_eq!(
+            flat(plain, |c| &c.positions),
+            flat(merged, |c| &c.positions)
+        );
+        assert_eq!(flat(plain, |c| &c.uvs), flat(merged, |c| &c.uvs));
+        for cmd in merged {
+            assert_eq!(cmd.slots.len(), cmd.num_vertices());
+            for (&slot, &tag) in cmd.slots.iter().zip(&cmd.tags) {
+                let shown = actual.slots[usize::from(slot)]
+                    .applied()
+                    .attachment
+                    .unwrap();
+                assert_eq!(actual.attachment(shown).tag(), tag, "{label}: slot {slot}");
+            }
+        }
+        plain_commands += plain.len();
+        merged_commands += merged.len();
     }
+    assert!(merged_commands <= plain_commands);
     assert!(owned_shown > 0, "{label}: no copies shown");
 }
 

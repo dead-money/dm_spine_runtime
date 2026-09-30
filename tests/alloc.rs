@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::atlas::Atlas;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
+use dm_spine_runtime::render::{RenderOptions, SkeletonRenderer};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 struct Counting;
@@ -79,6 +79,10 @@ fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> 
     let mut state = AnimationState::new(Arc::new(AnimationStateData::new(Arc::clone(&data))));
     state.set_animation_by_name(0, anim, true).unwrap();
     let mut renderer = SkeletonRenderer::new();
+    let mut merged_renderer = SkeletonRenderer::with_options(RenderOptions {
+        vertex_ids: true,
+        merge_colors: true,
+    });
     let mut events = Vec::with_capacity(64);
     let mut state_events = Vec::with_capacity(64);
     let duration = data
@@ -96,6 +100,7 @@ fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> 
             skeleton.update(1.0 / 60.0);
             skeleton.update_world_transform(physics);
             renderer.render(&skeleton);
+            merged_renderer.render(&skeleton);
             state_events.clear();
             state.drain_events_into(&mut state_events);
         }

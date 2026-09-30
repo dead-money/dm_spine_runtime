@@ -30,14 +30,15 @@
 //!
 //! Adjacent slots sharing texture, blend mode, color and dark color are
 //! merged while the batch stays under 65535 indices, as spine-cpp's
-//! `batchCommands` does. Commands and their buffers are reused between
-//! calls, so steady-state rendering doesn't allocate.
+//! `batchCommands` does; [`RenderOptions`] can drop the color condition.
+//! Commands and their buffers are reused between calls, so steady-state
+//! rendering doesn't allocate.
 
 use crate::data::attachment::quad_corner::{BLX, BLY, BRX, BRY, ULX, ULY, URX, URY};
 use crate::data::{Attachment, BlendMode};
 use crate::math::Color;
 use crate::render::clipping::SkeletonClipping;
-use crate::render::{RenderCommand, TextureId, pack_color};
+use crate::render::{RenderCommand, RenderOptions, TextureId, pack_color};
 use crate::skeleton::Skeleton;
 
 const QUAD_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
@@ -48,12 +49,43 @@ pub struct SkeletonRenderer {
     len: usize,
     world_vertices: Vec<f32>,
     clipping: SkeletonClipping,
+    options: RenderOptions,
+}
+
+/// One slot's contribution to a command.
+struct Draw<'a> {
+    positions: &'a [f32],
+    uvs: &'a [f32],
+    indices: &'a [u16],
+    color: u32,
+    dark_color: u32,
+    blend_mode: BlendMode,
+    texture: TextureId,
+    slot: u16,
+    tag: u32,
 }
 
 impl SkeletonRenderer {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_options(options: RenderOptions) -> Self {
+        Self {
+            options,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn options(&self) -> RenderOptions {
+        self.options
+    }
+
+    pub fn set_options(&mut self, options: RenderOptions) {
+        self.options = options;
     }
 
     /// Commands from the last [`Self::render`].
@@ -168,43 +200,44 @@ impl SkeletonRenderer {
             } else {
                 0xff00_0000
             };
-            let blend = sd.slots[slot_id.index()].blend_mode;
+            let blend_mode = sd.slots[slot_id.index()].blend_mode;
+            let (slot, tag) = (slot_id.0, attachment.tag());
 
-            if self.clipping.is_clipping() {
+            let draw = if self.clipping.is_clipping() {
                 self.clipping
                     .clip_triangles(&self.world_vertices, triangles, uvs, 2);
                 let clipped_vertices = self.clipping.clipped_vertices().len() >> 1;
-                let (positions, uvs, triangles) = (
-                    self.clipping.clipped_vertices(),
-                    self.clipping.clipped_uvs(),
-                    self.clipping.clipped_triangles(),
-                );
-                push(
-                    &mut self.commands,
-                    &mut self.len,
-                    batch,
-                    &positions[..clipped_vertices * 2],
-                    uvs,
-                    triangles,
+                Draw {
+                    positions: &self.clipping.clipped_vertices()[..clipped_vertices * 2],
+                    uvs: self.clipping.clipped_uvs(),
+                    indices: self.clipping.clipped_triangles(),
                     color,
                     dark_color,
-                    blend,
+                    blend_mode,
                     texture,
-                );
+                    slot,
+                    tag,
+                }
             } else {
-                push(
-                    &mut self.commands,
-                    &mut self.len,
-                    batch,
-                    &self.world_vertices[..vertex_count * 2],
-                    &uvs[..vertex_count * 2],
-                    triangles,
+                Draw {
+                    positions: &self.world_vertices[..vertex_count * 2],
+                    uvs: &uvs[..vertex_count * 2],
+                    indices: triangles,
                     color,
                     dark_color,
-                    blend,
+                    blend_mode,
                     texture,
-                );
-            }
+                    slot,
+                    tag,
+                }
+            };
+            push(
+                &mut self.commands,
+                &mut self.len,
+                batch,
+                self.options,
+                &draw,
+            );
             self.clipping.clip_end_slot(slot_id);
         }
         self.clipping.clip_end();
@@ -214,29 +247,24 @@ impl SkeletonRenderer {
 
 /// Appends one slot's geometry, merging into the current command when the
 /// batch key matches.
-#[allow(clippy::too_many_arguments)]
 fn push(
     commands: &mut Vec<RenderCommand>,
     len: &mut usize,
     batch: bool,
-    positions: &[f32],
-    uvs: &[f32],
-    indices: &[u16],
-    color: u32,
-    dark_color: u32,
-    blend_mode: BlendMode,
-    texture: TextureId,
+    options: RenderOptions,
+    draw: &Draw<'_>,
 ) {
-    if positions.is_empty() && indices.is_empty() {
+    if draw.positions.is_empty() && draw.indices.is_empty() {
         return;
     }
     let merge = batch && *len > 0 && {
         let last = &commands[*len - 1];
-        last.texture == texture
-            && last.blend_mode == blend_mode
-            && last.colors.first() == Some(&color)
-            && last.dark_colors.first() == Some(&dark_color)
-            && last.indices.len() + indices.len() < 0xffff
+        last.texture == draw.texture
+            && last.blend_mode == draw.blend_mode
+            && (options.merge_colors
+                || last.colors.first() == Some(&draw.color)
+                    && last.dark_colors.first() == Some(&draw.dark_color))
+            && last.indices.len() + draw.indices.len() < 0xffff
     };
     if !merge {
         if *len == commands.len() {
@@ -246,8 +274,10 @@ fn push(
                 colors: Vec::new(),
                 dark_colors: Vec::new(),
                 indices: Vec::new(),
-                blend_mode,
-                texture,
+                slots: Vec::new(),
+                tags: Vec::new(),
+                blend_mode: draw.blend_mode,
+                texture: draw.texture,
             });
         }
         let cmd = &mut commands[*len];
@@ -256,17 +286,25 @@ fn push(
         cmd.colors.clear();
         cmd.dark_colors.clear();
         cmd.indices.clear();
-        cmd.blend_mode = blend_mode;
-        cmd.texture = texture;
+        cmd.slots.clear();
+        cmd.tags.clear();
+        cmd.blend_mode = draw.blend_mode;
+        cmd.texture = draw.texture;
         *len += 1;
     }
     let cmd = &mut commands[*len - 1];
     let base = (cmd.positions.len() / 2) as u16;
-    let vertex_count = positions.len() / 2;
-    cmd.positions.extend_from_slice(positions);
-    cmd.uvs.extend_from_slice(&uvs[..vertex_count * 2]);
-    cmd.colors.extend(std::iter::repeat_n(color, vertex_count));
+    let vertex_count = draw.positions.len() / 2;
+    cmd.positions.extend_from_slice(draw.positions);
+    cmd.uvs.extend_from_slice(&draw.uvs[..vertex_count * 2]);
+    cmd.colors
+        .extend(std::iter::repeat_n(draw.color, vertex_count));
     cmd.dark_colors
-        .extend(std::iter::repeat_n(dark_color, vertex_count));
-    cmd.indices.extend(indices.iter().map(|&i| i + base));
+        .extend(std::iter::repeat_n(draw.dark_color, vertex_count));
+    cmd.indices.extend(draw.indices.iter().map(|&i| i + base));
+    if options.vertex_ids {
+        cmd.slots
+            .extend(std::iter::repeat_n(draw.slot, vertex_count));
+        cmd.tags.extend(std::iter::repeat_n(draw.tag, vertex_count));
+    }
 }
