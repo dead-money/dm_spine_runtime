@@ -31,4 +31,5 @@ mod parse;
 mod reader;
 
 pub use parse::SkeletonBinary;
+pub(crate) use parse::{link_mesh, timeline_duration};
 pub use reader::BinaryError;

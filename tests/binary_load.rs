@@ -124,7 +124,6 @@ fn load(atlas_path: &Path, skel_path: &Path) -> dm_spine_runtime::data::Skeleton
 }
 
 #[test]
-#[ignore = "Spine 4.3 phase 1"]
 fn loads_every_example_skeleton() {
     let pairs = collect_skels();
     assert!(
@@ -181,7 +180,6 @@ fn loads_every_example_skeleton() {
 }
 
 #[test]
-#[ignore = "Spine 4.3 phase 1"]
 fn spineboy_pro_has_expected_structure() {
     let root = examples_root().join("spineboy/export");
     let sd = load(
@@ -191,7 +189,7 @@ fn spineboy_pro_has_expected_structure() {
 
     // Spot-check values cross-referenced against the corresponding
     // .json export (which is much easier to read by eye).
-    assert!(sd.version.starts_with("4.2"));
+    assert!(sd.version.starts_with("4.3"));
     assert!(sd.bones.iter().any(|b| b.name == "root"));
     assert!(sd.bones.iter().any(|b| b.name == "hip"));
     assert!(sd.slots.iter().any(|s| s.name == "head"));
@@ -227,14 +225,13 @@ fn spineboy_pro_has_expected_structure() {
 }
 
 #[test]
-fn rejects_non_42_version_bytes() {
-    // Hand-craft a minimal prefix with version "3.8.0" → should bounce.
+fn rejects_other_versions() {
+    // A 4.2 header must bounce.
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0, 0, 0, 0]); // low hash
     bytes.extend_from_slice(&[0, 0, 0, 0]); // high hash
-    // String length prefix: "3.8.0" is 5 bytes + 1 = 6 → varint 6 is a single byte.
-    bytes.push(6);
-    bytes.extend_from_slice(b"3.8.0");
+    bytes.push(7);
+    bytes.extend_from_slice(b"4.2.43");
     let atlas = Atlas::default();
     let mut loader = AtlasAttachmentLoader::new(&atlas);
     let err = SkeletonBinary::with_loader(&mut loader)
@@ -247,4 +244,31 @@ fn rejects_non_42_version_bytes() {
         ),
         "unexpected error: {err}"
     );
+}
+
+/// hommlet's creature rigs (`HOMMLET_SPINE_ASSETS` = its `Assets/Spine`),
+/// each with its rig atlas plus body atlas when present. Skipped when unset.
+#[test]
+fn loads_hommlet_rigs() {
+    let Some(root) = std::env::var_os("HOMMLET_SPINE_ASSETS").map(PathBuf::from) else {
+        return;
+    };
+    let mut loaded = 0;
+    for rig in ["Human", "Goblin", "Orc", "Ogre", "Deer", "Stele"] {
+        let dir = root.join(rig);
+        let mut atlas_text = std::fs::read_to_string(dir.join(format!("{rig}.atlas"))).unwrap();
+        if let Ok(body) = std::fs::read_to_string(dir.join(format!("{rig}_Body.atlas"))) {
+            atlas_text.push('\n');
+            atlas_text.push_str(&body);
+        }
+        let atlas = Atlas::parse(&atlas_text).unwrap();
+        let bytes = std::fs::read(dir.join(format!("{rig}.skel"))).unwrap();
+        let mut loader = AtlasAttachmentLoader::new(&atlas);
+        let sd = SkeletonBinary::with_loader(&mut loader)
+            .read(&bytes)
+            .unwrap_or_else(|e| panic!("{rig}: {e}"));
+        assert!(!sd.bones.is_empty(), "{rig}: no bones");
+        loaded += 1;
+    }
+    assert_eq!(loaded, 6);
 }

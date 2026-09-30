@@ -34,5 +34,7 @@ pub mod atlas;
 pub mod data;
 pub mod load;
 pub mod math;
+#[cfg(any())] // 4.3-port-gate
 pub mod render;
+#[cfg(any())] // 4.3-port-gate
 pub mod skeleton;

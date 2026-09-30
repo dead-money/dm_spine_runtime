@@ -64,19 +64,20 @@ use thiserror::Error;
 use crate::animation::{BEZIER_SIZE, compute_bezier_samples};
 use crate::data::attachment::{Attachment, Sequence, VertexData};
 use crate::data::{
-    Animation, AnimationEvent, AttachmentId, BlendMode, BoneData, BoneId, CurveFrames, EventData,
-    EventId, IkConstraintData, IkConstraintId, Inherit, PathConstraintData, PathConstraintId,
-    PhysicsConstraintData, PhysicsConstraintId, PhysicsProperty, PositionMode, RotateMode,
-    SkeletonData, Skin, SkinId, SlotData, SlotId, SpacingMode, Timeline, TransformConstraintData,
-    TransformConstraintId,
+    Animation, AnimationEvent, AnimationId, AttachmentId, BlendMode, BoneData, BoneId,
+    ConstraintData, ConstraintId, CurveFrames, EventData, EventId, FromProperty, IkConstraintData,
+    Inherit, PathConstraintData, PhysicsConstraintData, PhysicsProperty, PositionMode, RotateMode,
+    ScaleYMode, SkeletonData, Skin, SkinId, SliderData, SliderProperty, SlotData, SlotId,
+    SpacingMode, Timeline, ToProperty, TransformConstraintData, TransformProperty,
 };
 use crate::load::AttachmentLoader;
 use crate::load::AttachmentLoaderError;
+use crate::load::binary::timeline_duration;
 use crate::math::Color;
 
 /// Spine editor version this runtime is built for. Must prefix the skeleton's
 /// embedded `spine` version field.
-pub const TARGET_VERSION: &str = "4.2";
+pub const TARGET_VERSION: &str = "4.3";
 
 const CURVE_LINEAR: f32 = 0.0;
 const CURVE_STEPPED: f32 = 1.0;
@@ -115,9 +116,10 @@ pub enum JsonError {
 struct LinkedMesh {
     mesh: AttachmentId,
     skin_name: Option<String>,
-    slot_index: usize,
-    parent_name: String,
-    inherit_timeline: bool,
+    slot: SlotId,
+    source_slot: SlotId,
+    source: String,
+    inherit_timelines: bool,
 }
 
 /// Stateful parser for the JSON format. Keeps scratch state for linked-mesh
@@ -194,46 +196,39 @@ impl<'loader> SkeletonJson<'loader> {
             sd.images_path = get_str(sk, "images").unwrap_or("").to_string();
         }
 
-        // --- Bones ---------------------------------------------------------
+        // Bones.
         if let Some(bones) = root.get("bones").and_then(Value::as_array) {
             sd.bones.reserve(bones.len());
             for (i, bone) in bones.iter().enumerate() {
                 let name = get_str(bone, "name").unwrap_or("").to_string();
-                let parent = if let Some(pname) = get_str(bone, "parent") {
-                    let idx = sd
-                        .bones
-                        .iter()
-                        .position(|b| b.name == pname)
-                        .ok_or_else(|| JsonError::NotFound {
-                            entity: "parent bone",
-                            name: pname.to_string(),
-                        })?;
-                    Some(BoneId(idx as u16))
-                } else {
-                    None
+                let parent = match get_str(bone, "parent") {
+                    Some(p) => Some(find_bone(&sd, p, "parent bone")?),
+                    None => None,
                 };
-                let id = BoneId(i as u16);
-                let mut b = BoneData::new(id, name, parent);
+                let mut b = BoneData::new(BoneId(i as u16), name, parent);
                 b.length = get_f32(bone, "length", 0.0) * self.scale;
-                b.x = get_f32(bone, "x", 0.0) * self.scale;
-                b.y = get_f32(bone, "y", 0.0) * self.scale;
-                b.rotation = get_f32(bone, "rotation", 0.0);
-                b.scale_x = get_f32(bone, "scaleX", 1.0);
-                b.scale_y = get_f32(bone, "scaleY", 1.0);
-                b.shear_x = get_f32(bone, "shearX", 0.0);
-                b.shear_y = get_f32(bone, "shearY", 0.0);
-                b.inherit = parse_inherit(get_str(bone, "inherit").unwrap_or("normal"))?;
+                let setup = &mut b.setup;
+                setup.x = get_f32(bone, "x", 0.0) * self.scale;
+                setup.y = get_f32(bone, "y", 0.0) * self.scale;
+                setup.rotation = get_f32(bone, "rotation", 0.0);
+                setup.scale_x = get_f32(bone, "scaleX", 1.0);
+                setup.scale_y = get_f32(bone, "scaleY", 1.0);
+                setup.shear_x = get_f32(bone, "shearX", 0.0);
+                setup.shear_y = get_f32(bone, "shearY", 0.0);
+                setup.inherit = parse_inherit(get_str(bone, "inherit").unwrap_or("normal"))?;
                 b.skin_required = get_bool(bone, "skin", false);
                 if let Some(color) = get_str(bone, "color") {
                     b.color = parse_color(color, true)?;
                 }
                 b.icon = get_str(bone, "icon").unwrap_or("").to_string();
+                b.icon_size = get_f32(bone, "iconSize", 1.0);
+                b.icon_rotation = get_f32(bone, "iconRotation", 0.0);
                 b.visible = get_bool(bone, "visible", true);
                 sd.bones.push(b);
             }
         }
 
-        // --- Slots ---------------------------------------------------------
+        // Slots.
         if let Some(slots) = root.get("slots").and_then(Value::as_array) {
             sd.slots.reserve(slots.len());
             for (i, slot) in slots.iter().enumerate() {
@@ -241,15 +236,8 @@ impl<'loader> SkeletonJson<'loader> {
                 let bone_name = get_str(slot, "bone").ok_or_else(|| JsonError::MissingField {
                     path: format!("slots[{i}].bone"),
                 })?;
-                let bone_idx = sd
-                    .bones
-                    .iter()
-                    .position(|b| b.name == bone_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "slot bone",
-                        name: bone_name.to_string(),
-                    })?;
-                let mut s = SlotData::new(SlotId(i as u16), name, BoneId(bone_idx as u16));
+                let bone = find_bone(&sd, bone_name, "slot bone")?;
+                let mut s = SlotData::new(SlotId(i as u16), name, bone);
                 if let Some(c) = get_str(slot, "color") {
                     s.color = parse_color(c, true)?;
                 }
@@ -280,159 +268,192 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- IK constraints ------------------------------------------------
-        if let Some(ik) = root.get("ik").and_then(Value::as_array) {
-            sd.ik_constraints.reserve(ik.len());
-            for (i, c) in ik.iter().enumerate() {
-                let name = get_str(c, "name").unwrap_or("").to_string();
-                let target_name = get_str(c, "target").ok_or_else(|| JsonError::MissingField {
-                    path: format!("ik[{i}].target"),
-                })?;
-                let target_idx = sd
-                    .bones
-                    .iter()
-                    .position(|b| b.name == target_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "IK target bone",
-                        name: target_name.to_string(),
-                    })?;
-                let mut data = IkConstraintData::new(
-                    IkConstraintId(i as u16),
-                    name,
-                    BoneId(target_idx as u16),
-                );
-                data.order = get_int(c, "order", 0) as u32;
-                data.skin_required = get_bool(c, "skin", false);
-                if let Some(bones) = c.get("bones").and_then(Value::as_array) {
-                    data.bones.reserve(bones.len());
-                    for b in bones {
-                        let bname = b.as_str().ok_or_else(|| JsonError::BadType {
-                            path: "ik.bones".to_string(),
-                            message: "expected string".to_string(),
-                        })?;
-                        let idx =
-                            sd.bones
-                                .iter()
-                                .position(|x| x.name == bname)
-                                .ok_or_else(|| JsonError::NotFound {
-                                    entity: "IK bone",
-                                    name: bname.to_string(),
-                                })?;
-                        data.bones.push(BoneId(idx as u16));
-                    }
+        // Constraints, in update order.
+        if let Some(constraints) = root.get("constraints").and_then(Value::as_array) {
+            sd.constraints.reserve(constraints.len());
+            for c in constraints {
+                let constraint = self.read_constraint(c, &sd)?;
+                sd.constraints.push(constraint);
+            }
+        }
+
+        // --- Skins ---------------------------------------------------------
+        if let Some(skins) = root.get("skins").and_then(Value::as_array) {
+            sd.skins.reserve(skins.len());
+            for skin_map in skins {
+                self.read_skin(skin_map, &mut sd)?;
+            }
+        }
+
+        // --- Linked mesh resolution ---------------------------------------
+        self.resolve_linked_meshes(&mut sd)?;
+
+        // Events.
+        if let Some(events) = root.get("events").and_then(Value::as_object) {
+            sd.events.reserve(events.len());
+            for (i, (name, e)) in events.iter().enumerate() {
+                let mut data = EventData::new(EventId(i as u16), name.clone());
+                data.int_value = get_int(e, "int", 0);
+                data.float_value = get_f32(e, "float", 0.0);
+                data.string_value = get_str(e, "string").unwrap_or("").to_string();
+                data.audio_path = get_str(e, "audio").unwrap_or("").to_string();
+                if !data.audio_path.is_empty() {
+                    data.volume = get_f32(e, "volume", 1.0);
+                    data.balance = get_f32(e, "balance", 0.0);
                 }
-                data.mix = get_f32(c, "mix", 1.0);
-                data.softness = get_f32(c, "softness", 0.0) * self.scale;
-                data.bend_direction = if get_bool(c, "bendPositive", true) {
+                sd.events.push(data);
+            }
+        }
+
+        // Animations.
+        if let Some(anims) = root.get("animations").and_then(Value::as_object) {
+            sd.animations.reserve(anims.len());
+            for (name, a) in anims {
+                let anim = self.read_animation(name, a, &sd)?;
+                sd.animations.push(anim);
+            }
+        }
+
+        // Slider animations, resolved once animations exist.
+        if let Some(constraints) = root.get("constraints").and_then(Value::as_array) {
+            for (i, c) in constraints.iter().enumerate() {
+                if get_str(c, "type") != Some("slider") {
+                    continue;
+                }
+                let anim_name = get_str(c, "animation").unwrap_or("");
+                let anim = sd
+                    .animations
+                    .iter()
+                    .position(|a| a.name == anim_name)
+                    .ok_or_else(|| JsonError::NotFound {
+                        entity: "slider animation",
+                        name: anim_name.to_string(),
+                    })?;
+                if let ConstraintData::Slider(slider) = &mut sd.constraints[i] {
+                    slider.animation = Some(AnimationId(anim as u16));
+                }
+            }
+        }
+
+        Ok(sd)
+    }
+
+    // -----------------------------------------------------------------------
+    // Skins + attachments
+    // -----------------------------------------------------------------------
+
+    fn read_constraint(&self, c: &Value, sd: &SkeletonData) -> Result<ConstraintData, JsonError> {
+        let scale = self.scale;
+        let name = get_str(c, "name").unwrap_or("").to_string();
+        let skin_required = get_bool(c, "skin", false);
+        let bones = |sd: &SkeletonData| -> Result<Vec<BoneId>, JsonError> {
+            c.get("bones")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|b| find_bone(sd, b.as_str().unwrap_or(""), "constraint bone"))
+                .collect()
+        };
+        let ty = get_str(c, "type").unwrap_or("");
+        Ok(match ty {
+            "ik" => {
+                let target = find_bone(sd, get_str(c, "target").unwrap_or(""), "IK target bone")?;
+                let mut data = IkConstraintData::new(name, target);
+                data.skin_required = skin_required;
+                data.bones = bones(sd)?;
+                if let Some(mode) = get_str(c, "scaleY") {
+                    data.scale_y_mode = parse_scale_y_mode(mode)?;
+                }
+                let setup = &mut data.setup;
+                setup.mix = get_f32(c, "mix", 1.0);
+                setup.softness = get_f32(c, "softness", 0.0) * scale;
+                setup.bend_direction = if get_bool(c, "bendPositive", true) {
                     1
                 } else {
                     -1
                 };
-                data.compress = get_bool(c, "compress", false);
-                data.stretch = get_bool(c, "stretch", false);
-                data.uniform = get_bool(c, "uniform", false);
-                sd.ik_constraints.push(data);
+                setup.compress = get_bool(c, "compress", false);
+                setup.stretch = get_bool(c, "stretch", false);
+                ConstraintData::Ik(data)
             }
-        }
+            "transform" => {
+                let source = find_bone(
+                    sd,
+                    get_str(c, "source").unwrap_or(""),
+                    "transform source bone",
+                )?;
+                let mut data = TransformConstraintData::new(name, source);
+                data.skin_required = skin_required;
+                data.bones = bones(sd)?;
+                data.local_source = get_bool(c, "localSource", false);
+                data.local_target = get_bool(c, "localTarget", false);
+                data.additive = get_bool(c, "additive", false);
+                data.clamp = get_bool(c, "clamp", false);
 
-        // --- Transform constraints -----------------------------------------
-        if let Some(tc) = root.get("transform").and_then(Value::as_array) {
-            sd.transform_constraints.reserve(tc.len());
-            for (i, c) in tc.iter().enumerate() {
-                let name = get_str(c, "name").unwrap_or("").to_string();
-                let target_name = get_str(c, "target").ok_or_else(|| JsonError::MissingField {
-                    path: format!("transform[{i}].target"),
-                })?;
-                let target_idx = sd
-                    .bones
-                    .iter()
-                    .position(|b| b.name == target_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "transform target bone",
-                        name: target_name.to_string(),
-                    })?;
-                let mut data = TransformConstraintData::new(
-                    TransformConstraintId(i as u16),
-                    name,
-                    BoneId(target_idx as u16),
-                );
-                data.order = get_int(c, "order", 0) as u32;
-                data.skin_required = get_bool(c, "skin", false);
-                if let Some(bones) = c.get("bones").and_then(Value::as_array) {
-                    for b in bones {
-                        let bname = b.as_str().ok_or_else(|| JsonError::BadType {
-                            path: "transform.bones".to_string(),
-                            message: "expected string".to_string(),
-                        })?;
-                        let idx =
-                            sd.bones
-                                .iter()
-                                .position(|x| x.name == bname)
-                                .ok_or_else(|| JsonError::NotFound {
-                                    entity: "transform bone",
-                                    name: bname.to_string(),
-                                })?;
-                        data.bones.push(BoneId(idx as u16));
+                let mut keyed = [false; 6];
+                if let Some(props) = c.get("properties").and_then(Value::as_object) {
+                    for (from_name, from_entry) in props {
+                        let from = parse_property(from_name)?;
+                        let from_scale = property_scale(from, scale);
+                        let mut to = Vec::new();
+                        if let Some(tos) = from_entry.get("to").and_then(Value::as_object) {
+                            for (to_name, to_entry) in tos {
+                                let property = parse_property(to_name)?;
+                                keyed[property.offset_index()] = true;
+                                let to_scale = property_scale(property, scale);
+                                to.push(ToProperty {
+                                    property,
+                                    offset: get_f32(to_entry, "offset", 0.0) * to_scale,
+                                    max: get_f32(to_entry, "max", 1.0) * to_scale,
+                                    scale: get_f32(to_entry, "scale", 1.0) * to_scale / from_scale,
+                                });
+                            }
+                        }
+                        if !to.is_empty() {
+                            data.properties.push(FromProperty {
+                                property: from,
+                                offset: get_f32(from_entry, "offset", 0.0) * from_scale,
+                                to,
+                            });
+                        }
                     }
                 }
-                data.local = get_bool(c, "local", false);
-                data.relative = get_bool(c, "relative", false);
-                data.offset_rotation = get_f32(c, "rotation", 0.0);
-                data.offset_x = get_f32(c, "x", 0.0) * self.scale;
-                data.offset_y = get_f32(c, "y", 0.0) * self.scale;
-                data.offset_scale_x = get_f32(c, "scaleX", 0.0);
-                data.offset_scale_y = get_f32(c, "scaleY", 0.0);
-                data.offset_shear_y = get_f32(c, "shearY", 0.0);
-                data.mix_rotate = get_f32(c, "mixRotate", 1.0);
-                data.mix_x = get_f32(c, "mixX", 1.0);
-                data.mix_y = get_f32(c, "mixY", data.mix_x);
-                data.mix_scale_x = get_f32(c, "mixScaleX", 1.0);
-                data.mix_scale_y = get_f32(c, "mixScaleY", data.mix_scale_x);
-                data.mix_shear_y = get_f32(c, "mixShearY", 1.0);
-                sd.transform_constraints.push(data);
-            }
-        }
 
-        // --- Path constraints ----------------------------------------------
-        if let Some(pc) = root.get("path").and_then(Value::as_array) {
-            sd.path_constraints.reserve(pc.len());
-            for (i, c) in pc.iter().enumerate() {
-                let name = get_str(c, "name").unwrap_or("").to_string();
-                let target_name = get_str(c, "target").ok_or_else(|| JsonError::MissingField {
-                    path: format!("path[{i}].target"),
-                })?;
-                let target_idx = sd
-                    .slots
-                    .iter()
-                    .position(|s| s.name == target_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "path target slot",
-                        name: target_name.to_string(),
-                    })?;
-                let mut data = PathConstraintData::new(
-                    PathConstraintId(i as u16),
-                    name,
-                    SlotId(target_idx as u16),
-                );
-                data.order = get_int(c, "order", 0) as u32;
-                data.skin_required = get_bool(c, "skin", false);
-                if let Some(bones) = c.get("bones").and_then(Value::as_array) {
-                    for b in bones {
-                        let bname = b.as_str().ok_or_else(|| JsonError::BadType {
-                            path: "path.bones".to_string(),
-                            message: "expected string".to_string(),
-                        })?;
-                        let idx =
-                            sd.bones
-                                .iter()
-                                .position(|x| x.name == bname)
-                                .ok_or_else(|| JsonError::NotFound {
-                                    entity: "path bone",
-                                    name: bname.to_string(),
-                                })?;
-                        data.bones.push(BoneId(idx as u16));
-                    }
+                data.offsets = [
+                    get_f32(c, "rotation", 0.0),
+                    get_f32(c, "x", 0.0) * scale,
+                    get_f32(c, "y", 0.0) * scale,
+                    get_f32(c, "scaleX", 0.0),
+                    get_f32(c, "scaleY", 0.0),
+                    get_f32(c, "shearY", 0.0),
+                ];
+
+                let setup = &mut data.setup;
+                if keyed[0] {
+                    setup.mix_rotate = get_f32(c, "mixRotate", 1.0);
                 }
+                if keyed[1] {
+                    setup.mix_x = get_f32(c, "mixX", 1.0);
+                }
+                if keyed[2] {
+                    setup.mix_y = get_f32(c, "mixY", setup.mix_x);
+                }
+                if keyed[3] {
+                    setup.mix_scale_x = get_f32(c, "mixScaleX", 1.0);
+                }
+                if keyed[4] {
+                    setup.mix_scale_y = get_f32(c, "mixScaleY", setup.mix_scale_x);
+                }
+                if keyed[5] {
+                    setup.mix_shear_y = get_f32(c, "mixShearY", 1.0);
+                }
+                ConstraintData::Transform(data)
+            }
+            "path" => {
+                let slot = find_slot(sd, get_str(c, "slot").unwrap_or(""), "path slot")?;
+                let mut data = PathConstraintData::new(name, slot);
+                data.skin_required = skin_required;
+                data.bones = bones(sd)?;
                 data.position_mode = match get_str(c, "positionMode").unwrap_or("percent") {
                     "fixed" => PositionMode::Fixed,
                     "percent" => PositionMode::Percent,
@@ -467,58 +488,42 @@ impl<'loader> SkeletonJson<'loader> {
                     }
                 };
                 data.offset_rotation = get_f32(c, "rotation", 0.0);
-                data.position = get_f32(c, "position", 0.0);
+                let setup = &mut data.setup;
+                setup.position = get_f32(c, "position", 0.0);
                 if data.position_mode == PositionMode::Fixed {
-                    data.position *= self.scale;
+                    setup.position *= scale;
                 }
-                data.spacing = get_f32(c, "spacing", 0.0);
+                setup.spacing = get_f32(c, "spacing", 0.0);
                 if matches!(data.spacing_mode, SpacingMode::Length | SpacingMode::Fixed) {
-                    data.spacing *= self.scale;
+                    setup.spacing *= scale;
                 }
-                data.mix_rotate = get_f32(c, "mixRotate", 1.0);
-                data.mix_x = get_f32(c, "mixX", 1.0);
-                data.mix_y = get_f32(c, "mixY", data.mix_x);
-                sd.path_constraints.push(data);
+                setup.mix_rotate = get_f32(c, "mixRotate", 1.0);
+                setup.mix_x = get_f32(c, "mixX", 1.0);
+                setup.mix_y = get_f32(c, "mixY", setup.mix_x);
+                ConstraintData::Path(data)
             }
-        }
-
-        // --- Physics constraints -------------------------------------------
-        if let Some(ph) = root.get("physics").and_then(Value::as_array) {
-            sd.physics_constraints.reserve(ph.len());
-            for (i, c) in ph.iter().enumerate() {
-                let name = get_str(c, "name").unwrap_or("").to_string();
-                let bone_name = get_str(c, "bone").ok_or_else(|| JsonError::MissingField {
-                    path: format!("physics[{i}].bone"),
-                })?;
-                let bone_idx = sd
-                    .bones
-                    .iter()
-                    .position(|b| b.name == bone_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "physics bone",
-                        name: bone_name.to_string(),
-                    })?;
-                let mut data = PhysicsConstraintData::new(
-                    PhysicsConstraintId(i as u16),
-                    name,
-                    BoneId(bone_idx as u16),
-                );
-                data.order = get_int(c, "order", 0) as u32;
-                data.skin_required = get_bool(c, "skin", false);
+            "physics" => {
+                let bone = find_bone(sd, get_str(c, "bone").unwrap_or(""), "physics bone")?;
+                let mut data = PhysicsConstraintData::new(name, bone);
+                data.skin_required = skin_required;
                 data.x = get_f32(c, "x", 0.0);
                 data.y = get_f32(c, "y", 0.0);
                 data.rotate = get_f32(c, "rotate", 0.0);
                 data.scale_x = get_f32(c, "scaleX", 0.0);
+                if let Some(mode) = get_str(c, "scaleY") {
+                    data.scale_y_mode = parse_scale_y_mode(mode)?;
+                }
                 data.shear_x = get_f32(c, "shearX", 0.0);
-                data.limit = get_f32(c, "limit", 5000.0) * self.scale;
-                data.step = 1.0 / get_f32(c, "fps", 60.0);
-                data.inertia = get_f32(c, "inertia", 1.0);
-                data.strength = get_f32(c, "strength", 100.0);
-                data.damping = get_f32(c, "damping", 1.0);
-                data.mass_inverse = 1.0 / get_f32(c, "mass", 1.0);
-                data.wind = get_f32(c, "wind", 0.0);
-                data.gravity = get_f32(c, "gravity", 0.0);
-                data.mix = get_f32(c, "mix", 1.0);
+                data.limit = get_f32(c, "limit", 5000.0) * scale;
+                data.step = 1.0 / get_int(c, "fps", 60) as f32;
+                let setup = &mut data.setup;
+                setup.inertia = get_f32(c, "inertia", 0.5);
+                setup.strength = get_f32(c, "strength", 100.0);
+                setup.damping = get_f32(c, "damping", 0.85);
+                setup.mass_inverse = 1.0 / get_f32(c, "mass", 1.0);
+                setup.wind = get_f32(c, "wind", 0.0);
+                setup.gravity = get_f32(c, "gravity", 0.0);
+                setup.mix = get_f32(c, "mix", 1.0);
                 data.inertia_global = get_bool(c, "inertiaGlobal", false);
                 data.strength_global = get_bool(c, "strengthGlobal", false);
                 data.damping_global = get_bool(c, "dampingGlobal", false);
@@ -526,190 +531,93 @@ impl<'loader> SkeletonJson<'loader> {
                 data.wind_global = get_bool(c, "windGlobal", false);
                 data.gravity_global = get_bool(c, "gravityGlobal", false);
                 data.mix_global = get_bool(c, "mixGlobal", false);
-                sd.physics_constraints.push(data);
+                ConstraintData::Physics(data)
             }
-        }
-
-        // --- Skins ---------------------------------------------------------
-        if let Some(skins) = root.get("skins").and_then(Value::as_array) {
-            sd.skins.reserve(skins.len());
-            for skin_map in skins {
-                self.read_skin(skin_map, &mut sd)?;
-            }
-        }
-
-        // --- Linked mesh resolution ---------------------------------------
-        self.resolve_linked_meshes(&mut sd)?;
-
-        // --- Events --------------------------------------------------------
-        if let Some(events) = root.get("events").and_then(Value::as_object) {
-            sd.events.reserve(events.len());
-            for (i, (name, e)) in events.iter().enumerate() {
-                let mut data = EventData::new(EventId(i as u16), name.clone());
-                data.int_value = get_int(e, "int", 0);
-                data.float_value = get_f32(e, "float", 0.0);
-                data.string_value = get_str(e, "string").unwrap_or("").to_string();
-                data.audio_path = get_str(e, "audio").unwrap_or("").to_string();
-                if !data.audio_path.is_empty() {
-                    data.volume = get_f32(e, "volume", 1.0);
-                    data.balance = get_f32(e, "balance", 0.0);
+            "slider" => {
+                let mut data = SliderData::new(name);
+                data.skin_required = skin_required;
+                data.additive = get_bool(c, "additive", false);
+                data.looping = get_bool(c, "loop", false);
+                data.setup.mix = get_f32(c, "mix", 1.0);
+                if let Some(bone_name) = get_str(c, "bone") {
+                    data.bone = Some(find_bone(sd, bone_name, "slider bone")?);
+                    let property = parse_property(get_str(c, "property").unwrap_or(""))?;
+                    let property_scale = property_scale(property, scale);
+                    data.property = Some(SliderProperty {
+                        property,
+                        offset: get_f32(c, "from", 0.0) * property_scale,
+                    });
+                    data.offset = get_f32(c, "to", 0.0);
+                    data.scale = get_f32(c, "scale", 1.0) / property_scale;
+                    data.max = get_f32(c, "max", 0.0);
+                    data.local = get_bool(c, "local", false);
+                } else {
+                    data.setup.time = get_f32(c, "time", 0.0);
                 }
-                sd.events.push(data);
+                ConstraintData::Slider(data)
             }
-        }
-
-        // --- Animations ----------------------------------------------------
-        if let Some(anims) = root.get("animations").and_then(Value::as_object) {
-            sd.animations.reserve(anims.len());
-            for (name, a) in anims {
-                let anim = self.read_animation(name, a, &sd)?;
-                sd.animations.push(anim);
+            other => {
+                return Err(JsonError::UnknownValue {
+                    entity: "constraint type",
+                    value: other.to_string(),
+                });
             }
-        }
-
-        Ok(sd)
+        })
     }
-
-    // -----------------------------------------------------------------------
-    // Skins + attachments
-    // -----------------------------------------------------------------------
 
     fn read_skin(&mut self, skin_map: &Value, sd: &mut SkeletonData) -> Result<(), JsonError> {
         let skin_name = get_str(skin_map, "name").unwrap_or("").to_string();
         let mut skin = Skin::new(skin_name.clone());
-
-        if let Some(bones) = skin_map.get("bones").and_then(Value::as_array) {
-            for b in bones {
-                let bname = b.as_str().ok_or_else(|| JsonError::BadType {
-                    path: "skin.bones".to_string(),
-                    message: "expected string".to_string(),
-                })?;
-                let idx = sd
-                    .bones
-                    .iter()
-                    .position(|x| x.name == bname)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "skin bone",
-                        name: bname.to_string(),
-                    })?;
-                skin.bones.push(BoneId(idx as u16));
-            }
-        }
-        if let Some(ik) = skin_map.get("ik").and_then(Value::as_array) {
-            for b in ik {
-                let n = b.as_str().ok_or_else(|| JsonError::BadType {
-                    path: "skin.ik".to_string(),
-                    message: "expected string".to_string(),
-                })?;
-                let idx = sd
-                    .ik_constraints
-                    .iter()
-                    .position(|x| x.name == n)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "skin IK constraint",
-                        name: n.to_string(),
-                    })?;
-                skin.ik_constraints.push(IkConstraintId(idx as u16));
-            }
-        }
-        if let Some(tc) = skin_map.get("transform").and_then(Value::as_array) {
-            for b in tc {
-                let n = b.as_str().ok_or_else(|| JsonError::BadType {
-                    path: "skin.transform".to_string(),
-                    message: "expected string".to_string(),
-                })?;
-                let idx = sd
-                    .transform_constraints
-                    .iter()
-                    .position(|x| x.name == n)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "skin transform constraint",
-                        name: n.to_string(),
-                    })?;
-                skin.transform_constraints
-                    .push(TransformConstraintId(idx as u16));
-            }
-        }
-        if let Some(pc) = skin_map.get("path").and_then(Value::as_array) {
-            for b in pc {
-                let n = b.as_str().ok_or_else(|| JsonError::BadType {
-                    path: "skin.path".to_string(),
-                    message: "expected string".to_string(),
-                })?;
-                let idx = sd
-                    .path_constraints
-                    .iter()
-                    .position(|x| x.name == n)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "skin path constraint",
-                        name: n.to_string(),
-                    })?;
-                skin.path_constraints.push(PathConstraintId(idx as u16));
-            }
-        }
-        if let Some(phc) = skin_map.get("physics").and_then(Value::as_array) {
-            for b in phc {
-                let n = b.as_str().ok_or_else(|| JsonError::BadType {
-                    path: "skin.physics".to_string(),
-                    message: "expected string".to_string(),
-                })?;
-                let idx = sd
-                    .physics_constraints
-                    .iter()
-                    .position(|x| x.name == n)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "skin physics constraint",
-                        name: n.to_string(),
-                    })?;
-                skin.physics_constraints
-                    .push(PhysicsConstraintId(idx as u16));
-            }
+        if let Some(color) = get_str(skin_map, "color") {
+            skin.color = parse_color(color, true)?;
         }
 
-        let is_default = skin_name == "default";
+        for b in skin_map
+            .get("bones")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice)
+        {
+            skin.bones
+                .push(find_bone(sd, b.as_str().unwrap_or(""), "skin bone")?);
+        }
+        for key in ["ik", "transform", "path", "physics", "slider"] {
+            for c in skin_map
+                .get(key)
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+            {
+                let name = c.as_str().unwrap_or("");
+                let id = sd
+                    .find_constraint(name)
+                    .ok_or_else(|| JsonError::NotFound {
+                        entity: "skin constraint",
+                        name: name.to_string(),
+                    })?;
+                skin.constraints.push(id);
+            }
+        }
 
         if let Some(atts) = skin_map.get("attachments").and_then(Value::as_object) {
             for (slot_name, slot_obj) in atts {
-                let slot_idx = sd
-                    .slots
-                    .iter()
-                    .position(|s| s.name == *slot_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "attachment slot",
-                        name: slot_name.clone(),
-                    })?;
+                let slot = find_slot(sd, slot_name, "attachment slot")?;
                 let slot_obj = slot_obj.as_object().ok_or_else(|| JsonError::BadType {
                     path: format!("skins.{skin_name}.attachments.{slot_name}"),
                     message: "expected object".to_string(),
                 })?;
-                for (skin_att_name, att_map) in slot_obj {
-                    let attachment =
-                        self.read_attachment(att_map, &skin_name, slot_idx, skin_att_name, sd)?;
-                    if let Some(mut a) = attachment {
-                        let att_id = AttachmentId(sd.attachments.len() as u32);
-                        // For linked meshes we stashed the anticipated id when
-                        // we pushed the LinkedMesh record — patch it now.
-                        if let Some(lm) = self
-                            .linked_meshes
-                            .iter_mut()
-                            .rev()
-                            .find(|lm| lm.mesh == AttachmentId(u32::MAX))
-                        {
-                            lm.mesh = att_id;
-                        }
-                        // read_attachment ran update_region before the attachment
-                        // id was known; nothing more to do here for non-linked.
-                        let _ = &mut a;
-                        sd.attachments.push(a);
-                        skin.set_attachment(SlotId(slot_idx as u16), skin_att_name, att_id);
+                for (placeholder, att_map) in slot_obj {
+                    if let Some(attachment) =
+                        self.read_attachment(att_map, &skin_name, slot, placeholder, sd)?
+                    {
+                        let id = AttachmentId(sd.attachments.len() as u32);
+                        sd.attachments.push(attachment);
+                        skin.set_attachment(slot, placeholder, id);
                     }
                 }
             }
         }
 
-        if is_default {
-            let id = SkinId(sd.skins.len() as u16);
-            sd.default_skin = Some(id);
+        if skin_name == "default" {
+            sd.default_skin = Some(SkinId(sd.skins.len() as u16));
         }
         sd.skins.push(skin);
         Ok(())
@@ -717,301 +625,251 @@ impl<'loader> SkeletonJson<'loader> {
 
     fn read_attachment(
         &mut self,
-        att_map: &Value,
+        map: &Value,
         skin_name: &str,
-        slot_idx: usize,
-        skin_att_name: &str,
+        slot: SlotId,
+        placeholder: &str,
         sd: &SkeletonData,
     ) -> Result<Option<Attachment>, JsonError> {
-        let attachment_name = get_str(att_map, "name")
-            .unwrap_or(skin_att_name)
-            .to_string();
-        let attachment_path = get_str(att_map, "path")
-            .map(str::to_string)
-            .unwrap_or_else(|| attachment_name.clone());
-        let type_str = get_str(att_map, "type").unwrap_or("region");
-        let slot_name = sd.slots[slot_idx].name.clone();
+        let scale = self.scale;
+        let name = get_str(map, "name").unwrap_or(placeholder).to_string();
 
-        match type_str {
+        Ok(match get_str(map, "type").unwrap_or("region") {
             "region" => {
-                let mut sequence = read_sequence(att_map.get("sequence"));
-                let mut attachment = self.loader.new_region_attachment(
+                let path = get_str(map, "path").unwrap_or(&name).to_string();
+                let sequence = read_sequence(map.get("sequence"));
+                let Some(mut region) = self.loader.new_region_attachment(
                     skin_name,
-                    &slot_name,
-                    &attachment_name,
-                    &attachment_path,
-                    sequence.as_mut(),
-                )?;
-                if let Attachment::Region(r) = &mut attachment {
-                    r.path = attachment_path;
-                    r.x = get_f32(att_map, "x", 0.0) * self.scale;
-                    r.y = get_f32(att_map, "y", 0.0) * self.scale;
-                    r.scale_x = get_f32(att_map, "scaleX", 1.0);
-                    r.scale_y = get_f32(att_map, "scaleY", 1.0);
-                    r.rotation = get_f32(att_map, "rotation", 0.0);
-                    r.width = get_f32(att_map, "width", 32.0) * self.scale;
-                    r.height = get_f32(att_map, "height", 32.0) * self.scale;
-                    r.sequence = sequence;
-                    if let Some(color) = get_str(att_map, "color") {
-                        r.color = parse_color(color, true)?;
-                    }
-                    r.update_region();
+                    placeholder,
+                    &name,
+                    &path,
+                    sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                region.path = path;
+                region.x = get_f32(map, "x", 0.0) * scale;
+                region.y = get_f32(map, "y", 0.0) * scale;
+                region.scale_x = get_f32(map, "scaleX", 1.0);
+                region.scale_y = get_f32(map, "scaleY", 1.0);
+                region.rotation = get_f32(map, "rotation", 0.0);
+                region.width = get_f32(map, "width", 0.0) * scale;
+                region.height = get_f32(map, "height", 0.0) * scale;
+                if let Some(color) = get_str(map, "color") {
+                    region.color = parse_color(color, true)?;
                 }
-                Ok(Some(attachment))
-            }
-
-            "mesh" | "linkedmesh" => {
-                let mut sequence = read_sequence(att_map.get("sequence"));
-                let mut attachment = self.loader.new_mesh_attachment(
-                    skin_name,
-                    &slot_name,
-                    &attachment_name,
-                    &attachment_path,
-                    sequence.as_mut(),
-                )?;
-                if let Attachment::Mesh(m) = &mut attachment {
-                    m.path = attachment_path;
-                    if let Some(color) = get_str(att_map, "color") {
-                        m.color = parse_color(color, true)?;
-                    }
-                    m.width = get_f32(att_map, "width", 32.0) * self.scale;
-                    m.height = get_f32(att_map, "height", 32.0) * self.scale;
-                    m.sequence = sequence;
-
-                    if let Some(parent) = get_str(att_map, "parent") {
-                        // Linked mesh — defer vertex population to the
-                        // post-pass resolver. Record the link now; the
-                        // anticipated AttachmentId is patched by read_skin
-                        // immediately after this returns.
-                        let inherit_timelines = get_bool(att_map, "timelines", true);
-                        let link_skin = get_str(att_map, "skin").map(str::to_string);
-                        self.linked_meshes.push(LinkedMesh {
-                            mesh: AttachmentId(u32::MAX),
-                            skin_name: link_skin,
-                            slot_index: slot_idx,
-                            parent_name: parent.to_string(),
-                            inherit_timeline: inherit_timelines,
-                        });
-                        return Ok(Some(attachment));
-                    }
-
-                    // Non-linked mesh.
-                    let triangles = att_map
-                        .get("triangles")
-                        .and_then(Value::as_array)
-                        .map(|a| a.iter().map(|v| v.as_i64().unwrap_or(0) as u16).collect())
-                        .unwrap_or_default();
-                    let uvs: Vec<f32> = att_map
-                        .get("uvs")
-                        .and_then(Value::as_array)
-                        .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
-                        .unwrap_or_default();
-                    let vertices_length = uvs.len();
-                    let (bones, vertices) = self.read_vertices(att_map, vertices_length)?;
-                    m.vertex_data.bones = bones;
-                    m.vertex_data.vertices = vertices;
-                    m.vertex_data.world_vertices_length = vertices_length as u32;
-                    m.region_uvs = uvs;
-                    m.triangles = triangles;
-                    m.hull_length = get_int(att_map, "hull", 0) as u32;
-                    if let Some(edges) = att_map.get("edges").and_then(Value::as_array) {
-                        m.edges = edges
-                            .iter()
-                            .map(|v| v.as_i64().unwrap_or(0) as u16)
-                            .collect();
-                    }
-                    m.update_region();
-                }
-                Ok(Some(attachment))
+                region.update_sequence();
+                Some(Attachment::Region(region))
             }
 
             "boundingbox" => {
-                let mut attachment = self.loader.new_bounding_box_attachment(
-                    skin_name,
-                    &slot_name,
-                    &attachment_name,
-                )?;
-                let vertex_count = get_int(att_map, "vertexCount", 0) as usize * 2;
-                let (bones, vertices) = self.read_vertices(att_map, vertex_count)?;
-                if let Attachment::BoundingBox(bb) = &mut attachment {
-                    bb.vertex_data.bones = bones;
-                    bb.vertex_data.vertices = vertices;
-                    bb.vertex_data.world_vertices_length = vertex_count as u32;
-                    if let Some(color) = get_str(att_map, "color") {
-                        bb.color = parse_color(color, true)?;
-                    }
+                let Some(mut bb) =
+                    self.loader
+                        .new_bounding_box_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                bb.vertex_data =
+                    self.read_vertices(map, get_int(map, "vertexCount", 0) as usize * 2)?;
+                if let Some(color) = get_str(map, "color") {
+                    bb.color = parse_color(color, true)?;
                 }
-                Ok(Some(attachment))
+                Some(Attachment::BoundingBox(bb))
+            }
+
+            "mesh" | "linkedmesh" => {
+                let path = get_str(map, "path").unwrap_or(&name).to_string();
+                let sequence = read_sequence(map.get("sequence"));
+                let Some(mut mesh) = self.loader.new_mesh_attachment(
+                    skin_name,
+                    placeholder,
+                    &name,
+                    &path,
+                    sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                mesh.path = path;
+                if let Some(color) = get_str(map, "color") {
+                    mesh.color = parse_color(color, true)?;
+                }
+                mesh.width = get_f32(map, "width", 0.0) * scale;
+                mesh.height = get_f32(map, "height", 0.0) * scale;
+
+                if let Some(source) = get_str(map, "source") {
+                    let source_slot = match get_str(map, "slot") {
+                        Some(s) => find_slot(sd, s, "source mesh slot")?,
+                        None => slot,
+                    };
+                    // The caller pushes this attachment next.
+                    self.linked_meshes.push(LinkedMesh {
+                        mesh: AttachmentId(sd.attachments.len() as u32),
+                        skin_name: get_str(map, "skin").map(str::to_string),
+                        slot,
+                        source_slot,
+                        source: source.to_string(),
+                        inherit_timelines: get_bool(map, "timelines", true),
+                    });
+                    return Ok(Some(Attachment::Mesh(mesh)));
+                }
+
+                let uvs = f32_array(map.get("uvs"));
+                mesh.vertex_data = self.read_vertices(map, uvs.len())?;
+                mesh.triangles = map
+                    .get("triangles")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().map(|v| v.as_i64().unwrap_or(0) as u16).collect())
+                    .unwrap_or_default();
+                mesh.region_uvs = uvs;
+                mesh.hull_length = (get_int(map, "hull", 0) as u32) << 1;
+                if let Some(edges) = map.get("edges").and_then(Value::as_array) {
+                    mesh.edges = edges
+                        .iter()
+                        .map(|v| v.as_i64().unwrap_or(0) as u16)
+                        .collect();
+                }
+                mesh.update_sequence();
+                Some(Attachment::Mesh(mesh))
             }
 
             "path" => {
-                let mut attachment =
+                let Some(mut path) =
                     self.loader
-                        .new_path_attachment(skin_name, &slot_name, &attachment_name)?;
-                if let Attachment::Path(pa) = &mut attachment {
-                    pa.closed = get_bool(att_map, "closed", false);
-                    pa.constant_speed = get_bool(att_map, "constantSpeed", true);
-                    let vertex_count = get_int(att_map, "vertexCount", 0) as usize;
-                    let (bones, vertices) = self.read_vertices(att_map, vertex_count * 2)?;
-                    pa.vertex_data.bones = bones;
-                    pa.vertex_data.vertices = vertices;
-                    pa.vertex_data.world_vertices_length = (vertex_count * 2) as u32;
-                    if let Some(lengths) = att_map.get("lengths").and_then(Value::as_array) {
-                        pa.lengths = lengths
-                            .iter()
-                            .map(|v| v.as_f64().unwrap_or(0.0) as f32 * self.scale)
-                            .collect();
-                    }
-                    if let Some(color) = get_str(att_map, "color") {
-                        pa.color = parse_color(color, true)?;
-                    }
+                        .new_path_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                path.closed = get_bool(map, "closed", false);
+                path.constant_speed = get_bool(map, "constantSpeed", true);
+                let vertex_count = get_int(map, "vertexCount", 0) as usize;
+                path.vertex_data = self.read_vertices(map, vertex_count * 2)?;
+                path.lengths = f32_array(map.get("lengths"))
+                    .into_iter()
+                    .map(|l| l * scale)
+                    .collect();
+                if let Some(color) = get_str(map, "color") {
+                    path.color = parse_color(color, true)?;
                 }
-                Ok(Some(attachment))
+                Some(Attachment::Path(path))
             }
 
             "point" => {
-                let mut attachment =
+                let Some(mut point) =
                     self.loader
-                        .new_point_attachment(skin_name, &slot_name, &attachment_name)?;
-                if let Attachment::Point(pt) = &mut attachment {
-                    pt.x = get_f32(att_map, "x", 0.0) * self.scale;
-                    pt.y = get_f32(att_map, "y", 0.0) * self.scale;
-                    pt.rotation = get_f32(att_map, "rotation", 0.0);
-                    if let Some(color) = get_str(att_map, "color") {
-                        pt.color = parse_color(color, true)?;
-                    }
+                        .new_point_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                point.x = get_f32(map, "x", 0.0) * scale;
+                point.y = get_f32(map, "y", 0.0) * scale;
+                point.rotation = get_f32(map, "rotation", 0.0);
+                if let Some(color) = get_str(map, "color") {
+                    point.color = parse_color(color, true)?;
                 }
-                Ok(Some(attachment))
+                Some(Attachment::Point(point))
             }
 
             "clipping" => {
-                let end_name = get_str(att_map, "end").unwrap_or("");
-                let end_slot = sd
-                    .slots
-                    .iter()
-                    .position(|s| s.name == end_name)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "clipping end slot",
-                        name: end_name.to_string(),
-                    })?;
-                let mut attachment = self.loader.new_clipping_attachment(
-                    skin_name,
-                    &slot_name,
-                    &attachment_name,
-                    SlotId(end_slot as u16),
-                )?;
-                if let Attachment::Clipping(cl) = &mut attachment {
-                    let vertex_count = get_int(att_map, "vertexCount", 0) as usize * 2;
-                    let (bones, vertices) = self.read_vertices(att_map, vertex_count)?;
-                    cl.vertex_data.bones = bones;
-                    cl.vertex_data.vertices = vertices;
-                    cl.vertex_data.world_vertices_length = vertex_count as u32;
-                    if let Some(color) = get_str(att_map, "color") {
-                        cl.color = parse_color(color, true)?;
-                    }
+                let Some(mut clip) =
+                    self.loader
+                        .new_clipping_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                if let Some(end) = get_str(map, "end") {
+                    clip.end_slot = Some(find_slot(sd, end, "clipping end slot")?);
                 }
-                Ok(Some(attachment))
+                clip.convex = get_bool(map, "convex", false);
+                clip.inverse = get_bool(map, "inverse", false);
+                clip.vertex_data =
+                    self.read_vertices(map, get_int(map, "vertexCount", 0) as usize * 2)?;
+                if let Some(color) = get_str(map, "color") {
+                    clip.color = parse_color(color, true)?;
+                }
+                Some(Attachment::Clipping(clip))
             }
 
-            other => Err(JsonError::UnknownValue {
-                entity: "attachment type",
-                value: other.to_string(),
-            }),
-        }
+            other => {
+                return Err(JsonError::UnknownValue {
+                    entity: "attachment type",
+                    value: other.to_string(),
+                });
+            }
+        })
     }
 
-    /// Port of spine-cpp `readVertices`. `vertices_length` is the *unweighted*
-    /// float count (2 * vertex_count).
-    fn read_vertices(
-        &self,
-        att_map: &Value,
-        vertices_length: usize,
-    ) -> Result<(Vec<i32>, Vec<f32>), JsonError> {
-        let raw = att_map
+    /// `vertices_length` is the unweighted float count; a longer array means
+    /// weighted `(boneCount, then bone, x, y, weight per bone)` entries.
+    fn read_vertices(&self, map: &Value, vertices_length: usize) -> Result<VertexData, JsonError> {
+        let raw = map
             .get("vertices")
             .and_then(Value::as_array)
             .ok_or_else(|| JsonError::MissingField {
                 path: "attachment.vertices".to_string(),
             })?;
-        let entry_size = raw.len();
         let flat: Vec<f32> = raw
             .iter()
             .map(|v| v.as_f64().unwrap_or(0.0) as f32)
             .collect();
-
-        if vertices_length == entry_size {
-            // Unweighted.
-            if (self.scale - 1.0).abs() < f32::EPSILON {
-                return Ok((Vec::new(), flat));
+        let mut vd = VertexData {
+            world_vertices_length: vertices_length as u32,
+            ..VertexData::default()
+        };
+        if vertices_length == flat.len() {
+            vd.vertices = flat;
+            if self.scale != 1.0 {
+                for v in &mut vd.vertices {
+                    *v *= self.scale;
+                }
             }
-            let scaled = flat.into_iter().map(|f| f * self.scale).collect();
-            return Ok((Vec::new(), scaled));
+            return Ok(vd);
         }
-
-        // Weighted — stride is `(1 + 4 * boneCount)` per vertex.
-        let mut bones: Vec<i32> = Vec::new();
-        let mut verts: Vec<f32> = Vec::new();
         let mut i = 0usize;
-        while i < entry_size {
-            let bone_count = flat[i] as i32;
-            bones.push(bone_count);
+        while i < flat.len() {
+            let bone_count = flat[i] as usize;
+            vd.bones.push(bone_count as i32);
             i += 1;
-            let limit = i + (bone_count as usize) * 4;
-            while i < limit && i + 3 < entry_size {
-                bones.push(flat[i] as i32);
-                verts.push(flat[i + 1] * self.scale);
-                verts.push(flat[i + 2] * self.scale);
-                verts.push(flat[i + 3]);
+            let end = (i + bone_count * 4).min(flat.len());
+            while i < end {
+                vd.bones.push(flat[i] as i32);
+                vd.vertices.push(flat[i + 1] * self.scale);
+                vd.vertices.push(flat[i + 2] * self.scale);
+                vd.vertices.push(flat[i + 3]);
                 i += 4;
             }
         }
-        Ok((bones, verts))
+        Ok(vd)
     }
 
     fn resolve_linked_meshes(&mut self, sd: &mut SkeletonData) -> Result<(), JsonError> {
         for lm in std::mem::take(&mut self.linked_meshes) {
-            if lm.mesh == AttachmentId(u32::MAX) {
-                continue;
+            let skin_id = match lm.skin_name.as_deref() {
+                None | Some("") => sd.default_skin,
+                Some(name) => sd
+                    .skins
+                    .iter()
+                    .position(|s| s.name == name)
+                    .map(|i| SkinId(i as u16)),
             }
-            let skin =
-                match lm.skin_name.as_deref() {
-                    None | Some("") => sd
-                        .default_skin
-                        .and_then(|id| sd.skins.get(id.index()))
-                        .ok_or_else(|| JsonError::NotFound {
-                            entity: "linked mesh skin",
-                            name: "<default>".to_string(),
-                        })?,
-                    Some(name) => sd.skins.iter().find(|s| s.name == name).ok_or_else(|| {
-                        JsonError::NotFound {
-                            entity: "linked mesh skin",
-                            name: name.to_string(),
-                        }
-                    })?,
-                };
-            let parent_id = skin
-                .get_attachment(SlotId(lm.slot_index as u16), &lm.parent_name)
+            .ok_or_else(|| JsonError::NotFound {
+                entity: "linked mesh skin",
+                name: lm.skin_name.clone().unwrap_or_default(),
+            })?;
+            let source = sd.skins[skin_id.index()]
+                .get_attachment(lm.source_slot, &lm.source)
                 .ok_or_else(|| JsonError::NotFound {
-                    entity: "linked mesh parent",
-                    name: lm.parent_name.clone(),
+                    entity: "linked mesh source",
+                    name: lm.source.clone(),
                 })?;
-            let parent = sd.attachments[parent_id.index()].clone();
-            let Attachment::Mesh(parent_mesh) = parent else {
-                continue;
-            };
-            if let Attachment::Mesh(child) = &mut sd.attachments[lm.mesh.index()] {
-                child.vertex_data = parent_mesh.vertex_data.clone();
-                child.region_uvs = parent_mesh.region_uvs.clone();
-                child.triangles = parent_mesh.triangles.clone();
-                child.hull_length = parent_mesh.hull_length;
-                child.edges = parent_mesh.edges.clone();
-                child.parent_mesh = Some(parent_id);
-                child.vertex_data.timeline_attachment = Some(if lm.inherit_timeline {
-                    parent_id
-                } else {
-                    lm.mesh
-                });
-                child.update_region();
+            crate::load::binary::link_mesh(sd, lm.mesh, source, lm.inherit_timelines);
+            if lm.inherit_timelines
+                && lm.slot != lm.source_slot
+                && let Some(link) = sd.attachments[source.index()].timeline_link_mut()
+                && !link.slots.contains(&lm.slot)
+            {
+                link.slots.push(lm.slot);
             }
         }
         Ok(())
@@ -1109,6 +967,7 @@ impl<'loader> SkeletonJson<'loader> {
                         name: bone_name.clone(),
                     })?;
                 let bone = BoneId(bone_idx as u16);
+                anim.bones.push(bone);
                 for (tname, tm) in bone_timelines
                     .as_object()
                     .ok_or_else(|| JsonError::BadType {
@@ -1190,65 +1049,45 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- IK constraint timelines --------------------------------------
+        // IK constraint timelines.
         if let Some(ik) = root.get("ik").and_then(Value::as_object) {
             for (cname, keys_val) in ik {
-                let idx = sd.ik_constraints.iter().position(|c| c.name == *cname);
-                let Some(idx) = idx else {
-                    continue;
-                };
-                let keys = keys_val.as_array().ok_or_else(|| JsonError::BadType {
-                    path: format!("animations.{name}.ik.{cname}"),
-                    message: "expected array".to_string(),
-                })?;
+                let keys = keys_val.as_array().map_or(&[][..], Vec::as_slice);
                 if keys.is_empty() {
                     continue;
                 }
+                let constraint =
+                    find_constraint(sd, cname, "IK constraint", |c| c.as_ik().is_some())?;
                 let curves = read_ik_timeline_json(keys, self.scale)?;
-                anim.timelines.push(Timeline::IkConstraint {
-                    constraint: IkConstraintId(idx as u16),
-                    curves,
-                });
+                anim.timelines
+                    .push(Timeline::IkConstraint { constraint, curves });
             }
         }
 
-        // --- Transform constraint timelines -------------------------------
+        // Transform constraint timelines.
         if let Some(tc) = root.get("transform").and_then(Value::as_object) {
             for (cname, keys_val) in tc {
-                let idx = sd
-                    .transform_constraints
-                    .iter()
-                    .position(|c| c.name == *cname);
-                let Some(idx) = idx else {
-                    continue;
-                };
-                let keys = keys_val.as_array().ok_or_else(|| JsonError::BadType {
-                    path: format!("animations.{name}.transform.{cname}"),
-                    message: "expected array".to_string(),
-                })?;
+                let keys = keys_val.as_array().map_or(&[][..], Vec::as_slice);
                 if keys.is_empty() {
                     continue;
                 }
+                let constraint = find_constraint(sd, cname, "transform constraint", |c| {
+                    c.as_transform().is_some()
+                })?;
                 let curves = read_transform_timeline_json(keys)?;
-                anim.timelines.push(Timeline::TransformConstraint {
-                    constraint: TransformConstraintId(idx as u16),
-                    curves,
-                });
+                anim.timelines
+                    .push(Timeline::TransformConstraint { constraint, curves });
             }
         }
 
         // --- Path constraint timelines ------------------------------------
         if let Some(paths) = root.get("path").and_then(Value::as_object) {
             for (cname, sub) in paths {
-                let idx = sd
-                    .path_constraints
-                    .iter()
-                    .position(|c| c.name == *cname)
-                    .ok_or_else(|| JsonError::NotFound {
-                        entity: "path constraint",
-                        name: cname.clone(),
-                    })?;
-                let data = &sd.path_constraints[idx];
+                let constraint =
+                    find_constraint(sd, cname, "path constraint", |c| c.as_path().is_some())?;
+                let data = sd.constraints[constraint.index()]
+                    .as_path()
+                    .expect("checked");
                 let tmaps = sub.as_object().ok_or_else(|| JsonError::BadType {
                     path: format!("animations.{name}.path.{cname}"),
                     message: "expected object".to_string(),
@@ -1269,10 +1108,8 @@ impl<'loader> SkeletonJson<'loader> {
                                 1.0
                             };
                             let curves = read_timeline1(keys, "value", 0.0, scale)?;
-                            anim.timelines.push(Timeline::PathConstraintPosition {
-                                constraint: PathConstraintId(idx as u16),
-                                curves,
-                            });
+                            anim.timelines
+                                .push(Timeline::PathConstraintPosition { constraint, curves });
                         }
                         "spacing" => {
                             let scale = if matches!(
@@ -1284,17 +1121,13 @@ impl<'loader> SkeletonJson<'loader> {
                                 1.0
                             };
                             let curves = read_timeline1(keys, "value", 0.0, scale)?;
-                            anim.timelines.push(Timeline::PathConstraintSpacing {
-                                constraint: PathConstraintId(idx as u16),
-                                curves,
-                            });
+                            anim.timelines
+                                .push(Timeline::PathConstraintSpacing { constraint, curves });
                         }
                         "mix" => {
                             let curves = read_path_mix_timeline_json(keys)?;
-                            anim.timelines.push(Timeline::PathConstraintMix {
-                                constraint: PathConstraintId(idx as u16),
-                                curves,
-                            });
+                            anim.timelines
+                                .push(Timeline::PathConstraintMix { constraint, curves });
                         }
                         _ => {}
                     }
@@ -1308,10 +1141,9 @@ impl<'loader> SkeletonJson<'loader> {
                 let constraint = if cname.is_empty() {
                     None
                 } else {
-                    sd.physics_constraints
-                        .iter()
-                        .position(|c| c.name == *cname)
-                        .map(|i| PhysicsConstraintId(i as u16))
+                    Some(find_constraint(sd, cname, "physics constraint", |c| {
+                        c.as_physics().is_some()
+                    })?)
                 };
                 let tmaps = sub.as_object().ok_or_else(|| JsonError::BadType {
                     path: format!("animations.{name}.physics.{cname}"),
@@ -1334,17 +1166,17 @@ impl<'loader> SkeletonJson<'loader> {
                             .push(Timeline::PhysicsReset { constraint, frames });
                         continue;
                     }
-                    let property = match tname.as_str() {
-                        "inertia" => PhysicsProperty::Inertia,
-                        "strength" => PhysicsProperty::Strength,
-                        "damping" => PhysicsProperty::Damping,
-                        "mass" => PhysicsProperty::Mass,
-                        "wind" => PhysicsProperty::Wind,
-                        "gravity" => PhysicsProperty::Gravity,
-                        "mix" => PhysicsProperty::Mix,
+                    let (property, default) = match tname.as_str() {
+                        "inertia" => (PhysicsProperty::Inertia, 0.0),
+                        "strength" => (PhysicsProperty::Strength, 0.0),
+                        "damping" => (PhysicsProperty::Damping, 0.0),
+                        "mass" => (PhysicsProperty::Mass, 0.0),
+                        "wind" => (PhysicsProperty::Wind, 0.0),
+                        "gravity" => (PhysicsProperty::Gravity, 0.0),
+                        "mix" => (PhysicsProperty::Mix, 1.0),
                         _ => continue,
                     };
-                    let curves = read_timeline1(keys, "value", 0.0, 1.0)?;
+                    let curves = read_timeline1(keys, "value", default, 1.0)?;
                     anim.timelines.push(Timeline::Physics {
                         constraint,
                         property,
@@ -1354,7 +1186,28 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Attachment timelines (deform + sequence) ---------------------
+        // Slider timelines.
+        if let Some(sliders) = root.get("slider").and_then(Value::as_object) {
+            for (cname, sub) in sliders {
+                let constraint = find_constraint(sd, cname, "slider", |c| c.as_slider().is_some())?;
+                for (tname, keys_val) in sub.as_object().into_iter().flatten() {
+                    let keys = keys_val.as_array().map_or(&[][..], Vec::as_slice);
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    let curves = read_timeline1(keys, "value", 1.0, 1.0)?;
+                    match tname.as_str() {
+                        "time" => anim.timelines.push(Timeline::Slider { constraint, curves }),
+                        "mix" => anim
+                            .timelines
+                            .push(Timeline::SliderMix { constraint, curves }),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Attachment timelines.
         if let Some(skins) = root.get("attachments").and_then(Value::as_object) {
             for (skin_name, slots_obj) in skins {
                 let skin = sd
@@ -1471,62 +1324,51 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Draw order timeline ------------------------------------------
-        if let Some(draw_order) = root.get("drawOrder").and_then(Value::as_array) {
-            let slot_count = sd.slots.len();
-            let mut frames = Vec::with_capacity(draw_order.len());
-            let mut draw_orders: Vec<Option<Vec<SlotId>>> = Vec::with_capacity(draw_order.len());
-            for k in draw_order {
+        // Draw order timeline.
+        if let Some(keys) = root.get("drawOrder").and_then(Value::as_array) {
+            let mut frames = Vec::with_capacity(keys.len());
+            let mut draw_orders = Vec::with_capacity(keys.len());
+            for k in keys {
                 frames.push(get_f32(k, "time", 0.0));
-                let offsets = k.get("offsets").and_then(Value::as_array);
-                let Some(offsets) = offsets else {
-                    draw_orders.push(None);
-                    continue;
-                };
-                if slot_count < offsets.len() {
-                    draw_orders.push(None);
-                    continue;
-                }
-                let mut draw_order2: Vec<i32> = vec![-1; slot_count];
-                let mut unchanged: Vec<i32> = vec![0; slot_count - offsets.len()];
-                let mut unchanged_idx = 0usize;
-                let mut original_idx: i32 = 0;
-                for off in offsets {
-                    let slot_name = get_str(off, "slot").unwrap_or("");
-                    let slot_idx = sd
-                        .slots
-                        .iter()
-                        .position(|s| s.name == slot_name)
-                        .ok_or_else(|| JsonError::NotFound {
-                            entity: "draw-order slot",
-                            name: slot_name.to_string(),
-                        })? as i32;
-                    while original_idx != slot_idx {
-                        unchanged[unchanged_idx] = original_idx;
-                        unchanged_idx += 1;
-                        original_idx += 1;
-                    }
-                    let offset = get_int(off, "offset", 0);
-                    let target = (original_idx + offset) as usize;
-                    draw_order2[target] = original_idx;
-                    original_idx += 1;
-                }
-                while (original_idx as usize) < slot_count {
-                    unchanged[unchanged_idx] = original_idx;
-                    unchanged_idx += 1;
-                    original_idx += 1;
-                }
-                for ii in (0..slot_count).rev() {
-                    if draw_order2[ii] == -1 {
-                        unchanged_idx -= 1;
-                        draw_order2[ii] = unchanged[unchanged_idx];
-                    }
-                }
-                draw_orders.push(Some(
-                    draw_order2.into_iter().map(|x| SlotId(x as u16)).collect(),
-                ));
+                draw_orders.push(
+                    read_draw_order(sd, k, sd.slots.len(), None)?
+                        .map(|o| o.into_iter().map(|i| SlotId(i as u16)).collect()),
+                );
             }
             anim.timelines.push(Timeline::DrawOrder {
+                frames,
+                draw_orders,
+            });
+        }
+
+        // Draw order folder timelines.
+        for folder in root
+            .get("drawOrderFolder")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice)
+        {
+            let slots = folder
+                .get("slots")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|s| find_slot(sd, s.as_str().unwrap_or(""), "draw order folder slot"))
+                .collect::<Result<Vec<_>, _>>()?;
+            let keys = folder
+                .get("keys")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice);
+            let mut frames = Vec::with_capacity(keys.len());
+            let mut draw_orders = Vec::with_capacity(keys.len());
+            for k in keys {
+                frames.push(get_f32(k, "time", 0.0));
+                draw_orders.push(
+                    read_draw_order(sd, k, slots.len(), Some(&slots))?
+                        .map(|o| o.into_iter().map(|i| i as u16).collect()),
+                );
+            }
+            anim.timelines.push(Timeline::DrawOrderFolder {
+                slots,
                 frames,
                 draw_orders,
             });
@@ -1576,6 +1418,9 @@ impl<'loader> SkeletonJson<'loader> {
         }
 
         anim.duration = timeline_duration(&anim);
+        if let Some(color) = get_str(root, "color") {
+            anim.color = parse_color(color, true)?;
+        }
         Ok(anim)
     }
 }
@@ -1606,6 +1451,136 @@ fn get_bool(v: &Value, key: &str, default: bool) -> bool {
     v.get(key)
         .and_then(|x| x.as_bool().or_else(|| x.as_i64().map(|n| n != 0)))
         .unwrap_or(default)
+}
+
+fn find_bone(sd: &SkeletonData, name: &str, entity: &'static str) -> Result<BoneId, JsonError> {
+    sd.bones
+        .iter()
+        .position(|b| b.name == name)
+        .map(|i| BoneId(i as u16))
+        .ok_or_else(|| JsonError::NotFound {
+            entity,
+            name: name.to_string(),
+        })
+}
+
+fn find_slot(sd: &SkeletonData, name: &str, entity: &'static str) -> Result<SlotId, JsonError> {
+    sd.slots
+        .iter()
+        .position(|s| s.name == name)
+        .map(|i| SlotId(i as u16))
+        .ok_or_else(|| JsonError::NotFound {
+            entity,
+            name: name.to_string(),
+        })
+}
+
+fn find_constraint(
+    sd: &SkeletonData,
+    name: &str,
+    entity: &'static str,
+    is_kind: impl Fn(&ConstraintData) -> bool,
+) -> Result<ConstraintId, JsonError> {
+    sd.find_constraint(name)
+        .filter(|id| is_kind(&sd.constraints[id.index()]))
+        .ok_or_else(|| JsonError::NotFound {
+            entity,
+            name: name.to_string(),
+        })
+}
+
+/// Full order from `offsets` changes. With `folder`, slot names resolve to
+/// positions within the folder.
+fn read_draw_order(
+    sd: &SkeletonData,
+    key: &Value,
+    slot_count: usize,
+    folder: Option<&[SlotId]>,
+) -> Result<Option<Vec<i32>>, JsonError> {
+    let Some(changes) = key.get("offsets").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let mut draw_order = vec![-1i32; slot_count];
+    let mut unchanged = vec![0i32; slot_count.saturating_sub(changes.len())];
+    let (mut original_index, mut unchanged_index) = (0i32, 0usize);
+    for change in changes {
+        let slot_name = get_str(change, "slot").unwrap_or("");
+        let slot = find_slot(sd, slot_name, "draw order slot")?;
+        let index = match folder {
+            None => slot.index() as i32,
+            Some(f) => f
+                .iter()
+                .position(|s| *s == slot)
+                .ok_or_else(|| JsonError::NotFound {
+                    entity: "draw order folder slot",
+                    name: slot_name.to_string(),
+                })? as i32,
+        };
+        while original_index != index {
+            unchanged[unchanged_index] = original_index;
+            unchanged_index += 1;
+            original_index += 1;
+        }
+        draw_order[(original_index + get_int(change, "offset", 0)) as usize] = original_index;
+        original_index += 1;
+    }
+    while (original_index as usize) < slot_count {
+        unchanged[unchanged_index] = original_index;
+        unchanged_index += 1;
+        original_index += 1;
+    }
+    for i in (0..slot_count).rev() {
+        if draw_order[i] == -1 {
+            unchanged_index -= 1;
+            draw_order[i] = unchanged[unchanged_index];
+        }
+    }
+    Ok(Some(draw_order))
+}
+
+fn f32_array(v: Option<&Value>) -> Vec<f32> {
+    v.and_then(Value::as_array)
+        .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect())
+        .unwrap_or_default()
+}
+
+fn parse_property(s: &str) -> Result<TransformProperty, JsonError> {
+    Ok(match s {
+        "rotate" => TransformProperty::Rotate,
+        "x" => TransformProperty::X,
+        "y" => TransformProperty::Y,
+        "scaleX" => TransformProperty::ScaleX,
+        "scaleY" => TransformProperty::ScaleY,
+        "shearY" => TransformProperty::ShearY,
+        other => {
+            return Err(JsonError::UnknownValue {
+                entity: "transform property",
+                value: other.to_string(),
+            });
+        }
+    })
+}
+
+/// Translation channels scale with the skeleton; the rest don't.
+fn property_scale(property: TransformProperty, scale: f32) -> f32 {
+    match property {
+        TransformProperty::X | TransformProperty::Y => scale,
+        _ => 1.0,
+    }
+}
+
+fn parse_scale_y_mode(s: &str) -> Result<ScaleYMode, JsonError> {
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "none" => ScaleYMode::None,
+        "uniform" => ScaleYMode::Uniform,
+        "volume" => ScaleYMode::Volume,
+        _ => {
+            return Err(JsonError::UnknownValue {
+                entity: "scale Y mode",
+                value: s.to_string(),
+            });
+        }
+    })
 }
 
 fn parse_inherit(s: &str) -> Result<Inherit, JsonError> {
@@ -1649,14 +1624,15 @@ fn parse_color(s: &str, has_alpha: bool) -> Result<Color, JsonError> {
     Ok(Color::new(r, g, b, a))
 }
 
-fn read_sequence(v: Option<&Value>) -> Option<Sequence> {
-    let item = v?;
-    let count = get_int(item, "count", 0);
-    let mut seq = Sequence::new(count);
+fn read_sequence(v: Option<&Value>) -> Sequence {
+    let Some(item) = v else {
+        return Sequence::new(1, false);
+    };
+    let mut seq = Sequence::new(get_int(item, "count", 0).max(0) as usize, true);
     seq.start = get_int(item, "start", 1);
     seq.digits = get_int(item, "digits", 0);
-    seq.setup_index = get_int(item, "setupIndex", 0);
-    Some(seq)
+    seq.setup_index = get_int(item, "setup", 0);
+    seq
 }
 
 /// Extract a single bezier segment `(cx1, cy1, cx2, cy2)` for channel
@@ -2457,48 +2433,4 @@ fn deform_frame_len(sd: &SkeletonData, att: AttachmentId) -> usize {
     } else {
         vd.vertices.len() / 3 * 2
     }
-}
-
-fn timeline_duration(anim: &Animation) -> f32 {
-    fn last_time_stride(frames: &[f32], stride: usize) -> f32 {
-        if frames.len() < stride {
-            return 0.0;
-        }
-        frames[frames.len() - stride]
-    }
-    let mut max = 0.0f32;
-    for t in &anim.timelines {
-        let last = match t {
-            Timeline::Rotate { curves, .. }
-            | Timeline::TranslateX { curves, .. }
-            | Timeline::TranslateY { curves, .. }
-            | Timeline::ScaleX { curves, .. }
-            | Timeline::ScaleY { curves, .. }
-            | Timeline::ShearX { curves, .. }
-            | Timeline::ShearY { curves, .. }
-            | Timeline::Alpha { curves, .. }
-            | Timeline::PathConstraintPosition { curves, .. }
-            | Timeline::PathConstraintSpacing { curves, .. }
-            | Timeline::Physics { curves, .. } => last_time_stride(&curves.frames, 2),
-            Timeline::Translate { curves, .. }
-            | Timeline::Scale { curves, .. }
-            | Timeline::Shear { curves, .. } => last_time_stride(&curves.frames, 3),
-            Timeline::Rgba { curves, .. } => last_time_stride(&curves.frames, 5),
-            Timeline::Rgb { curves, .. } => last_time_stride(&curves.frames, 4),
-            Timeline::Rgba2 { curves, .. } => last_time_stride(&curves.frames, 8),
-            Timeline::Rgb2 { curves, .. } => last_time_stride(&curves.frames, 7),
-            Timeline::IkConstraint { curves, .. } => last_time_stride(&curves.frames, 6),
-            Timeline::TransformConstraint { curves, .. } => last_time_stride(&curves.frames, 7),
-            Timeline::PathConstraintMix { curves, .. } => last_time_stride(&curves.frames, 4),
-            Timeline::Inherit { frames, .. }
-            | Timeline::PhysicsReset { frames, .. }
-            | Timeline::DrawOrder { frames, .. }
-            | Timeline::Attachment { frames, .. }
-            | Timeline::Event { frames, .. } => frames.last().copied().unwrap_or(0.0),
-            Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 2),
-            Timeline::Sequence { frames, .. } => last_time_stride(frames, 3),
-        };
-        max = max.max(last);
-    }
-    max
 }

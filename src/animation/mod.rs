@@ -32,18 +32,25 @@
 //! — the code that reads those shapes and pushes values into a
 //! [`Skeleton`][crate::skeleton::Skeleton].
 
+#[cfg(any())] // 4.3-port-gate
 pub mod apply;
 pub mod curve;
+#[cfg(any())] // 4.3-port-gate
 pub mod property;
+#[cfg(any())] // 4.3-port-gate
 pub mod state;
+#[cfg(any())] // 4.3-port-gate
 pub mod state_data;
 
 pub use curve::{bezier_value, compute_bezier_samples, curve_value1, curve_value2, search};
+#[cfg(any())] // 4.3-port-gate
 pub use property::{Property, PropertyId, animation_has_timeline, property_ids};
+#[cfg(any())] // 4.3-port-gate
 pub use state::{
     AnimationNotFound, AnimationState, EMPTY_ANIMATION_ID, EntryId, EventType, StateEvent,
     TimelineMode, TrackEntry,
 };
+#[cfg(any())] // 4.3-port-gate
 pub use state_data::{AnimationStateData, MixAnimationNotFound};
 
 use crate::data::EventId;

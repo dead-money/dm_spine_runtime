@@ -54,7 +54,7 @@ impl EventData {
             float_value: 0.0,
             string_value: String::new(),
             audio_path: String::new(),
-            volume: 1.0,
+            volume: 0.0,
             balance: 0.0,
         }
     }
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn new_event_defaults() {
         let e = EventData::new(EventId(0), "footstep");
-        assert_eq!(e.volume, 1.0);
+        assert_eq!(e.volume, 0.0);
         assert_eq!(e.balance, 0.0);
     }
 }

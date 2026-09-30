@@ -29,10 +29,8 @@
 //! and supporting enums. Evaluation of these timelines lives in the
 //! [`crate::animation`] module.
 
-use crate::data::{
-    AttachmentId, BoneId, EventId, IkConstraintId, Inherit, PathConstraintId, PhysicsConstraintId,
-    SlotId, TransformConstraintId,
-};
+use crate::data::{AttachmentId, BoneId, ConstraintId, EventId, Inherit, SlotId};
+use crate::math::Color;
 
 /// A named collection of timelines driving a skeleton over a fixed duration.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -40,6 +38,10 @@ pub struct Animation {
     pub name: String,
     pub duration: f32,
     pub timelines: Vec<Timeline>,
+    /// Bones with bone timelines, in file order. Sliders touch only these.
+    pub bones: Vec<BoneId>,
+    /// Nonessential editor color.
+    pub color: Color,
 }
 
 impl Animation {
@@ -49,18 +51,12 @@ impl Animation {
             name: name.into(),
             duration,
             timelines: Vec::new(),
+            bones: Vec::new(),
+            color: Color::WHITE,
         }
     }
 }
 
-/// Per-frame curve storage matching `spine-cpp/CurveTimeline`.
-///
-/// `frames` holds interleaved time + value entries — the stride (entries per
-/// frame) depends on the containing timeline variant: rotate = 2, translate =
-/// 3, RGBA = 5, and so on. `curves` holds per-frame interpolation data:
-/// a type code (linear = 0, stepped = 1, bezier = 2) optionally followed by
-/// bezier segmentation samples (spine-cpp uses `BEZIER_SIZE = 18` floats per
-/// bezier segment).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CurveFrames {
     pub frames: Vec<f32>,
@@ -206,6 +202,12 @@ pub enum Timeline {
         frames: Vec<f32>,
         draw_orders: Vec<Option<Vec<SlotId>>>,
     },
+    /// Reorders only `slots`; each key's order is indices into `slots`.
+    DrawOrderFolder {
+        slots: Vec<SlotId>,
+        frames: Vec<f32>,
+        draw_orders: Vec<Option<Vec<u16>>>,
+    },
     Event {
         /// `frames[i]` is redundant with `events[i].time`; kept as a
         /// dedicated vector so searches use a clean f32 binary search.
@@ -215,23 +217,23 @@ pub enum Timeline {
 
     // --- Constraint timelines ---------------------------------------------
     IkConstraint {
-        constraint: IkConstraintId,
+        constraint: ConstraintId,
         curves: CurveFrames,
     },
     TransformConstraint {
-        constraint: TransformConstraintId,
+        constraint: ConstraintId,
         curves: CurveFrames,
     },
     PathConstraintPosition {
-        constraint: PathConstraintId,
+        constraint: ConstraintId,
         curves: CurveFrames,
     },
     PathConstraintSpacing {
-        constraint: PathConstraintId,
+        constraint: ConstraintId,
         curves: CurveFrames,
     },
     PathConstraintMix {
-        constraint: PathConstraintId,
+        constraint: ConstraintId,
         curves: CurveFrames,
     },
     /// A single physics-property curve. One constraint can have multiple
@@ -239,16 +241,45 @@ pub enum Timeline {
     /// means the timeline applies to every physics constraint in the
     /// skeleton (matches spine-cpp's `index = -1` sentinel).
     Physics {
-        constraint: Option<PhysicsConstraintId>,
+        constraint: Option<ConstraintId>,
         property: PhysicsProperty,
         curves: CurveFrames,
     },
     /// Reset the physics solver's integrator state. `None` means reset all
     /// physics constraints in the skeleton.
     PhysicsReset {
-        constraint: Option<PhysicsConstraintId>,
+        constraint: Option<ConstraintId>,
         frames: Vec<f32>,
     },
+    Slider {
+        constraint: ConstraintId,
+        curves: CurveFrames,
+    },
+    SliderMix {
+        constraint: ConstraintId,
+        curves: CurveFrames,
+    },
+}
+
+impl Timeline {
+    /// The bone a bone timeline keys.
+    #[must_use]
+    pub fn bone(&self) -> Option<BoneId> {
+        match self {
+            Timeline::Rotate { bone, .. }
+            | Timeline::Translate { bone, .. }
+            | Timeline::TranslateX { bone, .. }
+            | Timeline::TranslateY { bone, .. }
+            | Timeline::Scale { bone, .. }
+            | Timeline::ScaleX { bone, .. }
+            | Timeline::ScaleY { bone, .. }
+            | Timeline::Shear { bone, .. }
+            | Timeline::ShearX { bone, .. }
+            | Timeline::ShearY { bone, .. }
+            | Timeline::Inherit { bone, .. } => Some(*bone),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -307,11 +338,11 @@ mod tests {
                 events: vec![],
             },
             Timeline::IkConstraint {
-                constraint: IkConstraintId(0),
+                constraint: ConstraintId(0),
                 curves: CurveFrames::default(),
             },
             Timeline::Physics {
-                constraint: Some(PhysicsConstraintId(0)),
+                constraint: Some(ConstraintId(0)),
                 property: PhysicsProperty::Wind,
                 curves: CurveFrames::default(),
             },

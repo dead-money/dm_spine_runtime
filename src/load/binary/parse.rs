@@ -56,21 +56,19 @@
 use crate::animation::{BEZIER_SIZE, compute_bezier_samples};
 use crate::data::attachment::{Attachment, Sequence, VertexData};
 use crate::data::{
-    Animation, AnimationEvent, AttachmentId, BlendMode, BoneData, BoneId, CurveFrames, EventData,
-    EventId, IkConstraintData, IkConstraintId, Inherit, PathConstraintData, PathConstraintId,
-    PhysicsConstraintData, PhysicsConstraintId, PhysicsProperty, PositionMode, RotateMode,
-    SkeletonData, Skin, SkinId, SlotData, SlotId, SpacingMode, Timeline, TransformConstraintData,
-    TransformConstraintId,
+    Animation, AnimationEvent, AnimationId, AttachmentId, BlendMode, BoneData, BoneId,
+    ConstraintData, ConstraintId, CurveFrames, EventData, EventId, FromProperty, IkConstraintData,
+    Inherit, PathConstraintData, PhysicsConstraintData, PhysicsProperty, PositionMode, RotateMode,
+    ScaleYMode, SkeletonData, Skin, SkinId, SliderData, SliderProperty, SlotData, SlotId,
+    SpacingMode, Timeline, ToProperty, TransformConstraintData, TransformProperty,
 };
 use crate::load::AttachmentLoader;
 
 use super::reader::{BinaryError, BinaryReader};
 
-/// Spine editor version this runtime is built for. Used as a prefix check
-/// against the skeleton's embedded version string.
-pub const TARGET_VERSION: &str = "4.2";
+/// Exports must report a version starting with this.
+pub const TARGET_VERSION: &str = "4.3";
 
-// Timeline type discriminants, from SkeletonBinary.h.
 const BONE_ROTATE: u8 = 0;
 const BONE_TRANSLATE: u8 = 1;
 const BONE_TRANSLATE_X: u8 = 2;
@@ -90,6 +88,12 @@ const SLOT_RGBA2: u8 = 3;
 const SLOT_RGB2: u8 = 4;
 const SLOT_ALPHA: u8 = 5;
 
+const CONSTRAINT_IK: u8 = 0;
+const CONSTRAINT_PATH: u8 = 1;
+const CONSTRAINT_TRANSFORM: u8 = 2;
+const CONSTRAINT_PHYSICS: u8 = 3;
+const CONSTRAINT_SLIDER: u8 = 4;
+
 const ATTACHMENT_DEFORM: u8 = 0;
 const ATTACHMENT_SEQUENCE: u8 = 1;
 
@@ -100,30 +104,29 @@ const PATH_MIX: u8 = 2;
 const PHYSICS_INERTIA: u8 = 0;
 const PHYSICS_STRENGTH: u8 = 1;
 const PHYSICS_DAMPING: u8 = 2;
-// Note: discriminant 3 is skipped in spine-cpp (MASS = 4).
 const PHYSICS_MASS: u8 = 4;
 const PHYSICS_WIND: u8 = 5;
 const PHYSICS_GRAVITY: u8 = 6;
 const PHYSICS_MIX: u8 = 7;
 const PHYSICS_RESET: u8 = 8;
 
+const SLIDER_TIME: u8 = 0;
+const SLIDER_MIX: u8 = 1;
+
 const CURVE_LINEAR: i8 = 0;
 const CURVE_STEPPED: i8 = 1;
 const CURVE_BEZIER: i8 = 2;
 
-/// Record of a mesh attachment whose vertex data is inherited from a parent
-/// mesh in another skin. Linked meshes are resolved after all skins have
-/// loaded (see [`SkeletonBinary::resolve_linked_meshes`]).
+/// A linked mesh waiting for its source, which may sit in a later skin.
 struct LinkedMesh {
     mesh: AttachmentId,
     skin_index: usize,
-    slot_index: usize,
-    parent_name: String,
-    inherit_timeline: bool,
+    source_slot: usize,
+    source: String,
+    inherit_timelines: bool,
 }
 
-/// Stateful parser for the binary `.skel` format. Keeps scratch state for
-/// linked-mesh resolution between top-level sections.
+/// Reader for the binary `.skel` format.
 pub struct SkeletonBinary<'loader> {
     loader: &'loader mut dyn AttachmentLoader,
     scale: f32,
@@ -131,7 +134,6 @@ pub struct SkeletonBinary<'loader> {
 }
 
 impl<'loader> SkeletonBinary<'loader> {
-    /// Build a parser that resolves attachments through `loader`.
     pub fn with_loader(loader: &'loader mut dyn AttachmentLoader) -> Self {
         Self {
             loader,
@@ -140,25 +142,21 @@ impl<'loader> SkeletonBinary<'loader> {
         }
     }
 
-    /// Override the load-time world-space scale (default `1.0`). Applied to
-    /// position fields that spine-cpp scales during load.
+    /// Scales positions and sizes as they load.
     #[must_use]
     pub fn with_scale(mut self, scale: f32) -> Self {
         self.scale = scale;
         self
     }
 
-    /// Parse a `.skel` byte buffer and return the populated skeleton data.
-    ///
     /// # Errors
-    /// Returns [`BinaryError`] on malformed content, UTF-8 violations,
-    /// version mismatches, or attachment-loader failures.
+    /// Malformed content, a version other than 4.3, or a loader failure.
     pub fn read(mut self, bytes: &[u8]) -> Result<SkeletonData, BinaryError> {
+        let scale = self.scale;
         let mut r = BinaryReader::new(bytes);
         let mut sd = SkeletonData::default();
         self.linked_meshes.clear();
 
-        // --- Header ---------------------------------------------------------
         let low = r.read_int()? as u32;
         let high = r.read_int()? as u32;
         sd.hash = format!("{high:x}{low:x}");
@@ -175,7 +173,7 @@ impl<'loader> SkeletonBinary<'loader> {
         sd.y = r.read_float()?;
         sd.width = r.read_float()?;
         sd.height = r.read_float()?;
-        sd.reference_scale = r.read_float()? * self.scale;
+        sd.reference_scale = r.read_float()? * scale;
 
         let nonessential = r.read_bool()?;
         if nonessential {
@@ -184,14 +182,13 @@ impl<'loader> SkeletonBinary<'loader> {
             sd.audio_path = r.read_string()?.unwrap_or_default();
         }
 
-        // --- String table ---------------------------------------------------
         let num_strings = r.read_uvarint()?;
         let mut strings = Vec::with_capacity(num_strings);
         for _ in 0..num_strings {
             strings.push(r.read_string()?.unwrap_or_default());
         }
 
-        // --- Bones ----------------------------------------------------------
+        // Bones.
         let num_bones = r.read_uvarint()?;
         sd.bones.reserve(num_bones);
         for i in 0..num_bones {
@@ -199,50 +196,44 @@ impl<'loader> SkeletonBinary<'loader> {
             let parent = if i == 0 {
                 None
             } else {
-                let idx = r.read_uvarint()?;
-                check_index(&r, "bone", idx, sd.bones.len())?;
-                Some(BoneId(idx as u16))
+                Some(read_bone(&mut r, &sd)?)
             };
-            let id = BoneId(i as u16);
-            let mut b = BoneData::new(id, name, parent);
-            b.rotation = r.read_float()?;
-            b.x = r.read_float()? * self.scale;
-            b.y = r.read_float()? * self.scale;
-            b.scale_x = r.read_float()?;
-            b.scale_y = r.read_float()?;
-            b.shear_x = r.read_float()?;
-            b.shear_y = r.read_float()?;
-            b.length = r.read_float()? * self.scale;
-            b.inherit = read_inherit(&mut r)?;
+            let mut b = BoneData::new(BoneId(i as u16), name, parent);
+            let setup = &mut b.setup;
+            setup.rotation = r.read_float()?;
+            setup.x = r.read_float()? * scale;
+            setup.y = r.read_float()? * scale;
+            setup.scale_x = r.read_float()?;
+            setup.scale_y = r.read_float()?;
+            setup.shear_x = r.read_float()?;
+            setup.shear_y = r.read_float()?;
+            setup.inherit = read_inherit(&mut r)?;
+            b.length = r.read_float()? * scale;
             b.skin_required = r.read_bool()?;
             if nonessential {
                 b.color = r.read_color()?;
                 b.icon = r.read_string()?.unwrap_or_default();
+                b.icon_size = r.read_float()?;
+                b.icon_rotation = r.read_float()?;
                 b.visible = r.read_bool()?;
             }
             sd.bones.push(b);
         }
 
-        // --- Slots ----------------------------------------------------------
+        // Slots.
         let num_slots = r.read_uvarint()?;
         sd.slots.reserve(num_slots);
         for i in 0..num_slots {
             let name = r.read_string()?.unwrap_or_default();
-            let bone_idx = r.read_uvarint()?;
-            check_index(&r, "bone", bone_idx, sd.bones.len())?;
-            let mut slot = SlotData::new(SlotId(i as u16), name, BoneId(bone_idx as u16));
+            let bone = read_bone(&mut r, &sd)?;
+            let mut slot = SlotData::new(SlotId(i as u16), name, bone);
             slot.color = r.read_color()?;
-
-            // Dark color: 4 bytes, all 0xFF meaning "no dark color".
-            let a = r.read_byte()?;
-            let dr = r.read_byte()?;
-            let dg = r.read_byte()?;
-            let db = r.read_byte()?;
-            if !(dr == 0xFF && dg == 0xFF && db == 0xFF && a == 0xFF) {
+            let dark = r.read_int()?;
+            if dark != -1 {
                 slot.dark_color = Some(crate::math::Color::new(
-                    f32::from(dr) / 255.0,
-                    f32::from(dg) / 255.0,
-                    f32::from(db) / 255.0,
+                    ((dark >> 16) & 0xff) as f32 / 255.0,
+                    ((dark >> 8) & 0xff) as f32 / 255.0,
+                    (dark & 0xff) as f32 / 255.0,
                     1.0,
                 ));
             }
@@ -254,240 +245,276 @@ impl<'loader> SkeletonBinary<'loader> {
             sd.slots.push(slot);
         }
 
-        // --- IK constraints -------------------------------------------------
-        let num_ik = r.read_uvarint()?;
-        sd.ik_constraints.reserve(num_ik);
-        for i in 0..num_ik {
+        // Constraints, in update order.
+        let num_constraints = r.read_uvarint()?;
+        sd.constraints.reserve(num_constraints);
+        for _ in 0..num_constraints {
             let name = r.read_string()?.unwrap_or_default();
-            let order = r.read_uvarint()? as u32;
-            let bones_n = r.read_uvarint()?;
-            let mut bones = Vec::with_capacity(bones_n);
-            for _ in 0..bones_n {
-                let idx = r.read_uvarint()?;
-                check_index(&r, "bone", idx, sd.bones.len())?;
-                bones.push(BoneId(idx as u16));
-            }
-            let target_idx = r.read_uvarint()?;
-            check_index(&r, "bone", target_idx, sd.bones.len())?;
-            let flags = r.read_byte()?;
-            let mut ik =
-                IkConstraintData::new(IkConstraintId(i as u16), name, BoneId(target_idx as u16));
-            ik.order = order;
-            ik.bones = bones;
-            ik.skin_required = flags & 1 != 0;
-            ik.bend_direction = if flags & 2 != 0 { 1 } else { -1 };
-            ik.compress = flags & 4 != 0;
-            ik.stretch = flags & 8 != 0;
-            ik.uniform = flags & 16 != 0;
-            if flags & 32 != 0 {
-                ik.mix = if flags & 64 != 0 {
-                    r.read_float()?
-                } else {
-                    1.0
-                };
-            } else {
-                ik.mix = 0.0;
-            }
-            if flags & 128 != 0 {
-                ik.softness = r.read_float()? * self.scale;
-            }
-            sd.ik_constraints.push(ik);
+            let kind = r.read_byte()?;
+            let constraint = match kind {
+                CONSTRAINT_IK => {
+                    let bones = read_bones(&mut r, &sd)?;
+                    let target = read_bone(&mut r, &sd)?;
+                    let mut data = IkConstraintData::new(name, target);
+                    data.bones = bones;
+                    let flags = r.read_byte()?;
+                    data.skin_required = flags & 1 != 0;
+                    if flags & 2 != 0 {
+                        let v = u32::from(r.read_byte()?);
+                        data.scale_y_mode =
+                            ScaleYMode::from_index(v).ok_or(BinaryError::UnknownDiscriminant {
+                                at: r.position(),
+                                entity: "scale Y mode",
+                                value: v,
+                            })?;
+                    }
+                    let setup = &mut data.setup;
+                    setup.bend_direction = if flags & 4 != 0 { -1 } else { 1 };
+                    setup.compress = flags & 8 != 0;
+                    setup.stretch = flags & 16 != 0;
+                    if flags & 32 != 0 {
+                        setup.mix = if flags & 64 != 0 {
+                            r.read_float()?
+                        } else {
+                            1.0
+                        };
+                    }
+                    if flags & 128 != 0 {
+                        setup.softness = r.read_float()? * scale;
+                    }
+                    ConstraintData::Ik(data)
+                }
+                CONSTRAINT_TRANSFORM => {
+                    let bones = read_bones(&mut r, &sd)?;
+                    let source = read_bone(&mut r, &sd)?;
+                    let mut data = TransformConstraintData::new(name, source);
+                    data.bones = bones;
+                    let flags = r.read_byte()?;
+                    data.skin_required = flags & 1 != 0;
+                    data.local_source = flags & 2 != 0;
+                    data.local_target = flags & 4 != 0;
+                    data.additive = flags & 8 != 0;
+                    data.clamp = flags & 16 != 0;
+                    for _ in 0..(flags >> 5) {
+                        let from_type = r.read_sbyte()?;
+                        let Some(from) = TransformProperty::from_index(i32::from(from_type)) else {
+                            continue;
+                        };
+                        let from_scale = property_scale(from, scale);
+                        let offset = r.read_float()? * from_scale;
+                        let to_count = r.read_sbyte()?;
+                        let mut to = Vec::with_capacity(to_count.max(0) as usize);
+                        for _ in 0..to_count {
+                            let to_type = r.read_sbyte()?;
+                            let Some(property) = TransformProperty::from_index(i32::from(to_type))
+                            else {
+                                continue;
+                            };
+                            let to_scale = property_scale(property, scale);
+                            to.push(ToProperty {
+                                property,
+                                offset: r.read_float()? * to_scale,
+                                max: r.read_float()? * to_scale,
+                                scale: r.read_float()? * to_scale / from_scale,
+                            });
+                        }
+                        data.properties.push(FromProperty {
+                            property: from,
+                            offset,
+                            to,
+                        });
+                    }
+                    let flags = r.read_byte()?;
+                    for (bit, property) in [
+                        (1, TransformProperty::Rotate),
+                        (2, TransformProperty::X),
+                        (4, TransformProperty::Y),
+                        (8, TransformProperty::ScaleX),
+                        (16, TransformProperty::ScaleY),
+                        (32, TransformProperty::ShearY),
+                    ] {
+                        if flags & bit != 0 {
+                            data.offsets[property.offset_index()] =
+                                r.read_float()? * property_scale(property, scale);
+                        }
+                    }
+                    let flags = r.read_byte()?;
+                    let setup = &mut data.setup;
+                    if flags & 1 != 0 {
+                        setup.mix_rotate = r.read_float()?;
+                    }
+                    if flags & 2 != 0 {
+                        setup.mix_x = r.read_float()?;
+                    }
+                    if flags & 4 != 0 {
+                        setup.mix_y = r.read_float()?;
+                    }
+                    if flags & 8 != 0 {
+                        setup.mix_scale_x = r.read_float()?;
+                    }
+                    if flags & 16 != 0 {
+                        setup.mix_scale_y = r.read_float()?;
+                    }
+                    if flags & 32 != 0 {
+                        setup.mix_shear_y = r.read_float()?;
+                    }
+                    ConstraintData::Transform(data)
+                }
+                CONSTRAINT_PATH => {
+                    let bones = read_bones(&mut r, &sd)?;
+                    let slot = read_slot(&mut r, &sd)?;
+                    let mut data = PathConstraintData::new(name, slot);
+                    data.bones = bones;
+                    let flags = r.read_byte()?;
+                    data.skin_required = flags & 1 != 0;
+                    data.position_mode = if (flags >> 1) & 1 == 0 {
+                        PositionMode::Fixed
+                    } else {
+                        PositionMode::Percent
+                    };
+                    data.spacing_mode = match (flags >> 2) & 3 {
+                        0 => SpacingMode::Length,
+                        1 => SpacingMode::Fixed,
+                        2 => SpacingMode::Percent,
+                        _ => SpacingMode::Proportional,
+                    };
+                    data.rotate_mode = match (flags >> 4) & 3 {
+                        0 => RotateMode::Tangent,
+                        1 => RotateMode::Chain,
+                        _ => RotateMode::ChainScale,
+                    };
+                    if flags & 128 != 0 {
+                        data.offset_rotation = r.read_float()?;
+                    }
+                    let setup = &mut data.setup;
+                    setup.position = r.read_float()?;
+                    if data.position_mode == PositionMode::Fixed {
+                        setup.position *= scale;
+                    }
+                    setup.spacing = r.read_float()?;
+                    if matches!(data.spacing_mode, SpacingMode::Length | SpacingMode::Fixed) {
+                        setup.spacing *= scale;
+                    }
+                    setup.mix_rotate = r.read_float()?;
+                    setup.mix_x = r.read_float()?;
+                    setup.mix_y = r.read_float()?;
+                    ConstraintData::Path(data)
+                }
+                CONSTRAINT_PHYSICS => {
+                    let bone = read_bone(&mut r, &sd)?;
+                    let mut data = PhysicsConstraintData::new(name, bone);
+                    let flags = r.read_byte()?;
+                    data.skin_required = flags & 1 != 0;
+                    if flags & 2 != 0 {
+                        data.x = r.read_float()?;
+                    }
+                    if flags & 4 != 0 {
+                        data.y = r.read_float()?;
+                    }
+                    if flags & 8 != 0 {
+                        data.rotate = r.read_float()?;
+                    }
+                    if flags & 16 != 0 {
+                        // Negative values carry the scale Y mode.
+                        let mut scale_x = r.read_float()?;
+                        if scale_x < -2.0 {
+                            data.scale_y_mode = ScaleYMode::Volume;
+                            scale_x = -2.0 - scale_x;
+                        } else if scale_x < 0.0 {
+                            data.scale_y_mode = ScaleYMode::Uniform;
+                            scale_x = -1.0 - scale_x;
+                        }
+                        data.scale_x = scale_x;
+                    }
+                    if flags & 32 != 0 {
+                        data.shear_x = r.read_float()?;
+                    }
+                    data.limit = if flags & 64 != 0 {
+                        r.read_float()?
+                    } else {
+                        5000.0
+                    } * scale;
+                    data.step = 1.0 / f32::from(r.read_byte()?);
+                    let setup = &mut data.setup;
+                    setup.inertia = r.read_float()?;
+                    setup.strength = r.read_float()?;
+                    setup.damping = r.read_float()?;
+                    setup.mass_inverse = if flags & 128 != 0 {
+                        r.read_float()?
+                    } else {
+                        1.0
+                    };
+                    setup.wind = r.read_float()?;
+                    setup.gravity = r.read_float()?;
+                    let flags = r.read_byte()?;
+                    data.inertia_global = flags & 1 != 0;
+                    data.strength_global = flags & 2 != 0;
+                    data.damping_global = flags & 4 != 0;
+                    data.mass_global = flags & 8 != 0;
+                    data.wind_global = flags & 16 != 0;
+                    data.gravity_global = flags & 32 != 0;
+                    data.mix_global = flags & 64 != 0;
+                    data.setup.mix = if flags & 128 != 0 {
+                        r.read_float()?
+                    } else {
+                        1.0
+                    };
+                    ConstraintData::Physics(data)
+                }
+                CONSTRAINT_SLIDER => {
+                    let mut data = SliderData::new(name);
+                    let flags = r.read_byte()?;
+                    data.skin_required = flags & 1 != 0;
+                    data.looping = flags & 2 != 0;
+                    data.additive = flags & 4 != 0;
+                    if flags & 8 != 0 {
+                        let value = r.read_float()?;
+                        if nonessential && flags & 64 != 0 {
+                            data.max = value;
+                        } else {
+                            data.setup.time = value;
+                        }
+                    }
+                    if flags & 16 != 0 {
+                        data.setup.mix = if flags & 32 != 0 {
+                            r.read_float()?
+                        } else {
+                            1.0
+                        };
+                    }
+                    if flags & 64 != 0 {
+                        data.local = flags & 128 != 0;
+                        data.bone = Some(read_bone(&mut r, &sd)?);
+                        let offset = r.read_float()?;
+                        let kind = r.read_sbyte()?;
+                        if let Some(property) = TransformProperty::from_index(i32::from(kind)) {
+                            let property_scale = property_scale(property, scale);
+                            data.property = Some(SliderProperty {
+                                property,
+                                offset: offset * property_scale,
+                            });
+                            data.offset = r.read_float()?;
+                            data.scale = r.read_float()? / property_scale;
+                        }
+                    }
+                    ConstraintData::Slider(data)
+                }
+                other => {
+                    return Err(BinaryError::UnknownDiscriminant {
+                        at: r.position(),
+                        entity: "constraint type",
+                        value: u32::from(other),
+                    });
+                }
+            };
+            sd.constraints.push(constraint);
         }
 
-        // --- Transform constraints -----------------------------------------
-        let num_tc = r.read_uvarint()?;
-        sd.transform_constraints.reserve(num_tc);
-        for i in 0..num_tc {
-            let name = r.read_string()?.unwrap_or_default();
-            let order = r.read_uvarint()? as u32;
-            let bones_n = r.read_uvarint()?;
-            let mut bones = Vec::with_capacity(bones_n);
-            for _ in 0..bones_n {
-                let idx = r.read_uvarint()?;
-                check_index(&r, "bone", idx, sd.bones.len())?;
-                bones.push(BoneId(idx as u16));
-            }
-            let target_idx = r.read_uvarint()?;
-            check_index(&r, "bone", target_idx, sd.bones.len())?;
-            let mut tc = TransformConstraintData::new(
-                TransformConstraintId(i as u16),
-                name,
-                BoneId(target_idx as u16),
-            );
-            tc.order = order;
-            tc.bones = bones;
-            let flags = r.read_byte()?;
-            tc.skin_required = flags & 1 != 0;
-            tc.local = flags & 2 != 0;
-            tc.relative = flags & 4 != 0;
-            if flags & 8 != 0 {
-                tc.offset_rotation = r.read_float()?;
-            }
-            if flags & 16 != 0 {
-                tc.offset_x = r.read_float()? * self.scale;
-            }
-            if flags & 32 != 0 {
-                tc.offset_y = r.read_float()? * self.scale;
-            }
-            if flags & 64 != 0 {
-                tc.offset_scale_x = r.read_float()?;
-            }
-            if flags & 128 != 0 {
-                tc.offset_scale_y = r.read_float()?;
-            }
-            let flags = r.read_byte()?;
-            if flags & 1 != 0 {
-                tc.offset_shear_y = r.read_float()?;
-            }
-            if flags & 2 != 0 {
-                tc.mix_rotate = r.read_float()?;
-            }
-            if flags & 4 != 0 {
-                tc.mix_x = r.read_float()?;
-            }
-            if flags & 8 != 0 {
-                tc.mix_y = r.read_float()?;
-            }
-            if flags & 16 != 0 {
-                tc.mix_scale_x = r.read_float()?;
-            }
-            if flags & 32 != 0 {
-                tc.mix_scale_y = r.read_float()?;
-            }
-            if flags & 64 != 0 {
-                tc.mix_shear_y = r.read_float()?;
-            }
-            sd.transform_constraints.push(tc);
-        }
-
-        // --- Path constraints ----------------------------------------------
-        let num_pc = r.read_uvarint()?;
-        sd.path_constraints.reserve(num_pc);
-        for i in 0..num_pc {
-            let name = r.read_string()?.unwrap_or_default();
-            let order = r.read_uvarint()? as u32;
-            let skin_required = r.read_bool()?;
-            let bones_n = r.read_uvarint()?;
-            let mut bones = Vec::with_capacity(bones_n);
-            for _ in 0..bones_n {
-                let idx = r.read_uvarint()?;
-                check_index(&r, "bone", idx, sd.bones.len())?;
-                bones.push(BoneId(idx as u16));
-            }
-            let target_idx = r.read_uvarint()?;
-            check_index(&r, "slot", target_idx, sd.slots.len())?;
-            let mut pc = PathConstraintData::new(
-                PathConstraintId(i as u16),
-                name,
-                SlotId(target_idx as u16),
-            );
-            pc.order = order;
-            pc.skin_required = skin_required;
-            pc.bones = bones;
-            let flags = r.read_byte()?;
-            pc.position_mode = match flags & 1 {
-                0 => PositionMode::Fixed,
-                _ => PositionMode::Percent,
-            };
-            pc.spacing_mode = match (flags >> 1) & 3 {
-                0 => SpacingMode::Length,
-                1 => SpacingMode::Fixed,
-                2 => SpacingMode::Percent,
-                _ => SpacingMode::Proportional,
-            };
-            pc.rotate_mode = match (flags >> 3) & 3 {
-                0 => RotateMode::Tangent,
-                1 => RotateMode::Chain,
-                _ => RotateMode::ChainScale,
-            };
-            if flags & 128 != 0 {
-                pc.offset_rotation = r.read_float()?;
-            }
-            pc.position = r.read_float()?;
-            if pc.position_mode == PositionMode::Fixed {
-                pc.position *= self.scale;
-            }
-            pc.spacing = r.read_float()?;
-            if matches!(pc.spacing_mode, SpacingMode::Length | SpacingMode::Fixed) {
-                pc.spacing *= self.scale;
-            }
-            pc.mix_rotate = r.read_float()?;
-            pc.mix_x = r.read_float()?;
-            pc.mix_y = r.read_float()?;
-            sd.path_constraints.push(pc);
-        }
-
-        // --- Physics constraints -------------------------------------------
-        let num_phys = r.read_uvarint()?;
-        sd.physics_constraints.reserve(num_phys);
-        for i in 0..num_phys {
-            let name = r.read_string()?.unwrap_or_default();
-            let order = r.read_uvarint()? as u32;
-            let bone_idx = r.read_uvarint()?;
-            check_index(&r, "bone", bone_idx, sd.bones.len())?;
-            let mut ph = PhysicsConstraintData::new(
-                PhysicsConstraintId(i as u16),
-                name,
-                BoneId(bone_idx as u16),
-            );
-            ph.order = order;
-            let flags = r.read_byte()?;
-            ph.skin_required = flags & 1 != 0;
-            if flags & 2 != 0 {
-                ph.x = r.read_float()?;
-            }
-            if flags & 4 != 0 {
-                ph.y = r.read_float()?;
-            }
-            if flags & 8 != 0 {
-                ph.rotate = r.read_float()?;
-            }
-            if flags & 16 != 0 {
-                ph.scale_x = r.read_float()?;
-            }
-            if flags & 32 != 0 {
-                ph.shear_x = r.read_float()?;
-            }
-            ph.limit = if flags & 64 != 0 {
-                r.read_float()?
-            } else {
-                5000.0
-            } * self.scale;
-            ph.step = 1.0 / f32::from(r.read_byte()?);
-            ph.inertia = r.read_float()?;
-            ph.strength = r.read_float()?;
-            ph.damping = r.read_float()?;
-            ph.mass_inverse = if flags & 128 != 0 {
-                r.read_float()?
-            } else {
-                1.0
-            };
-            ph.wind = r.read_float()?;
-            ph.gravity = r.read_float()?;
-            let flags = r.read_byte()?;
-            ph.inertia_global = flags & 1 != 0;
-            ph.strength_global = flags & 2 != 0;
-            ph.damping_global = flags & 4 != 0;
-            ph.mass_global = flags & 8 != 0;
-            ph.wind_global = flags & 16 != 0;
-            ph.gravity_global = flags & 32 != 0;
-            ph.mix_global = flags & 64 != 0;
-            ph.mix = if flags & 128 != 0 {
-                r.read_float()?
-            } else {
-                1.0
-            };
-            sd.physics_constraints.push(ph);
-        }
-
-        // --- Default skin ---------------------------------------------------
         if let Some(skin) = self.read_skin(&mut r, true, &mut sd, &strings, nonessential)? {
-            let id = SkinId(sd.skins.len() as u16);
-            sd.default_skin = Some(id);
+            sd.default_skin = Some(SkinId(sd.skins.len() as u16));
             sd.skins.push(skin);
         }
 
-        // --- Named skins ----------------------------------------------------
         let num_skins = r.read_uvarint()?;
         for _ in 0..num_skins {
             let skin = self
@@ -496,10 +523,9 @@ impl<'loader> SkeletonBinary<'loader> {
             sd.skins.push(skin);
         }
 
-        // --- Linked mesh resolution ----------------------------------------
         self.resolve_linked_meshes(&mut sd)?;
 
-        // --- Events ---------------------------------------------------------
+        // Events.
         let num_events = r.read_uvarint()?;
         sd.events.reserve(num_events);
         for i in 0..num_events {
@@ -516,21 +542,26 @@ impl<'loader> SkeletonBinary<'loader> {
             sd.events.push(e);
         }
 
-        // --- Animations -----------------------------------------------------
+        // Animations.
         let num_anims = r.read_uvarint()?;
         sd.animations.reserve(num_anims);
         for _ in 0..num_anims {
             let name = r.read_string()?.unwrap_or_default();
-            let anim = self.read_animation(&mut r, &sd, &strings, name)?;
+            let anim = self.read_animation(&mut r, &sd, &strings, name, nonessential)?;
             sd.animations.push(anim);
+        }
+
+        // Slider animations are written after the animations they reference.
+        for c in &mut sd.constraints {
+            if let ConstraintData::Slider(slider) = c {
+                let idx = r.read_uvarint()?;
+                check_index(&r, "animation", idx, sd.animations.len())?;
+                slider.animation = Some(AnimationId(idx as u16));
+            }
         }
 
         Ok(sd)
     }
-
-    // -----------------------------------------------------------------------
-    // Skin + attachment
-    // -----------------------------------------------------------------------
 
     fn read_skin(
         &mut self,
@@ -540,7 +571,6 @@ impl<'loader> SkeletonBinary<'loader> {
         strings: &[String],
         nonessential: bool,
     ) -> Result<Option<Skin>, BinaryError> {
-        let skin_index = sd.skins.len();
         let (mut skin, slot_count) = if default_skin {
             let sc = r.read_uvarint()?;
             if sc == 0 {
@@ -548,49 +578,16 @@ impl<'loader> SkeletonBinary<'loader> {
             }
             (Skin::new("default"), sc)
         } else {
-            let name = r.read_string()?.unwrap_or_default();
-            let mut skin = Skin::new(name);
+            let mut skin = Skin::new(r.read_string()?.unwrap_or_default());
             if nonessential {
-                // Skin color — not stored on the Skin type yet; read and
-                // discard to keep the stream aligned.
-                let _ = r.read_color()?;
+                skin.color = r.read_color()?;
             }
-            let bones_n = r.read_uvarint()?;
-            for _ in 0..bones_n {
+            skin.bones = read_bones(r, sd)?;
+            let n = r.read_uvarint()?;
+            for _ in 0..n {
                 let idx = r.read_uvarint()?;
-                check_index(r, "bone", idx, sd.bones.len())?;
-                skin.bones.push(BoneId(idx as u16));
-            }
-            let ik_n = r.read_uvarint()?;
-            for _ in 0..ik_n {
-                let idx = r.read_uvarint()?;
-                check_index(r, "ik_constraint", idx, sd.ik_constraints.len())?;
-                skin.ik_constraints.push(IkConstraintId(idx as u16));
-            }
-            let tc_n = r.read_uvarint()?;
-            for _ in 0..tc_n {
-                let idx = r.read_uvarint()?;
-                check_index(
-                    r,
-                    "transform_constraint",
-                    idx,
-                    sd.transform_constraints.len(),
-                )?;
-                skin.transform_constraints
-                    .push(TransformConstraintId(idx as u16));
-            }
-            let pc_n = r.read_uvarint()?;
-            for _ in 0..pc_n {
-                let idx = r.read_uvarint()?;
-                check_index(r, "path_constraint", idx, sd.path_constraints.len())?;
-                skin.path_constraints.push(PathConstraintId(idx as u16));
-            }
-            let phys_n = r.read_uvarint()?;
-            for _ in 0..phys_n {
-                let idx = r.read_uvarint()?;
-                check_index(r, "physics_constraint", idx, sd.physics_constraints.len())?;
-                skin.physics_constraints
-                    .push(PhysicsConstraintId(idx as u16));
+                check_index(r, "constraint", idx, sd.constraints.len())?;
+                skin.constraints.push(ConstraintId(idx as u16));
             }
             let sc = r.read_uvarint()?;
             (skin, sc)
@@ -601,28 +598,35 @@ impl<'loader> SkeletonBinary<'loader> {
             check_index(r, "slot", slot_idx, sd.slots.len())?;
             let n = r.read_uvarint()?;
             for _ in 0..n {
-                let name = r.read_string_ref(strings)?.unwrap_or_default();
+                let placeholder = r.read_string_ref(strings)?.unwrap_or_default();
                 let attachment = self.read_attachment(
                     r,
-                    skin_index,
                     slot_idx,
                     &skin.name,
-                    &name,
+                    &placeholder,
                     sd,
                     strings,
                     nonessential,
                 )?;
-                let id = AttachmentId(sd.attachments.len() as u32);
-                sd.attachments.push(attachment);
-                skin.set_attachment(SlotId(slot_idx as u16), name, id);
+                if let Some(attachment) = attachment {
+                    let id = AttachmentId(sd.attachments.len() as u32);
+                    sd.attachments.push(attachment);
+                    skin.set_attachment(SlotId(slot_idx as u16), placeholder, id);
+                }
             }
         }
         Ok(Some(skin))
     }
 
-    fn read_sequence(&self, r: &mut BinaryReader<'_>) -> Result<Sequence, BinaryError> {
-        let count = r.read_uvarint()? as i32;
-        let mut seq = Sequence::new(count);
+    fn read_sequence(
+        &self,
+        r: &mut BinaryReader<'_>,
+        has_path_suffix: bool,
+    ) -> Result<Sequence, BinaryError> {
+        if !has_path_suffix {
+            return Ok(Sequence::new(1, false));
+        }
+        let mut seq = Sequence::new(r.read_uvarint()?, true);
         seq.start = r.read_uvarint()? as i32;
         seq.digits = r.read_uvarint()? as i32;
         seq.setup_index = r.read_uvarint()? as i32;
@@ -633,332 +637,321 @@ impl<'loader> SkeletonBinary<'loader> {
     fn read_attachment(
         &mut self,
         r: &mut BinaryReader<'_>,
-        _skin_index: usize,
         slot_idx: usize,
         skin_name: &str,
-        attachment_name: &str,
+        placeholder: &str,
         sd: &SkeletonData,
         strings: &[String],
         nonessential: bool,
-    ) -> Result<Attachment, BinaryError> {
+    ) -> Result<Option<Attachment>, BinaryError> {
+        let scale = self.scale;
         let flags = r.read_byte()?;
         let name = if flags & 8 != 0 {
             r.read_string_ref(strings)?.unwrap_or_default()
         } else {
-            attachment_name.to_string()
+            placeholder.to_string()
         };
-        let kind = flags & 0x7;
-        let slot_name = sd.slots[slot_idx].name.as_str();
 
-        match kind {
+        Ok(match flags & 0x7 {
             // Region
             0 => {
                 let path = if flags & 16 != 0 {
-                    r.read_string_ref(strings)?.unwrap_or_else(|| name.clone())
+                    r.read_string_ref(strings)?
                 } else {
-                    name.clone()
+                    None
                 };
                 let color = if flags & 32 != 0 {
                     r.read_color()?
                 } else {
                     crate::math::Color::WHITE
                 };
-                let mut sequence = if flags & 64 != 0 {
-                    Some(self.read_sequence(r)?)
-                } else {
-                    None
-                };
+                let sequence = self.read_sequence(r, flags & 64 != 0)?;
                 let rotation = if flags & 128 != 0 {
                     r.read_float()?
                 } else {
                     0.0
                 };
-                let x = r.read_float()? * self.scale;
-                let y = r.read_float()? * self.scale;
+                let x = r.read_float()?;
+                let y = r.read_float()?;
                 let scale_x = r.read_float()?;
                 let scale_y = r.read_float()?;
-                let width = r.read_float()? * self.scale;
-                let height = r.read_float()? * self.scale;
+                let width = r.read_float()?;
+                let height = r.read_float()?;
 
-                let mut attachment = self.loader.new_region_attachment(
+                let path = path.unwrap_or_else(|| name.clone());
+                let Some(mut region) = self.loader.new_region_attachment(
                     skin_name,
-                    slot_name,
+                    placeholder,
                     &name,
                     &path,
-                    sequence.as_mut(),
-                )?;
-                if let Attachment::Region(reg) = &mut attachment {
-                    reg.path = path;
-                    reg.rotation = rotation;
-                    reg.x = x;
-                    reg.y = y;
-                    reg.scale_x = scale_x;
-                    reg.scale_y = scale_y;
-                    reg.width = width;
-                    reg.height = height;
-                    reg.color = color;
-                    reg.sequence = sequence;
-                    // spine-cpp's binary loader calls updateRegion once the
-                    // pose fields + resolved region are in place, so the
-                    // cached corner offsets and atlas UVs are ready for
-                    // rendering. Without this, every region renders as a
-                    // degenerate quad (all four vertices at the bone origin).
-                    reg.update_region();
-                }
-                Ok(attachment)
+                    sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                region.path = path;
+                region.x = x * scale;
+                region.y = y * scale;
+                region.scale_x = scale_x;
+                region.scale_y = scale_y;
+                region.rotation = rotation;
+                region.width = width * scale;
+                region.height = height * scale;
+                region.color = color;
+                region.update_sequence();
+                Some(Attachment::Region(region))
             }
 
             // BoundingBox
             1 => {
-                let mut attachment = self
-                    .loader
-                    .new_bounding_box_attachment(skin_name, slot_name, &name)?;
-                let (vd, _len) = self.read_vertices(r, flags & 16 != 0)?;
-                if let Attachment::BoundingBox(bb) = &mut attachment {
-                    bb.vertex_data = vd;
-                    if nonessential {
-                        bb.color = r.read_color()?;
-                    }
+                let vertex_data = self.read_vertices(r, flags & 16 != 0)?;
+                let color = if nonessential {
+                    Some(r.read_color()?)
+                } else {
+                    None
+                };
+                let Some(mut bb) =
+                    self.loader
+                        .new_bounding_box_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                bb.vertex_data = vertex_data;
+                if let Some(color) = color {
+                    bb.color = color;
                 }
-                Ok(attachment)
+                Some(Attachment::BoundingBox(bb))
             }
 
             // Mesh
             2 => {
                 let path = if flags & 16 != 0 {
-                    r.read_string_ref(strings)?.unwrap_or_else(|| name.clone())
+                    r.read_string_ref(strings)?
                 } else {
-                    name.clone()
-                };
+                    None
+                }
+                .unwrap_or_else(|| name.clone());
                 let color = if flags & 32 != 0 {
                     r.read_color()?
                 } else {
                     crate::math::Color::WHITE
                 };
-                let mut sequence = if flags & 64 != 0 {
-                    Some(self.read_sequence(r)?)
-                } else {
-                    None
-                };
-                let hull_length = r.read_uvarint()? as u32;
-                let (vd, verts_len) = self.read_vertices(r, flags & 128 != 0)?;
-                let uvs = read_float_array(r, verts_len as usize, 1.0)?;
-                // Triangle count from spine-cpp: `(verticesLength -
-                // hullLength - 2) * 3`. `verticesLength` is `vertexCount *
-                // 2`; `hullLength` is the raw value from the wire (vertex-
-                // count units, not doubled). For a 10/10 (all-hull) mesh
-                // this gives (20 - 10 - 2) * 3 = 24 indices = 8 triangles,
-                // matching hull triangulation N - 2 = 8.
-                let tri_count = ((verts_len as i32 - hull_length as i32 - 2).max(0)) as usize * 3;
+                let sequence = self.read_sequence(r, flags & 64 != 0)?;
+                let hull_length = r.read_uvarint()?;
+                let vertex_data = self.read_vertices(r, flags & 128 != 0)?;
+                let vertices_len = vertex_data.world_vertices_length as usize;
+                let uvs = read_float_array(r, vertices_len, 1.0)?;
+                // Float count minus hull vertex count: the units are mixed
+                // on purpose, as in SkeletonBinary.cpp.
+                let tri_count = (vertices_len as i32 - hull_length as i32 - 2).max(0) as usize * 3;
                 let triangles = read_short_array(r, tri_count)?;
+                let n = r.read_uvarint()?;
+                let mut timeline_slots = Vec::with_capacity(n);
+                for _ in 0..n {
+                    timeline_slots.push(read_slot(r, sd)?);
+                }
                 let (edges, width, height) = if nonessential {
                     let n = r.read_uvarint()?;
                     let e = read_short_array(r, n)?;
-                    let w = r.read_float()?;
-                    let h = r.read_float()?;
-                    (e, w, h)
+                    (e, r.read_float()?, r.read_float()?)
                 } else {
                     (Vec::new(), 0.0, 0.0)
                 };
 
-                let mut attachment = self.loader.new_mesh_attachment(
+                let Some(mut mesh) = self.loader.new_mesh_attachment(
                     skin_name,
-                    slot_name,
+                    placeholder,
                     &name,
                     &path,
-                    sequence.as_mut(),
-                )?;
-                if let Attachment::Mesh(mesh) = &mut attachment {
-                    mesh.path = path;
-                    mesh.color = color;
-                    mesh.vertex_data = vd;
-                    mesh.region_uvs = uvs;
-                    mesh.triangles = triangles;
-                    mesh.hull_length = hull_length;
-                    mesh.sequence = sequence;
+                    sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                mesh.path = path;
+                mesh.color = color;
+                mesh.hull_length = (hull_length as u32) << 1;
+                mesh.vertex_data = vertex_data;
+                mesh.vertex_data.timeline.slots = timeline_slots;
+                mesh.region_uvs = uvs;
+                mesh.triangles = triangles;
+                if nonessential {
                     mesh.edges = edges;
-                    mesh.width = width;
-                    mesh.height = height;
-                    // Populate atlas-space `uvs` from `region_uvs` + the
-                    // loader-resolved region, matching spine-cpp's
-                    // `AtlasAttachmentLoader::configureAttachment` which
-                    // calls `updateRegion` on mesh creation.
-                    mesh.update_region();
+                    mesh.width = width * scale;
+                    mesh.height = height * scale;
                 }
-                Ok(attachment)
+                mesh.update_sequence();
+                Some(Attachment::Mesh(mesh))
             }
 
             // LinkedMesh
             3 => {
                 let path = if flags & 16 != 0 {
-                    r.read_string_ref(strings)?.unwrap_or_else(|| name.clone())
+                    r.read_string_ref(strings)?
                 } else {
-                    name.clone()
-                };
+                    None
+                }
+                .unwrap_or_else(|| name.clone());
                 let color = if flags & 32 != 0 {
                     r.read_color()?
                 } else {
                     crate::math::Color::WHITE
                 };
-                let mut sequence = if flags & 64 != 0 {
-                    Some(self.read_sequence(r)?)
-                } else {
-                    None
-                };
-                let inherit_timeline = flags & 128 != 0;
-                let parent_skin_index = r.read_uvarint()?;
-                let parent = r.read_string_ref(strings)?.unwrap_or_default();
+                let sequence = self.read_sequence(r, flags & 64 != 0)?;
+                let inherit_timelines = flags & 128 != 0;
+                let source_slot = r.read_uvarint()?;
+                check_index(r, "slot", source_slot, sd.slots.len())?;
+                let skin_index = r.read_uvarint()?;
+                let source = r.read_string_ref(strings)?.unwrap_or_default();
                 let (width, height) = if nonessential {
-                    (r.read_float()? * self.scale, r.read_float()? * self.scale)
+                    (r.read_float()?, r.read_float()?)
                 } else {
                     (0.0, 0.0)
                 };
 
-                let mut attachment = self.loader.new_mesh_attachment(
+                let Some(mut mesh) = self.loader.new_mesh_attachment(
                     skin_name,
-                    slot_name,
+                    placeholder,
                     &name,
                     &path,
-                    sequence.as_mut(),
-                )?;
-                if let Attachment::Mesh(mesh) = &mut attachment {
-                    mesh.path = path;
-                    mesh.color = color;
-                    mesh.sequence = sequence;
-                    if nonessential {
-                        mesh.width = width;
-                        mesh.height = height;
-                    }
+                    sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                mesh.path = path;
+                mesh.color = color;
+                if nonessential {
+                    mesh.width = width * scale;
+                    mesh.height = height * scale;
                 }
-                // Track for a second pass — we'll resolve the parent mesh
-                // after all skins load. The attachment id isn't known yet
-                // (the caller pushes it into sd.attachments). We stash the
-                // anticipated id based on the current length + 0 offset from
-                // where read_attachment's caller will push. That's fragile;
-                // instead, store (skin_index, slot_index, name) and look up
-                // by name later.
-                //
-                // We use skin_index from the outer read_skin (same scope
-                // we're in). For name, we use `name` (the attachment name).
+                // The caller pushes this attachment next.
                 self.linked_meshes.push(LinkedMesh {
-                    mesh: AttachmentId(u32::MAX), // filled in below by caller
-                    skin_index: parent_skin_index,
-                    slot_index: slot_idx,
-                    parent_name: parent,
-                    inherit_timeline,
+                    mesh: AttachmentId(sd.attachments.len() as u32),
+                    skin_index,
+                    source_slot,
+                    source,
+                    inherit_timelines,
                 });
-                // Record where to patch the `mesh` id later: the caller will
-                // push this attachment at `sd.attachments.len()`.
-                let anticipated = sd.attachments.len() as u32;
-                self.linked_meshes.last_mut().unwrap().mesh = AttachmentId(anticipated);
-                Ok(attachment)
+                let _ = slot_idx;
+                Some(Attachment::Mesh(mesh))
             }
 
             // Path
             4 => {
                 let closed = flags & 16 != 0;
                 let constant_speed = flags & 32 != 0;
-                let (vd, verts_len) = self.read_vertices(r, flags & 64 != 0)?;
-                let lengths_count = (verts_len / 6) as usize;
-                let mut lengths = Vec::with_capacity(lengths_count);
-                for _ in 0..lengths_count {
-                    lengths.push(r.read_float()? * self.scale);
-                }
+                let vertex_data = self.read_vertices(r, flags & 64 != 0)?;
+                let lengths =
+                    read_float_array(r, vertex_data.world_vertices_length as usize / 6, scale)?;
                 let color = if nonessential {
-                    r.read_color()?
+                    Some(r.read_color()?)
                 } else {
-                    crate::math::Color::WHITE
+                    None
                 };
-
-                let mut attachment = self
-                    .loader
-                    .new_path_attachment(skin_name, slot_name, &name)?;
-                if let Attachment::Path(pa) = &mut attachment {
-                    pa.closed = closed;
-                    pa.constant_speed = constant_speed;
-                    pa.vertex_data = vd;
-                    pa.lengths = lengths;
-                    if nonessential {
-                        pa.color = color;
-                    }
+                let Some(mut path) =
+                    self.loader
+                        .new_path_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                path.closed = closed;
+                path.constant_speed = constant_speed;
+                path.vertex_data = vertex_data;
+                path.lengths = lengths;
+                if let Some(color) = color {
+                    path.color = color;
                 }
-                Ok(attachment)
+                Some(Attachment::Path(path))
             }
 
             // Point
             5 => {
                 let rotation = r.read_float()?;
-                let x = r.read_float()? * self.scale;
-                let y = r.read_float()? * self.scale;
-                let mut attachment = self
-                    .loader
-                    .new_point_attachment(skin_name, slot_name, &name)?;
-                if let Attachment::Point(pt) = &mut attachment {
-                    pt.rotation = rotation;
-                    pt.x = x;
-                    pt.y = y;
-                    if nonessential {
-                        pt.color = r.read_color()?;
-                    }
+                let x = r.read_float()?;
+                let y = r.read_float()?;
+                let color = if nonessential {
+                    Some(r.read_color()?)
+                } else {
+                    None
+                };
+                let Some(mut point) =
+                    self.loader
+                        .new_point_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                point.x = x * scale;
+                point.y = y * scale;
+                point.rotation = rotation;
+                if let Some(color) = color {
+                    point.color = color;
                 }
-                Ok(attachment)
+                Some(Attachment::Point(point))
             }
 
             // Clipping
             6 => {
-                let end_slot_idx = r.read_uvarint()?;
-                check_index(r, "slot", end_slot_idx, sd.slots.len())?;
-                let (vd, _len) = self.read_vertices(r, flags & 16 != 0)?;
-                let mut attachment = self.loader.new_clipping_attachment(
-                    skin_name,
-                    slot_name,
-                    &name,
-                    SlotId(end_slot_idx as u16),
-                )?;
-                if let Attachment::Clipping(cl) = &mut attachment {
-                    cl.vertex_data = vd;
-                    if nonessential {
-                        cl.color = r.read_color()?;
-                    }
+                let end_slot = read_slot(r, sd)?;
+                let vertex_data = self.read_vertices(r, flags & 16 != 0)?;
+                let color = if nonessential {
+                    Some(r.read_color()?)
+                } else {
+                    None
+                };
+                let Some(mut clip) =
+                    self.loader
+                        .new_clipping_attachment(skin_name, placeholder, &name)?
+                else {
+                    return Ok(None);
+                };
+                clip.end_slot = Some(end_slot);
+                clip.convex = flags & 32 != 0;
+                clip.inverse = flags & 64 != 0;
+                clip.vertex_data = vertex_data;
+                if let Some(color) = color {
+                    clip.color = color;
                 }
-                Ok(attachment)
+                Some(Attachment::Clipping(clip))
             }
 
-            other => Err(BinaryError::UnknownDiscriminant {
-                at: r.position(),
-                entity: "attachment type",
-                value: u32::from(other),
-            }),
-        }
+            other => {
+                return Err(BinaryError::UnknownDiscriminant {
+                    at: r.position(),
+                    entity: "attachment type",
+                    value: u32::from(other),
+                });
+            }
+        })
     }
 
     fn read_vertices(
         &self,
         r: &mut BinaryReader<'_>,
         weighted: bool,
-    ) -> Result<(VertexData, u32), BinaryError> {
+    ) -> Result<VertexData, BinaryError> {
         let vertex_count = r.read_uvarint()?;
-        let vertices_len = (vertex_count * 2) as u32;
         let mut vd = VertexData {
-            world_vertices_length: vertices_len,
+            world_vertices_length: (vertex_count * 2) as u32,
             ..VertexData::default()
         };
         if !weighted {
-            vd.vertices = read_float_array(r, vertices_len as usize, self.scale)?;
-            return Ok((vd, vertices_len));
+            vd.vertices = read_float_array(r, vertex_count * 2, self.scale)?;
+            return Ok(vd);
         }
-        for _ in 0..vertex_count {
+        let n = r.read_uvarint()?;
+        vd.bones.reserve(n);
+        while vd.bones.len() < n {
             let bone_count = r.read_uvarint()?;
             vd.bones.push(bone_count as i32);
             for _ in 0..bone_count {
-                let bone_index = r.read_uvarint()? as i32;
-                vd.bones.push(bone_index);
+                vd.bones.push(r.read_uvarint()? as i32);
                 vd.vertices.push(r.read_float()? * self.scale);
                 vd.vertices.push(r.read_float()? * self.scale);
-                vd.vertices.push(r.read_float()?); // weight (no scale)
+                vd.vertices.push(r.read_float()?);
             }
         }
-        Ok((vd, vertices_len))
+        Ok(vd)
     }
 
     fn resolve_linked_meshes(&mut self, sd: &mut SkeletonData) -> Result<(), BinaryError> {
@@ -972,45 +965,18 @@ impl<'loader> SkeletonBinary<'loader> {
                     index: lm.skin_index,
                     len: sd.skins.len(),
                 })?;
-            let parent_id = skin
-                .get_attachment(SlotId(lm.slot_index as u16), &lm.parent_name)
-                .ok_or(BinaryError::LinkedMeshParentMissing {
+            let source_id = skin
+                .get_attachment(SlotId(lm.source_slot as u16), &lm.source)
+                .ok_or_else(|| BinaryError::LinkedMeshParentMissing {
                     at: 0,
                     skin: skin.name.clone(),
-                    slot: lm.slot_index,
-                    parent: lm.parent_name.clone(),
+                    slot: lm.source_slot,
+                    parent: lm.source.clone(),
                 })?;
-            // Copy parent geometry into the linked mesh, preserving the
-            // linked mesh's own color/path/sequence already written earlier.
-            let parent = sd.attachments[parent_id.index()].clone();
-            let Attachment::Mesh(parent_mesh) = parent else {
-                continue;
-            };
-            let slot = lm.mesh.index();
-            if let Attachment::Mesh(child) = &mut sd.attachments[slot] {
-                child.vertex_data = parent_mesh.vertex_data.clone();
-                child.region_uvs = parent_mesh.region_uvs.clone();
-                child.triangles = parent_mesh.triangles.clone();
-                child.hull_length = parent_mesh.hull_length;
-                child.edges = parent_mesh.edges.clone();
-                child.parent_mesh = Some(parent_id);
-                child.vertex_data.timeline_attachment = Some(if lm.inherit_timeline {
-                    parent_id
-                } else {
-                    lm.mesh
-                });
-                // Linked mesh carries its own region (may differ from
-                // parent when a skin swaps the texture). Recompute its
-                // UVs against the just-copied region_uvs.
-                child.update_region();
-            }
+            link_mesh(sd, lm.mesh, source_id, lm.inherit_timelines);
         }
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Animations
-    // -----------------------------------------------------------------------
 
     fn read_animation(
         &mut self,
@@ -1018,20 +984,20 @@ impl<'loader> SkeletonBinary<'loader> {
         sd: &SkeletonData,
         strings: &[String],
         name: String,
+        nonessential: bool,
     ) -> Result<Animation, BinaryError> {
         let mut anim = Animation::new(name, 0.0);
-        let _num_timelines = r.read_uvarint()?; // hint only, unused
+        let _num_timelines = r.read_uvarint()?;
 
-        // Slot timelines
+        // Slot timelines.
         let slot_groups = r.read_uvarint()?;
         for _ in 0..slot_groups {
-            let slot_idx = r.read_uvarint()?;
-            check_index(r, "slot", slot_idx, sd.slots.len())?;
+            let slot = read_slot(r, sd)?;
             let n = r.read_uvarint()?;
             for _ in 0..n {
                 let ttype = r.read_byte()?;
                 let frame_count = r.read_uvarint()?;
-                match ttype {
+                let timeline = match ttype {
                     SLOT_ATTACHMENT => {
                         let mut frames = Vec::with_capacity(frame_count);
                         let mut names = Vec::with_capacity(frame_count);
@@ -1039,51 +1005,29 @@ impl<'loader> SkeletonBinary<'loader> {
                             frames.push(r.read_float()?);
                             names.push(r.read_string_ref(strings)?);
                         }
-                        anim.timelines.push(Timeline::Attachment {
-                            slot: SlotId(slot_idx as u16),
+                        Timeline::Attachment {
+                            slot,
                             frames,
                             names,
-                        });
+                        }
                     }
-                    SLOT_RGBA => {
+                    SLOT_RGBA | SLOT_RGB | SLOT_RGBA2 | SLOT_RGB2 | SLOT_ALPHA => {
                         let bezier_count = r.read_uvarint()?;
-                        let curves = read_color_timeline(r, frame_count, bezier_count, 4)?;
-                        anim.timelines.push(Timeline::Rgba {
-                            slot: SlotId(slot_idx as u16),
-                            curves,
-                        });
-                    }
-                    SLOT_RGB => {
-                        let bezier_count = r.read_uvarint()?;
-                        let curves = read_color_timeline(r, frame_count, bezier_count, 3)?;
-                        anim.timelines.push(Timeline::Rgb {
-                            slot: SlotId(slot_idx as u16),
-                            curves,
-                        });
-                    }
-                    SLOT_RGBA2 => {
-                        let bezier_count = r.read_uvarint()?;
-                        let curves = read_color_timeline(r, frame_count, bezier_count, 7)?;
-                        anim.timelines.push(Timeline::Rgba2 {
-                            slot: SlotId(slot_idx as u16),
-                            curves,
-                        });
-                    }
-                    SLOT_RGB2 => {
-                        let bezier_count = r.read_uvarint()?;
-                        let curves = read_color_timeline(r, frame_count, bezier_count, 6)?;
-                        anim.timelines.push(Timeline::Rgb2 {
-                            slot: SlotId(slot_idx as u16),
-                            curves,
-                        });
-                    }
-                    SLOT_ALPHA => {
-                        let bezier_count = r.read_uvarint()?;
-                        let curves = read_color_timeline(r, frame_count, bezier_count, 1)?;
-                        anim.timelines.push(Timeline::Alpha {
-                            slot: SlotId(slot_idx as u16),
-                            curves,
-                        });
+                        let channels = match ttype {
+                            SLOT_RGBA => 4,
+                            SLOT_RGB => 3,
+                            SLOT_RGBA2 => 7,
+                            SLOT_RGB2 => 6,
+                            _ => 1,
+                        };
+                        let curves = read_color_timeline(r, frame_count, bezier_count, channels)?;
+                        match ttype {
+                            SLOT_RGBA => Timeline::Rgba { slot, curves },
+                            SLOT_RGB => Timeline::Rgb { slot, curves },
+                            SLOT_RGBA2 => Timeline::Rgba2 { slot, curves },
+                            SLOT_RGB2 => Timeline::Rgb2 { slot, curves },
+                            _ => Timeline::Alpha { slot, curves },
+                        }
                     }
                     other => {
                         return Err(BinaryError::UnknownDiscriminant {
@@ -1092,15 +1036,16 @@ impl<'loader> SkeletonBinary<'loader> {
                             value: u32::from(other),
                         });
                     }
-                }
+                };
+                anim.timelines.push(timeline);
             }
         }
 
-        // Bone timelines
+        // Bone timelines.
         let bone_groups = r.read_uvarint()?;
         for _ in 0..bone_groups {
-            let bone_idx = r.read_uvarint()?;
-            check_index(r, "bone", bone_idx, sd.bones.len())?;
+            let bone = read_bone(r, sd)?;
+            anim.bones.push(bone);
             let n = r.read_uvarint()?;
             for _ in 0..n {
                 let ttype = r.read_byte()?;
@@ -1110,15 +1055,10 @@ impl<'loader> SkeletonBinary<'loader> {
                     let mut inherits = Vec::with_capacity(frame_count);
                     for _ in 0..frame_count {
                         frames.push(r.read_float()?);
-                        // In the InheritTimeline binary layout, each frame's
-                        // inherit mode is a single byte — not a varint. This
-                        // differs from the BoneData header where the same
-                        // field is a varint. Matches spine-cpp's
-                        // SkeletonBinary.cpp line 1092.
-                        inherits.push(read_inherit_byte(r)?);
+                        inherits.push(read_inherit(r)?);
                     }
                     anim.timelines.push(Timeline::Inherit {
-                        bone: BoneId(bone_idx as u16),
+                        bone,
                         frames,
                         inherits,
                     });
@@ -1129,10 +1069,8 @@ impl<'loader> SkeletonBinary<'loader> {
                     BONE_ROTATE => (2, 1.0),
                     BONE_TRANSLATE => (3, self.scale),
                     BONE_TRANSLATE_X | BONE_TRANSLATE_Y => (2, self.scale),
-                    BONE_SCALE => (3, 1.0),
-                    BONE_SCALE_X | BONE_SCALE_Y => (2, 1.0),
-                    BONE_SHEAR => (3, 1.0),
-                    BONE_SHEAR_X | BONE_SHEAR_Y => (2, 1.0),
+                    BONE_SCALE | BONE_SHEAR => (3, 1.0),
+                    BONE_SCALE_X | BONE_SCALE_Y | BONE_SHEAR_X | BONE_SHEAR_Y => (2, 1.0),
                     other => {
                         return Err(BinaryError::UnknownDiscriminant {
                             at: r.position(),
@@ -1143,99 +1081,57 @@ impl<'loader> SkeletonBinary<'loader> {
                 };
                 let curves = read_curve_timeline(r, frame_count, bezier_count, entries, scale)?;
                 anim.timelines.push(match ttype {
-                    BONE_ROTATE => Timeline::Rotate {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_TRANSLATE => Timeline::Translate {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_TRANSLATE_X => Timeline::TranslateX {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_TRANSLATE_Y => Timeline::TranslateY {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_SCALE => Timeline::Scale {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_SCALE_X => Timeline::ScaleX {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_SCALE_Y => Timeline::ScaleY {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_SHEAR => Timeline::Shear {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_SHEAR_X => Timeline::ShearX {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    BONE_SHEAR_Y => Timeline::ShearY {
-                        bone: BoneId(bone_idx as u16),
-                        curves,
-                    },
-                    _ => unreachable!(),
+                    BONE_ROTATE => Timeline::Rotate { bone, curves },
+                    BONE_TRANSLATE => Timeline::Translate { bone, curves },
+                    BONE_TRANSLATE_X => Timeline::TranslateX { bone, curves },
+                    BONE_TRANSLATE_Y => Timeline::TranslateY { bone, curves },
+                    BONE_SCALE => Timeline::Scale { bone, curves },
+                    BONE_SCALE_X => Timeline::ScaleX { bone, curves },
+                    BONE_SCALE_Y => Timeline::ScaleY { bone, curves },
+                    BONE_SHEAR => Timeline::Shear { bone, curves },
+                    BONE_SHEAR_X => Timeline::ShearX { bone, curves },
+                    _ => Timeline::ShearY { bone, curves },
                 });
             }
         }
 
-        // IK timelines
-        let ik_n = r.read_uvarint()?;
-        for _ in 0..ik_n {
-            let idx = r.read_uvarint()?;
-            check_index(r, "ik_constraint", idx, sd.ik_constraints.len())?;
+        // IK constraint timelines.
+        let n = r.read_uvarint()?;
+        for _ in 0..n {
+            let constraint = read_constraint(r, sd, "IK constraint", |c| c.as_ik().is_some())?;
             let frame_count = r.read_uvarint()?;
             let bezier_count = r.read_uvarint()?;
-            // IK timelines have their own frame shape (time + mix + softness
-            // + 4 flag bits). We capture the raw frames and curves verbatim
-            // for Phase 3 to interpret.
             let curves = read_ik_timeline(r, frame_count, bezier_count, self.scale)?;
-            anim.timelines.push(Timeline::IkConstraint {
-                constraint: IkConstraintId(idx as u16),
-                curves,
-            });
+            anim.timelines
+                .push(Timeline::IkConstraint { constraint, curves });
         }
 
-        // Transform constraint timelines
-        let tc_n = r.read_uvarint()?;
-        for _ in 0..tc_n {
-            let idx = r.read_uvarint()?;
-            check_index(
-                r,
-                "transform_constraint",
-                idx,
-                sd.transform_constraints.len(),
-            )?;
+        // Transform constraint timelines.
+        let n = r.read_uvarint()?;
+        for _ in 0..n {
+            let constraint = read_constraint(r, sd, "transform constraint", |c| {
+                c.as_transform().is_some()
+            })?;
             let frame_count = r.read_uvarint()?;
             let bezier_count = r.read_uvarint()?;
             let curves = read_curve_timeline(r, frame_count, bezier_count, 7, 1.0)?;
-            anim.timelines.push(Timeline::TransformConstraint {
-                constraint: TransformConstraintId(idx as u16),
-                curves,
-            });
+            anim.timelines
+                .push(Timeline::TransformConstraint { constraint, curves });
         }
 
-        // Path constraint timelines
-        let pc_n = r.read_uvarint()?;
-        for _ in 0..pc_n {
-            let idx = r.read_uvarint()?;
-            check_index(r, "path_constraint", idx, sd.path_constraints.len())?;
-            let data = &sd.path_constraints[idx];
+        // Path constraint timelines.
+        let n = r.read_uvarint()?;
+        for _ in 0..n {
+            let constraint = read_constraint(r, sd, "path constraint", |c| c.as_path().is_some())?;
+            let data = sd.constraints[constraint.index()]
+                .as_path()
+                .expect("checked");
             let sub_n = r.read_uvarint()?;
             for _ in 0..sub_n {
                 let ptype = r.read_byte()?;
                 let frame_count = r.read_uvarint()?;
                 let bezier_count = r.read_uvarint()?;
-                match ptype {
+                let timeline = match ptype {
                     PATH_POSITION => {
                         let scale = if data.position_mode == PositionMode::Fixed {
                             self.scale
@@ -1243,10 +1139,7 @@ impl<'loader> SkeletonBinary<'loader> {
                             1.0
                         };
                         let curves = read_curve_timeline(r, frame_count, bezier_count, 2, scale)?;
-                        anim.timelines.push(Timeline::PathConstraintPosition {
-                            constraint: PathConstraintId(idx as u16),
-                            curves,
-                        });
+                        Timeline::PathConstraintPosition { constraint, curves }
                     }
                     PATH_SPACING => {
                         let scale = if matches!(
@@ -1258,17 +1151,11 @@ impl<'loader> SkeletonBinary<'loader> {
                             1.0
                         };
                         let curves = read_curve_timeline(r, frame_count, bezier_count, 2, scale)?;
-                        anim.timelines.push(Timeline::PathConstraintSpacing {
-                            constraint: PathConstraintId(idx as u16),
-                            curves,
-                        });
+                        Timeline::PathConstraintSpacing { constraint, curves }
                     }
                     PATH_MIX => {
                         let curves = read_curve_timeline(r, frame_count, bezier_count, 4, 1.0)?;
-                        anim.timelines.push(Timeline::PathConstraintMix {
-                            constraint: PathConstraintId(idx as u16),
-                            curves,
-                        });
+                        Timeline::PathConstraintMix { constraint, curves }
                     }
                     other => {
                         return Err(BinaryError::UnknownDiscriminant {
@@ -1277,20 +1164,20 @@ impl<'loader> SkeletonBinary<'loader> {
                             value: u32::from(other),
                         });
                     }
-                }
+                };
+                anim.timelines.push(timeline);
             }
         }
 
-        // Physics timelines
-        let phys_n = r.read_uvarint()?;
-        for _ in 0..phys_n {
-            // spine-cpp reads `index - 1`, so index of 0 means "all
-            // constraints" (used by PhysicsReset).
+        // Physics timelines. Index 0 means every physics constraint.
+        let n = r.read_uvarint()?;
+        for _ in 0..n {
             let raw = r.read_uvarint()?;
             let constraint = if raw == 0 {
                 None
             } else {
-                Some(PhysicsConstraintId((raw - 1) as u16))
+                check_index(r, "constraint", raw - 1, sd.constraints.len())?;
+                Some(ConstraintId((raw - 1) as u16))
             };
             let sub_n = r.read_uvarint()?;
             for _ in 0..sub_n {
@@ -1331,34 +1218,57 @@ impl<'loader> SkeletonBinary<'loader> {
             }
         }
 
-        // Attachment timelines (Deform + Sequence)
+        // Slider timelines.
+        let n = r.read_uvarint()?;
+        for _ in 0..n {
+            let constraint = read_constraint(r, sd, "slider", |c| c.as_slider().is_some())?;
+            let sub_n = r.read_uvarint()?;
+            for _ in 0..sub_n {
+                let stype = r.read_byte()?;
+                let frame_count = r.read_uvarint()?;
+                let bezier_count = r.read_uvarint()?;
+                let curves = read_curve_timeline(r, frame_count, bezier_count, 2, 1.0)?;
+                anim.timelines.push(match stype {
+                    SLIDER_TIME => Timeline::Slider { constraint, curves },
+                    SLIDER_MIX => Timeline::SliderMix { constraint, curves },
+                    other => {
+                        return Err(BinaryError::UnknownDiscriminant {
+                            at: r.position(),
+                            entity: "slider timeline",
+                            value: u32::from(other),
+                        });
+                    }
+                });
+            }
+        }
+
+        // Attachment timelines.
         let skin_groups = r.read_uvarint()?;
         for _ in 0..skin_groups {
             let skin_idx = r.read_uvarint()?;
             check_index(r, "skin", skin_idx, sd.skins.len())?;
             let slot_groups = r.read_uvarint()?;
             for _ in 0..slot_groups {
-                let slot_idx = r.read_uvarint()?;
-                check_index(r, "slot", slot_idx, sd.slots.len())?;
+                let slot = read_slot(r, sd)?;
                 let att_n = r.read_uvarint()?;
                 for _ in 0..att_n {
                     let att_name = r.read_string_ref(strings)?.unwrap_or_default();
-                    let attachment_id = sd.skins[skin_idx]
-                        .get_attachment(SlotId(slot_idx as u16), &att_name)
-                        .ok_or(BinaryError::LinkedMeshParentMissing {
+                    let attachment = sd.skins[skin_idx].get_attachment(slot, &att_name).ok_or(
+                        BinaryError::LinkedMeshParentMissing {
                             at: r.position(),
                             skin: sd.skins[skin_idx].name.clone(),
-                            slot: slot_idx,
+                            slot: slot.index(),
                             parent: att_name.clone(),
-                        })?;
+                        },
+                    )?;
                     let ttype = r.read_byte()?;
                     let frame_count = r.read_uvarint()?;
                     match ttype {
                         ATTACHMENT_DEFORM => {
-                            let vertices_len = deform_frame_len(sd, attachment_id);
-                            let (weighted, setup_vertices) = deform_context(sd, attachment_id);
+                            let vertices_len = deform_frame_len(sd, attachment);
+                            let (weighted, setup_vertices) = deform_context(sd, attachment);
                             let bezier_count = r.read_uvarint()?;
-                            let (frames, curves, deform_vertices) = read_deform_timeline(
+                            let (frames, curves, vertices) = read_deform_timeline(
                                 r,
                                 frame_count,
                                 bezier_count,
@@ -1368,25 +1278,22 @@ impl<'loader> SkeletonBinary<'loader> {
                                 &setup_vertices,
                             )?;
                             anim.timelines.push(Timeline::Deform {
-                                slot: SlotId(slot_idx as u16),
-                                attachment: attachment_id,
+                                slot,
+                                attachment,
                                 curves: CurveFrames { frames, curves },
-                                vertices: deform_vertices,
+                                vertices,
                             });
                         }
                         ATTACHMENT_SEQUENCE => {
                             let mut frames = Vec::with_capacity(frame_count * 3);
                             for _ in 0..frame_count {
-                                let time = r.read_float()?;
-                                let mode_and_index = r.read_int()? as f32;
-                                let delay = r.read_float()?;
-                                frames.push(time);
-                                frames.push(mode_and_index);
-                                frames.push(delay);
+                                frames.push(r.read_float()?);
+                                frames.push(r.read_int()? as f32);
+                                frames.push(r.read_float()?);
                             }
                             anim.timelines.push(Timeline::Sequence {
-                                slot: SlotId(slot_idx as u16),
-                                attachment: attachment_id,
+                                slot,
+                                attachment,
                                 frames,
                             });
                         }
@@ -1402,58 +1309,18 @@ impl<'loader> SkeletonBinary<'loader> {
             }
         }
 
-        // Draw order timeline
-        let draw_order_n = r.read_uvarint()?;
-        if draw_order_n > 0 {
-            let slot_count = sd.slots.len();
-            let mut frames = Vec::with_capacity(draw_order_n);
-            let mut draw_orders = Vec::with_capacity(draw_order_n);
-            for _ in 0..draw_order_n {
-                let time = r.read_float()?;
-                let offset_count = r.read_uvarint()?;
-                frames.push(time);
-                if offset_count == 0 {
-                    draw_orders.push(None);
-                    continue;
-                }
-                let mut draw_order: Vec<i32> = vec![-1; slot_count];
-                let mut unchanged: Vec<i32> = vec![0; slot_count - offset_count];
-                let mut original_index: i32 = 0;
-                let mut unchanged_index: usize = 0;
-                for _ in 0..offset_count {
-                    let slot_idx = r.read_uvarint()? as i32;
-                    while original_index != slot_idx {
-                        unchanged[unchanged_index] = original_index;
-                        unchanged_index += 1;
-                        original_index += 1;
-                    }
-                    // spine-cpp reads `shift` as an unsigned varint but then
-                    // adds it to `index` via `size_t`, relying on unsigned
-                    // wraparound to convert values like 0xFFFFFFFE back into
-                    // signed -2 (slot moves N positions earlier in draw
-                    // order). Rust's usize/u32 conversion doesn't preserve
-                    // that trick on 64-bit targets, so we read the varint
-                    // as a signed i32 and perform the addition in signed
-                    // arithmetic.
-                    let shift = r.read_varint(true)?;
-                    let target = original_index + shift;
-                    draw_order[target as usize] = original_index;
-                    original_index += 1;
-                }
-                while (original_index as usize) < slot_count {
-                    unchanged[unchanged_index] = original_index;
-                    unchanged_index += 1;
-                    original_index += 1;
-                }
-                for ii in (0..slot_count).rev() {
-                    if draw_order[ii] == -1 {
-                        unchanged_index -= 1;
-                        draw_order[ii] = unchanged[unchanged_index];
-                    }
-                }
-                draw_orders.push(Some(
-                    draw_order.into_iter().map(|x| SlotId(x as u16)).collect(),
-                ));
+        // Draw order timeline.
+        let slot_count = sd.slots.len();
+        let n = r.read_uvarint()?;
+        if n > 0 {
+            let mut frames = Vec::with_capacity(n);
+            let mut draw_orders = Vec::with_capacity(n);
+            for _ in 0..n {
+                frames.push(r.read_float()?);
+                draw_orders.push(
+                    read_draw_order(r, slot_count)?
+                        .map(|order| order.into_iter().map(|i| SlotId(i as u16)).collect()),
+                );
             }
             anim.timelines.push(Timeline::DrawOrder {
                 frames,
@@ -1461,12 +1328,37 @@ impl<'loader> SkeletonBinary<'loader> {
             });
         }
 
-        // Event timeline
-        let event_n = r.read_uvarint()?;
-        if event_n > 0 {
-            let mut frames = Vec::with_capacity(event_n);
-            let mut events = Vec::with_capacity(event_n);
-            for _ in 0..event_n {
+        // Draw order folder timelines.
+        let n = r.read_uvarint()?;
+        for _ in 0..n {
+            let folder_len = r.read_uvarint()?;
+            let mut slots = Vec::with_capacity(folder_len);
+            for _ in 0..folder_len {
+                slots.push(read_slot(r, sd)?);
+            }
+            let key_count = r.read_uvarint()?;
+            let mut frames = Vec::with_capacity(key_count);
+            let mut draw_orders = Vec::with_capacity(key_count);
+            for _ in 0..key_count {
+                frames.push(r.read_float()?);
+                draw_orders.push(
+                    read_draw_order(r, folder_len)?
+                        .map(|order| order.into_iter().map(|i| i as u16).collect()),
+                );
+            }
+            anim.timelines.push(Timeline::DrawOrderFolder {
+                slots,
+                frames,
+                draw_orders,
+            });
+        }
+
+        // Event timeline.
+        let n = r.read_uvarint()?;
+        if n > 0 {
+            let mut frames = Vec::with_capacity(n);
+            let mut events = Vec::with_capacity(n);
+            for _ in 0..n {
                 let time = r.read_float()?;
                 let ei = r.read_uvarint()?;
                 check_index(r, "event", ei, sd.events.len())?;
@@ -1493,18 +1385,13 @@ impl<'loader> SkeletonBinary<'loader> {
             anim.timelines.push(Timeline::Event { frames, events });
         }
 
-        // Duration = max end time across timelines. For Phase 1b (no
-        // evaluation) we approximate from whatever frames we stored. This
-        // is only used for animation-state queries; Phase 3 will refine.
-        let duration = timeline_duration(&anim);
-        anim.duration = duration;
+        anim.duration = timeline_duration(&anim);
+        if nonessential {
+            anim.color = r.read_color()?;
+        }
         Ok(anim)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Free helpers
-// ---------------------------------------------------------------------------
 
 fn check_index(
     r: &BinaryReader<'_>,
@@ -1524,31 +1411,126 @@ fn check_index(
     }
 }
 
-fn read_inherit(r: &mut BinaryReader<'_>) -> Result<Inherit, BinaryError> {
-    let v = r.read_uvarint()?;
-    inherit_from_value(r, v as u32)
+fn read_bone(r: &mut BinaryReader<'_>, sd: &SkeletonData) -> Result<BoneId, BinaryError> {
+    let idx = r.read_uvarint()?;
+    check_index(r, "bone", idx, sd.bones.len())?;
+    Ok(BoneId(idx as u16))
 }
 
-/// Single-byte inherit reader used by the `InheritTimeline`, where spine-cpp
-/// uses `readByte` rather than the varint encoding seen in bone headers.
-fn read_inherit_byte(r: &mut BinaryReader<'_>) -> Result<Inherit, BinaryError> {
-    let v = r.read_byte()?;
-    inherit_from_value(r, u32::from(v))
-}
-
-fn inherit_from_value(r: &BinaryReader<'_>, v: u32) -> Result<Inherit, BinaryError> {
-    match v {
-        0 => Ok(Inherit::Normal),
-        1 => Ok(Inherit::OnlyTranslation),
-        2 => Ok(Inherit::NoRotationOrReflection),
-        3 => Ok(Inherit::NoScale),
-        4 => Ok(Inherit::NoScaleOrReflection),
-        other => Err(BinaryError::UnknownDiscriminant {
-            at: r.position(),
-            entity: "inherit mode",
-            value: other,
-        }),
+fn read_bones(r: &mut BinaryReader<'_>, sd: &SkeletonData) -> Result<Vec<BoneId>, BinaryError> {
+    let n = r.read_uvarint()?;
+    let mut bones = Vec::with_capacity(n);
+    for _ in 0..n {
+        bones.push(read_bone(r, sd)?);
     }
+    Ok(bones)
+}
+
+fn read_slot(r: &mut BinaryReader<'_>, sd: &SkeletonData) -> Result<SlotId, BinaryError> {
+    let idx = r.read_uvarint()?;
+    check_index(r, "slot", idx, sd.slots.len())?;
+    Ok(SlotId(idx as u16))
+}
+
+/// Reads a constraint index and checks it names the expected kind.
+fn read_constraint(
+    r: &mut BinaryReader<'_>,
+    sd: &SkeletonData,
+    entity: &'static str,
+    is_kind: impl Fn(&ConstraintData) -> bool,
+) -> Result<ConstraintId, BinaryError> {
+    let idx = r.read_uvarint()?;
+    check_index(r, "constraint", idx, sd.constraints.len())?;
+    if !is_kind(&sd.constraints[idx]) {
+        return Err(BinaryError::UnknownDiscriminant {
+            at: r.position(),
+            entity,
+            value: idx as u32,
+        });
+    }
+    Ok(ConstraintId(idx as u16))
+}
+
+/// Translation channels scale with the skeleton; the rest don't.
+fn property_scale(property: TransformProperty, scale: f32) -> f32 {
+    match property {
+        TransformProperty::X | TransformProperty::Y => scale,
+        _ => 1.0,
+    }
+}
+
+fn read_inherit(r: &mut BinaryReader<'_>) -> Result<Inherit, BinaryError> {
+    let v = u32::from(r.read_byte()?);
+    Inherit::from_index(v).ok_or(BinaryError::UnknownDiscriminant {
+        at: r.position(),
+        entity: "inherit mode",
+        value: v,
+    })
+}
+
+/// Rebuilds a full order from `(index, shift)` changes. The shift is
+/// unsigned on the wire but may be negative; spine-cpp relies on unsigned
+/// wraparound, so it's read as a signed varint here.
+fn read_draw_order(
+    r: &mut BinaryReader<'_>,
+    slot_count: usize,
+) -> Result<Option<Vec<i32>>, BinaryError> {
+    let change_count = r.read_uvarint()?;
+    if change_count == 0 {
+        return Ok(None);
+    }
+    let mut draw_order = vec![-1i32; slot_count];
+    let mut unchanged = vec![0i32; slot_count.saturating_sub(change_count)];
+    let mut original_index: i32 = 0;
+    let mut unchanged_index = 0usize;
+    for _ in 0..change_count {
+        let slot_idx = r.read_uvarint()? as i32;
+        while original_index != slot_idx {
+            unchanged[unchanged_index] = original_index;
+            unchanged_index += 1;
+            original_index += 1;
+        }
+        let shift = r.read_varint(true)?;
+        draw_order[(original_index + shift) as usize] = original_index;
+        original_index += 1;
+    }
+    while (original_index as usize) < slot_count {
+        unchanged[unchanged_index] = original_index;
+        unchanged_index += 1;
+        original_index += 1;
+    }
+    for i in (0..slot_count).rev() {
+        if draw_order[i] == -1 {
+            unchanged_index -= 1;
+            draw_order[i] = unchanged[unchanged_index];
+        }
+    }
+    Ok(Some(draw_order))
+}
+
+/// Links a mesh to its source and rebuilds its UVs. Shared by both loaders.
+pub(crate) fn link_mesh(
+    sd: &mut SkeletonData,
+    mesh: AttachmentId,
+    source: AttachmentId,
+    inherit_timelines: bool,
+) {
+    let (m, s) = (mesh.index(), source.index());
+    if m == s {
+        return;
+    }
+    let (lo, hi) = sd.attachments.split_at_mut(m.max(s));
+    let (mesh_att, source_att) = if m < s {
+        (&mut lo[m], &hi[0])
+    } else {
+        (&mut hi[0], &lo[s])
+    };
+    let (Attachment::Mesh(mesh_att), Attachment::Mesh(source_att)) = (mesh_att, source_att) else {
+        return;
+    };
+    mesh_att.vertex_data.timeline.attachment = inherit_timelines.then_some(source);
+    mesh_att.set_source_mesh(source, source_att);
+    mesh_att.update_sequence();
 }
 
 fn read_blend_mode(r: &mut BinaryReader<'_>) -> Result<BlendMode, BinaryError> {
@@ -2000,7 +1982,7 @@ fn deform_frame_len(sd: &SkeletonData, att: AttachmentId) -> usize {
 
 /// Duration of an animation = max timestamp of any timeline's last frame.
 /// Used before Phase 3 can properly compute durations per-variant.
-fn timeline_duration(anim: &Animation) -> f32 {
+pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
     // spine-cpp's `Timeline::getDuration` returns `frames[len - stride]`,
     // i.e. the last frame's time. Port that per-variant using the known
     // stride for each timeline kind.
@@ -2025,7 +2007,9 @@ fn timeline_duration(anim: &Animation) -> f32 {
             | Timeline::Alpha { curves, .. }
             | Timeline::PathConstraintPosition { curves, .. }
             | Timeline::PathConstraintSpacing { curves, .. }
-            | Timeline::Physics { curves, .. } => last_time_stride(&curves.frames, 2),
+            | Timeline::Physics { curves, .. }
+            | Timeline::Slider { curves, .. }
+            | Timeline::SliderMix { curves, .. } => last_time_stride(&curves.frames, 2),
 
             // CurveTimeline2 — stride 3 (time + 2 values).
             Timeline::Translate { curves, .. }
@@ -2044,6 +2028,7 @@ fn timeline_duration(anim: &Animation) -> f32 {
             Timeline::Inherit { frames, .. }
             | Timeline::PhysicsReset { frames, .. }
             | Timeline::DrawOrder { frames, .. }
+            | Timeline::DrawOrderFolder { frames, .. }
             | Timeline::Attachment { frames, .. }
             | Timeline::Event { frames, .. } => frames.last().copied().unwrap_or(0.0),
 
