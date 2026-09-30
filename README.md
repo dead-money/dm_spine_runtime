@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/dead-money/dm_spine_runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/dead-money/dm_spine_runtime/actions/workflows/ci.yml)
 
-A native Rust port of the [Spine](https://esotericsoftware.com/) 4.2 runtime. You load `.skel` or `.json` skeletons with their `.atlas`, pose them, play and mix animations, solve constraints, and get back draw commands your own renderer can consume.
+A native Rust port of the [Spine](https://esotericsoftware.com/) 4.3 runtime. You load `.skel` or `.json` skeletons with their `.atlas`, pose them, play and mix animations, solve constraints, and get back draw commands your own renderer can consume.
 
 The crate is renderer-agnostic. It's built for Dead Money's own game projects and was mostly written by AI agents under human direction, as a literal port of Esoteric Software's [spine-cpp](https://github.com/EsotericSoftware/spine-runtimes) reference runtime. For Bevy 0.18, see the sibling crate [`dm_spine_bevy`](https://github.com/dead-money/dm_spine_bevy).
 
@@ -15,7 +15,7 @@ This crate is a derivative of `spine-cpp`, translated to Rust with its source st
 
 The Spine editor is licensed separately. This runtime reads what the editor exports; it doesn't replace it. If your use case is in doubt, check the [Spine licensing page](https://esotericsoftware.com/spine-purchase) or ask Esoteric Software.
 
-This release targets **Spine 4.2** exports, binary or JSON. Older exports won't parse, since 4.2 added fields and physics constraints to both formats. Spine 4.3 exports won't parse either; the upgrade is planned in [`docs/SPINE_4_3_UPGRADE.md`](docs/SPINE_4_3_UPGRADE.md).
+`main` targets **Spine 4.3** exports, binary or JSON. 4.3 changed both formats in most sections, so older exports won't parse. For Spine 4.2, use the `v0.1.0` tag. The rest of the upgrade, including the hooks hommlet needs, is tracked in [`docs/SPINE_4_3_UPGRADE.md`](docs/SPINE_4_3_UPGRADE.md).
 
 ## Quick start
 
@@ -46,8 +46,6 @@ let data = Arc::new(SkeletonBinary::with_loader(&mut attachment_loader).read(&by
 
 // Skeletons and animation state share the immutable data.
 let mut skeleton = Skeleton::new(Arc::clone(&data));
-skeleton.update_cache();
-skeleton.set_to_setup_pose();
 skeleton.update_world_transform(Physics::None);
 
 let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
@@ -70,26 +68,30 @@ for dt in frame_deltas {
 
 ## What it does
 
-- **Loaders.** Binary `.skel`, JSON `.json`, and the `.atlas` text format. All 25 example rigs in `spine-runtimes/examples/` load in either format.
-- **Skeleton and animation state.** The full pose pipeline with all five `Inherit` modes, and a multi-track `AnimationState` with crossfade mixing, queuing, empty animations, and events.
-- **Constraints.** IK (one- and two-bone, with bend, softness, and stretch), Transform (world/local × absolute/relative), Path (every spacing and rotate mode), and Physics (damped spring on a fixed timestep).
-- **Clipping and bounds.** `SkeletonClipping` (Sutherland-Hodgman plus convex decomposition) and `SkeletonBounds` (AABB, point-in-polygon, segment-polygon hit tests).
+- **Loaders.** Binary `.skel`, JSON `.json`, and the `.atlas` text format. All 43 example rigs in `spine-runtimes/examples/` load in either format, and the two loaders produce the same data.
+- **Skeleton and animation state.** 4.3's pose system (setup, local, and constrained poses per bone and slot) with all five `Inherit` modes, and a multi-track `AnimationState` with crossfade mixing, additive tracks, hold modes, queuing, empty animations, and events.
+- **Constraints.** IK (one- and two-bone, with bend, softness, and stretch), Transform (4.3's from/to property mapping), Path (every spacing and rotate mode), Physics (damped spring on a fixed timestep), and Slider (drives an animation from a bone property or a timeline).
+- **Clipping and bounds.** `SkeletonClipping` (Sutherland-Hodgman plus convex decomposition, with 4.3's convex and inverse modes) and `SkeletonBounds` (AABB, point-in-polygon, segment-polygon hit tests).
 - **Render commands.** `SkeletonRenderer::render` walks the draw order, emits region and mesh attachments through the clipper, and merges adjacent runs that share texture, blend mode, and color into one command.
 
 ## How it works
 
 - **A literal port.** Files, functions, and update order follow `spine-cpp` closely enough to diff the two side by side. Math wasn't refactored on the way over; correctness is checked against dumps from `spine-cpp` itself (see [Testing](#testing)).
-- **Struct-of-arrays with typed indices.** `Skeleton` owns flat `Vec<Bone>`, `Vec<Slot>`, `Vec<IkConstraint>`, and so on. Cross-references are `BoneId(u16)`, `SlotId(u16)`, and friends, not `Rc<RefCell<…>>`. The update cache is one `Vec` of an enum over bones and constraints, built with `spine-cpp`'s own sort.
+- **Struct-of-arrays with typed indices.** `Skeleton` owns flat `Vec<Bone>`, `Vec<Slot>`, and one ordered `Vec<Constraint>` enum. Cross-references are `BoneId(u16)`, `SlotId(u16)`, `ConstraintId(u16)`, and friends, not `Rc<RefCell<…>>`. The update cache is one `Vec` of an enum over bones and constraints, built with `spine-cpp`'s own sort.
 - **Immutable shared data.** `SkeletonData` sits behind an `Arc`. Load an asset once and share it across every instance.
 - **Tagged-enum timelines.** Timelines are a closed `enum`, not `Box<dyn Timeline>`, so the apply loop dispatches without a vtable.
 - **No renderer types.** Each `RenderCommand` carries plain vertex, UV, color, and index buffers plus a `TextureId(u32)` (the atlas page index). Mapping that to a GPU handle is your side's job.
 - **Events through an out-parameter.** `AnimationState::apply` pushes into a `&mut Vec<Event>` you own. There are no listener callbacks.
 
+- **No per-frame allocation.** Once a skeleton has played through its animations, `AnimationState` update and apply, the world transform, and rendering reuse their buffers. `tests/alloc.rs` holds that at zero.
+
 The crate has no GPU, windowing, or shader dependency, and it doesn't plan to grow one.
+
+On hommlet's creature rigs, a full frame (animation update and apply, world transform, render) takes 0.51–0.63× the time `spine-cpp` 4.3 takes on the same rig and animation. `cargo bench --bench frame` and `tools/spine_capture/bench_compare.sh` measure it.
 
 ## Building
 
-The tests and examples load the canonical rigs from a sibling clone of [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes), or from wherever `SPINE_EXAMPLES` points. `main` is mid-upgrade to 4.3: the fixtures are captured from upstream `4.3` at the commit pinned in CI, and tests for parts not yet ported are `#[ignore]`d with the upgrade phase that restores them. For the 4.2 runtime, check out the `v0.1.0` tag with the `4.2` branch of `spine-runtimes`.
+The tests and examples load the canonical rigs from a sibling clone of [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes), or from wherever `SPINE_EXAMPLES` points. The fixtures are captured from upstream `4.3` at the commit pinned in CI. For the 4.2 runtime, check out the `v0.1.0` tag with the `4.2` branch of `spine-runtimes`.
 
 ```sh
 git clone -b 4.3 https://github.com/EsotericSoftware/spine-runtimes ../spine-runtimes
@@ -109,11 +111,12 @@ cargo clippy --all-targets
 cargo fmt --check
 ```
 
-The golden tests diff against JSON captured from `spine-cpp` by the small C++ harness in [`tools/spine_capture/`](tools/spine_capture/). Current parity on the 4.2 example rigs:
+The golden tests diff against JSON captured from `spine-cpp` by the small C++ harness in [`tools/spine_capture/`](tools/spine_capture/). Current parity on the 4.3 example rigs:
 
-- Setup-pose bone transforms match at 1e-4 on 25/25 rigs.
-- Animation samples match at 1e-3 on 34/35 samples. The outlier is a sub-0.05° applied-rotation drift on raptor-pro.
-- Render-command headers (texture, blend, vertex count, color) match exactly on 25/25 rigs.
+- Setup-pose bone transforms match at 1e-4 on 43/43 rigs.
+- Animation samples match at 1e-3 on 45/45 samples. One raptor-pro IK bone is allowed a documented drift, because IK softness runs through `acos` near 1 and amplifies float rounding.
+- Scripted `AnimationState` scenarios (crossfades, queuing, additive tracks, empty animations, events) match on all 8.
+- Render commands (texture, blend, color, vertex positions, and UVs) match on 43/43 rigs.
 
 To regenerate fixtures, run `make` in the harness directory, then its `capture_*.sh` scripts. The harness, the fixtures, and the example exports have to be the same Spine version.
 
