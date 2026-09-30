@@ -1417,6 +1417,8 @@ impl<'loader> SkeletonJson<'loader> {
             });
         }
 
+        let timelines = std::mem::take(&mut anim.timelines);
+        anim.set_timelines(timelines, &sd.attachments);
         anim.duration = timeline_duration(&anim);
         if let Some(color) = get_str(root, "color") {
             anim.color = parse_color(color, true)?;

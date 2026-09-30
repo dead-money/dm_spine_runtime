@@ -41,9 +41,7 @@
 // spine-cpp — they're not the "imprecise equality" case float_cmp flags.
 #![allow(clippy::float_cmp)]
 
-use crate::animation::{
-    BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, MixBlend, MixDirection,
-};
+use crate::animation::{BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, MixFrom};
 
 /// Compute the 9 `(x, y)` bezier samples spine-cpp stores as an 18-float
 /// segment in `CurveFrames::curves`. Inputs are the wire-format control
@@ -258,114 +256,156 @@ pub fn curve_value2(frames: &[f32], curves: &[f32], time: f32) -> (f32, f32) {
 ///
 /// `current` is the target's current runtime value; `setup` is its
 /// setup-pose value.
+/// Value to use before a timeline's first key.
+#[inline]
+#[must_use]
+pub fn before_first_key(from: MixFrom, alpha: f32, current: f32, setup: f32) -> f32 {
+    match from {
+        MixFrom::Setup => setup,
+        MixFrom::First => current + (setup - current) * alpha,
+        MixFrom::Current => current,
+    }
+}
+
+/// `CurveTimeline1::getRelativeValue`: keyed values are offsets from setup.
 #[must_use]
 pub fn relative_value(
     frames: &[f32],
     curves: &[f32],
     time: f32,
     alpha: f32,
-    blend: MixBlend,
+    from: MixFrom,
+    add: bool,
     current: f32,
     setup: f32,
 ) -> f32 {
     if time < frames[0] {
-        return match blend {
-            MixBlend::Setup => setup,
-            MixBlend::First => current + (setup - current) * alpha,
-            MixBlend::Replace | MixBlend::Add => current,
-        };
+        return before_first_key(from, alpha, current, setup);
     }
     let value = curve_value1(frames, curves, time);
-    match blend {
-        MixBlend::Setup => setup + value * alpha,
-        MixBlend::First | MixBlend::Replace => current + (value + setup - current) * alpha,
-        MixBlend::Add => current + value * alpha,
+    if from == MixFrom::Setup {
+        setup + value * alpha
+    } else {
+        current + (if add { value } else { value + setup - current }) * alpha
     }
 }
 
-/// Blend a `CurveTimeline1` sample into an "absolute" target (like alpha) —
-/// setup-pose baseline is overwritten by the timeline, not added to.
-/// Ports `CurveTimeline1::getAbsoluteValue`.
+/// `CurveTimeline1::getAbsoluteValue`. `value` overrides the curve sample.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn absolute_value(
     frames: &[f32],
     curves: &[f32],
     time: f32,
     alpha: f32,
-    blend: MixBlend,
+    from: MixFrom,
+    add: bool,
     current: f32,
     setup: f32,
+    value: Option<f32>,
 ) -> f32 {
     if time < frames[0] {
-        return match blend {
-            MixBlend::Setup => setup,
-            MixBlend::First => current + (setup - current) * alpha,
-            MixBlend::Replace | MixBlend::Add => current,
-        };
+        return before_first_key(from, alpha, current, setup);
     }
-    let value = curve_value1(frames, curves, time);
-    if blend == MixBlend::Setup {
-        return setup + (value - setup) * alpha;
+    let value = value.unwrap_or_else(|| curve_value1(frames, curves, time));
+    if from == MixFrom::Setup {
+        setup + (if add { value } else { value - setup }) * alpha
+    } else {
+        current + (if add { value } else { value - current }) * alpha
     }
-    current + (value - current) * alpha
 }
 
-/// Scale-specific blend (multiplicative against setup). Ports
-/// `CurveTimeline1::getScaleValue`.
-///
-/// Different from [`absolute_value`] because the timeline's stored value
-/// is a *scale* multiplier; the reflected sign convention depends on
-/// whether the animation is mixing in or out, and on whether setup vs
-/// current is the baseline.
+/// `CurveTimeline1::getScaleValue`: keyed values multiply setup.
 #[must_use]
-#[allow(clippy::too_many_arguments)] // matches spine-cpp's getScaleValue signature
+#[allow(clippy::too_many_arguments)]
 pub fn scale_value(
     frames: &[f32],
     curves: &[f32],
     time: f32,
     alpha: f32,
-    blend: MixBlend,
-    direction: MixDirection,
+    from: MixFrom,
+    add: bool,
+    out: bool,
     current: f32,
     setup: f32,
 ) -> f32 {
     if time < frames[0] {
-        return match blend {
-            MixBlend::Setup => setup,
-            MixBlend::First => current + (setup - current) * alpha,
-            MixBlend::Replace | MixBlend::Add => current,
-        };
+        return before_first_key(from, alpha, current, setup);
     }
     let value = curve_value1(frames, curves, time) * setup;
-    if alpha == 1.0 {
-        return match blend {
-            MixBlend::Add => current + value - setup,
-            _ => value,
-        };
+    if alpha == 1.0 && !add {
+        return value;
     }
-    // Signs below follow spine-cpp verbatim; the comment there says "Mixing
-    // out uses sign of setup or current pose, else use sign of key."
-    if direction == MixDirection::Out {
-        match blend {
-            MixBlend::Setup => setup + (value.abs() * setup.signum() - setup) * alpha,
-            MixBlend::First | MixBlend::Replace => {
-                current + (value.abs() * current.signum() - current) * alpha
-            }
-            MixBlend::Add => current + (value - setup) * alpha,
-        }
+    let mut base = if from == MixFrom::Setup {
+        setup
     } else {
-        match blend {
-            MixBlend::Setup => {
-                let s = setup.abs() * value.signum();
-                s + (value - s) * alpha
+        current
+    };
+    if add {
+        return base + (value - setup) * alpha;
+    }
+    if out {
+        return base + (value.abs() * sign(base) - base) * alpha;
+    }
+    base = base.abs() * sign(value);
+    base + (value - base) * alpha
+}
+
+/// `MathUtil::sign`: 0 for 0, unlike `f32::signum`.
+#[inline]
+#[must_use]
+pub fn sign(v: f32) -> f32 {
+    if v < 0.0 {
+        -1.0
+    } else if v > 0.0 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// Samples `N` channels of a multi-value curve timeline with `entries` floats
+/// per frame. Returns the frame's start index and the values.
+#[must_use]
+pub fn curve_values<const N: usize>(
+    frames: &[f32],
+    curves: &[f32],
+    time: f32,
+    entries: usize,
+) -> (usize, [f32; N]) {
+    let i = search(frames, time, entries);
+    let curve_type = curves[i / entries] as i32;
+    let mut out = [0.0; N];
+    match curve_type {
+        CURVE_LINEAR => {
+            let before = frames[i];
+            let t = (time - before) / (frames[i + entries] - before);
+            for (c, v) in out.iter_mut().enumerate() {
+                let a = frames[i + 1 + c];
+                *v = a + (frames[i + entries + 1 + c] - a) * t;
             }
-            MixBlend::First | MixBlend::Replace => {
-                let s = current.abs() * value.signum();
-                s + (value - s) * alpha
+        }
+        CURVE_STEPPED => {
+            for (c, v) in out.iter_mut().enumerate() {
+                *v = frames[i + 1 + c];
             }
-            MixBlend::Add => current + (value - setup) * alpha,
+        }
+        _ => {
+            let base = (curve_type - CURVE_BEZIER) as usize;
+            for (c, v) in out.iter_mut().enumerate() {
+                *v = bezier_value(
+                    frames,
+                    curves,
+                    time,
+                    i,
+                    1 + c,
+                    base + BEZIER_SIZE * c,
+                    entries,
+                );
+            }
         }
     }
+    (i, out)
 }
 
 #[cfg(test)]
@@ -435,62 +475,38 @@ mod tests {
     }
 
     #[test]
-    fn relative_value_respects_mix_blend() {
+    fn relative_value_by_mix_from() {
         let (f, c) = linear_ramp_1();
-        // Time 0.5 → curve value 5.
-        let current = 7.0;
-        let setup = 3.0;
-        let alpha = 0.5;
-
-        // Setup: setup + value * alpha = 3 + 5 * 0.5 = 5.5.
+        // Curve value 5 at t=0.5; current 7, setup 3, alpha 0.5.
         assert_abs_diff_eq!(
-            relative_value(&f, &c, 0.5, alpha, MixBlend::Setup, current, setup),
+            relative_value(&f, &c, 0.5, 0.5, MixFrom::Setup, false, 7.0, 3.0),
             5.5
         );
-        // Add: current + value * alpha = 7 + 5 * 0.5 = 9.5.
         assert_abs_diff_eq!(
-            relative_value(&f, &c, 0.5, alpha, MixBlend::Add, current, setup),
+            relative_value(&f, &c, 0.5, 0.5, MixFrom::Current, true, 7.0, 3.0),
             9.5
         );
-        // Replace: current + (value + setup - current) * alpha
-        //        = 7 + (5 + 3 - 7) * 0.5 = 7.5.
         assert_abs_diff_eq!(
-            relative_value(&f, &c, 0.5, alpha, MixBlend::Replace, current, setup),
+            relative_value(&f, &c, 0.5, 0.5, MixFrom::Current, false, 7.0, 3.0),
             7.5
         );
     }
 
     #[test]
-    fn relative_value_before_first_frame() {
+    fn before_first_key_by_mix_from() {
         let (f, c) = linear_ramp_1();
-        // Frames start at t=0, so negative time is "before first frame".
-        assert_abs_diff_eq!(
-            relative_value(&f, &c, -1.0, 0.5, MixBlend::Setup, 7.0, 3.0),
-            3.0
-        );
-        assert_abs_diff_eq!(
-            relative_value(&f, &c, -1.0, 0.5, MixBlend::First, 7.0, 3.0),
-            7.0 + (3.0 - 7.0) * 0.5
-        );
-        assert_abs_diff_eq!(
-            relative_value(&f, &c, -1.0, 0.5, MixBlend::Replace, 7.0, 3.0),
-            7.0
-        );
+        let v = |from| relative_value(&f, &c, -1.0, 0.5, from, false, 7.0, 3.0);
+        assert_abs_diff_eq!(v(MixFrom::Setup), 3.0);
+        assert_abs_diff_eq!(v(MixFrom::First), 5.0);
+        assert_abs_diff_eq!(v(MixFrom::Current), 7.0);
     }
 
     #[test]
-    fn absolute_value_setup_lerps_to_timeline_value() {
+    fn absolute_value_by_mix_from() {
         let (f, c) = linear_ramp_1();
-        // Timeline value at t=0.5 is 5, setup 3, current 7, alpha 0.5.
-        // Setup: setup + (value - setup) * alpha = 3 + (5 - 3) * 0.5 = 4.
-        assert_abs_diff_eq!(
-            absolute_value(&f, &c, 0.5, 0.5, MixBlend::Setup, 7.0, 3.0),
-            4.0
-        );
-        // Add/Replace: current + (value - current) * alpha = 7 + (5 - 7) * 0.5 = 6.
-        assert_abs_diff_eq!(
-            absolute_value(&f, &c, 0.5, 0.5, MixBlend::Replace, 7.0, 3.0),
-            6.0
-        );
+        let v = |from, add| absolute_value(&f, &c, 0.5, 0.5, from, add, 7.0, 3.0, None);
+        assert_abs_diff_eq!(v(MixFrom::Setup, false), 4.0);
+        assert_abs_diff_eq!(v(MixFrom::Current, false), 6.0);
+        assert_abs_diff_eq!(v(MixFrom::Current, true), 9.5);
     }
 }

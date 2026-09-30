@@ -25,1109 +25,999 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `Timeline::apply` dispatch. One inherent method on [`Timeline`] that
-//! matches the variant and delegates to a per-kind free function, mirroring
-//! spine-cpp's per-subclass `apply` overrides.
+//! `Animation::apply` and each timeline's `apply`, ported from the 4.3
+//! timeline classes. `from`, `add` and `out` replace 4.2's blend and
+//! direction; `applied` selects the applied pose (sliders) over the
+//! unconstrained pose (animation state).
 
-#![allow(clippy::many_single_char_names)] // mirrors spine-cpp variable names
+#![allow(
+    clippy::float_cmp,
+    clippy::many_single_char_names,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::needless_range_loop
+)]
 
 use crate::animation::curve::{
-    absolute_value, bezier_value, curve_value1, curve_value2, relative_value, scale_value, search,
+    absolute_value, curve_value1, curve_value2, curve_values, relative_value, scale_value, search,
+    sign,
 };
-use crate::animation::{
-    BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, Event, MixBlend, MixDirection,
-};
+use crate::animation::{BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, Event, MixFrom};
 use crate::data::{
-    Animation, AnimationEvent, Attachment, AttachmentId, BoneId, CurveFrames, Inherit,
-    PhysicsConstraintData, PhysicsConstraintId, PhysicsProperty, SequenceMode, SlotId, Timeline,
-    VertexData,
+    AnimationId, Attachment, AttachmentId, BoneId, ConstraintId, CurveFrames,
+    PhysicsConstraintData, PhysicsProperty, SkeletonData, SlotId, Timeline,
 };
 use crate::math::Color;
-use crate::skeleton::{PhysicsConstraint, Skeleton};
+use crate::skeleton::{Constraint, PhysicsConstraint, Skeleton, SlotPose};
 
-impl Animation {
-    /// Run every timeline in this animation against `skeleton` at `time`.
-    ///
-    /// When `loop_` is true and `self.duration != 0`, `time` and `last_time`
-    /// are first reduced modulo `duration` so the caller can pass monotonic
-    /// track times and get the wrapped behaviour for free. Ports
-    /// `spine::Animation::apply`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply(
-        &self,
-        skeleton: &mut Skeleton,
+impl Skeleton {
+    /// `Animation::apply`: applies every timeline at `time`. Events between
+    /// `last_time` and `time` are pushed to `events`.
+    pub fn apply_animation(
+        &mut self,
+        animation: AnimationId,
         mut last_time: f32,
         mut time: f32,
-        loop_: bool,
-        events: &mut Vec<Event>,
+        looping: bool,
+        mut events: Option<&mut Vec<Event>>,
         alpha: f32,
-        blend: MixBlend,
-        direction: MixDirection,
+        from: MixFrom,
+        add: bool,
+        out: bool,
+        applied: bool,
     ) {
-        if loop_ && self.duration != 0.0 {
-            // `%` on f32 matches C's fmod, which is what spine-cpp uses via
-            // MathUtil::fmod. For positive time/duration it produces values
-            // in [0, duration), which is what the timeline machinery expects.
-            time %= self.duration;
+        let sd = std::sync::Arc::clone(self.data());
+        let anim = &sd.animations[animation.index()];
+        if looping && anim.duration != 0.0 {
+            time %= anim.duration;
             if last_time > 0.0 {
-                last_time %= self.duration;
+                last_time %= anim.duration;
             }
         }
-
-        for tl in &self.timelines {
-            tl.apply(skeleton, last_time, time, events, alpha, blend, direction);
+        for t in &anim.timelines {
+            apply_timeline(
+                self,
+                &sd,
+                t,
+                last_time,
+                time,
+                &mut events,
+                alpha,
+                from,
+                add,
+                out,
+                applied,
+            );
         }
     }
 }
 
-impl Timeline {
-    /// Write this timeline's contribution to `skeleton` for the given time.
-    ///
-    /// `last_time` is the previous-frame time (only used by discrete event
-    /// timelines). `events` is the out-param for event firings.
-    /// `alpha` scales the timeline's influence against the pose baseline
-    /// selected by `blend`. `direction` matters for mixing crossfades.
-    ///
-    /// Ports the dispatch table at `spine::Animation::apply`, which in turn
-    /// delegates to each subclass's override.
-    #[allow(clippy::too_many_arguments)] // matches spine-cpp's apply signature
-    pub fn apply(
-        &self,
-        skeleton: &mut Skeleton,
-        last_time: f32,
-        time: f32,
-        events: &mut Vec<Event>,
-        alpha: f32,
-        blend: MixBlend,
-        direction: MixDirection,
-    ) {
-        match self {
-            // --- Bone timelines (Phase 3b) ---
-            Timeline::Rotate { bone, curves } => {
-                apply_rotate(skeleton, *bone, curves, time, alpha, blend);
+/// `Timeline::apply`.
+pub(crate) fn apply_timeline(
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    t: &Timeline,
+    last_time: f32,
+    time: f32,
+    events: &mut Option<&mut Vec<Event>>,
+    alpha: f32,
+    from: MixFrom,
+    add: bool,
+    out: bool,
+    applied: bool,
+) {
+    match t {
+        Timeline::Rotate { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.rotation = relative_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                p.rotation,
+                s.rotation,
+            );
+        }),
+        Timeline::TranslateX { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.x = relative_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                p.x,
+                s.x,
+            );
+        }),
+        Timeline::TranslateY { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.y = relative_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                p.y,
+                s.y,
+            );
+        }),
+        Timeline::ScaleX { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.scale_x = scale_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                out,
+                p.scale_x,
+                s.scale_x,
+            );
+        }),
+        Timeline::ScaleY { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.scale_y = scale_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                out,
+                p.scale_y,
+                s.scale_y,
+            );
+        }),
+        Timeline::ShearX { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.shear_x = relative_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                p.shear_x,
+                s.shear_x,
+            );
+        }),
+        Timeline::ShearY { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            p.shear_y = relative_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                p.shear_y,
+                s.shear_y,
+            );
+        }),
+        Timeline::Translate { bone, curves } | Timeline::Shear { bone, curves } => {
+            let shear = matches!(t, Timeline::Shear { .. });
+            bone1(sk, sd, *bone, applied, |p, s| {
+                let (px, py, sx, sy) = if shear {
+                    (&mut p.shear_x, &mut p.shear_y, s.shear_x, s.shear_y)
+                } else {
+                    (&mut p.x, &mut p.y, s.x, s.y)
+                };
+                if time < curves.frames[0] {
+                    match from {
+                        MixFrom::Setup => {
+                            *px = sx;
+                            *py = sy;
+                        }
+                        MixFrom::First => {
+                            *px += (sx - *px) * alpha;
+                            *py += (sy - *py) * alpha;
+                        }
+                        MixFrom::Current => {}
+                    }
+                    return;
+                }
+                let (x, y) = curve_value2(&curves.frames, &curves.curves, time);
+                if from == MixFrom::Setup {
+                    *px = sx + x * alpha;
+                    *py = sy + y * alpha;
+                } else if add {
+                    *px += x * alpha;
+                    *py += y * alpha;
+                } else {
+                    *px += (sx + x - *px) * alpha;
+                    *py += (sy + y - *py) * alpha;
+                }
+            });
+        }
+        Timeline::Scale { bone, curves } => bone1(sk, sd, *bone, applied, |p, s| {
+            if time < curves.frames[0] {
+                match from {
+                    MixFrom::Setup => {
+                        p.scale_x = s.scale_x;
+                        p.scale_y = s.scale_y;
+                    }
+                    MixFrom::First => {
+                        p.scale_x += (s.scale_x - p.scale_x) * alpha;
+                        p.scale_y += (s.scale_y - p.scale_y) * alpha;
+                    }
+                    MixFrom::Current => {}
+                }
+                return;
             }
-            Timeline::Translate { bone, curves } => {
-                apply_translate(skeleton, *bone, curves, time, alpha, blend);
+            let (mut x, mut y) = curve_value2(&curves.frames, &curves.curves, time);
+            x *= s.scale_x;
+            y *= s.scale_y;
+            if alpha == 1.0 && !add {
+                p.scale_x = x;
+                p.scale_y = y;
+                return;
             }
-            Timeline::TranslateX { bone, curves } => {
-                apply_translate_x(skeleton, *bone, curves, time, alpha, blend);
+            let (mut bx, mut by) = if from == MixFrom::Setup {
+                (s.scale_x, s.scale_y)
+            } else {
+                (p.scale_x, p.scale_y)
+            };
+            if add {
+                p.scale_x = bx + (x - s.scale_x) * alpha;
+                p.scale_y = by + (y - s.scale_y) * alpha;
+            } else if out {
+                p.scale_x = bx + (x.abs() * sign(bx) - bx) * alpha;
+                p.scale_y = by + (y.abs() * sign(by) - by) * alpha;
+            } else {
+                bx = bx.abs() * sign(x);
+                by = by.abs() * sign(y);
+                p.scale_x = bx + (x - bx) * alpha;
+                p.scale_y = by + (y - by) * alpha;
             }
-            Timeline::TranslateY { bone, curves } => {
-                apply_translate_y(skeleton, *bone, curves, time, alpha, blend);
+        }),
+        Timeline::Inherit {
+            bone,
+            frames,
+            inherits,
+        } => {
+            let b = &mut sk.bones[bone.index()];
+            if !b.active {
+                return;
             }
-            Timeline::Scale { bone, curves } => {
-                apply_scale(skeleton, *bone, curves, time, alpha, blend, direction);
+            let setup = sd.bones[bone.index()].setup.inherit;
+            let p = b.posed.select_mut(applied);
+            if out || time < frames[0] {
+                if from != MixFrom::Current {
+                    p.inherit = setup;
+                }
+            } else {
+                p.inherit = inherits[search(frames, time, 1)];
             }
-            Timeline::ScaleX { bone, curves } => {
-                apply_scale_x(skeleton, *bone, curves, time, alpha, blend, direction);
-            }
-            Timeline::ScaleY { bone, curves } => {
-                apply_scale_y(skeleton, *bone, curves, time, alpha, blend, direction);
-            }
-            Timeline::Shear { bone, curves } => {
-                apply_shear(skeleton, *bone, curves, time, alpha, blend);
-            }
-            Timeline::ShearX { bone, curves } => {
-                apply_shear_x(skeleton, *bone, curves, time, alpha, blend);
-            }
-            Timeline::ShearY { bone, curves } => {
-                apply_shear_y(skeleton, *bone, curves, time, alpha, blend);
-            }
-            Timeline::Inherit {
-                bone,
-                frames,
-                inherits,
-            } => {
-                apply_inherit(skeleton, *bone, frames, inherits, time, blend, direction);
-            }
+        }
 
-            // --- Slot timelines (Phase 3c) ---
-            Timeline::Rgba { slot, curves } => {
-                apply_rgba(skeleton, *slot, curves, time, alpha, blend);
+        Timeline::Rgba { slot, curves } => color_timeline(sk, sd, *slot, applied, |pose, setup| {
+            if time < curves.frames[0] {
+                match from {
+                    MixFrom::Setup => set_color(&mut pose.color, setup.color),
+                    MixFrom::First => {
+                        let d = delta(setup.color, pose.color, alpha);
+                        add_color(&mut pose.color, d);
+                    }
+                    MixFrom::Current => {}
+                }
+                return;
             }
-            Timeline::Rgb { slot, curves } => {
-                apply_rgb(skeleton, *slot, curves, time, alpha, blend);
-            }
-            Timeline::Alpha { slot, curves } => {
-                apply_alpha(skeleton, *slot, curves, time, alpha, blend);
-            }
-            Timeline::Rgba2 { slot, curves } => {
-                apply_rgba2(skeleton, *slot, curves, time, alpha, blend);
-            }
-            Timeline::Rgb2 { slot, curves } => {
-                apply_rgb2(skeleton, *slot, curves, time, alpha, blend);
-            }
-            Timeline::Attachment {
-                slot,
-                frames,
-                names,
-            } => {
-                apply_attachment(skeleton, *slot, frames, names, time, blend, direction);
-            }
-
-            // --- Skeleton-wide timelines (Phase 3c) ---
-            Timeline::DrawOrder {
-                frames,
-                draw_orders,
-            } => {
-                apply_draw_order(skeleton, frames, draw_orders, time, blend, direction);
-            }
-            Timeline::Event {
-                frames,
-                events: keyframes,
-            } => {
-                apply_event(frames, keyframes, last_time, time, events);
-            }
-
-            // --- Constraint timelines (Phase 3d) ---
-            Timeline::IkConstraint { constraint, curves } => {
-                apply_ik_constraint(skeleton, *constraint, curves, time, alpha, blend, direction);
-            }
-            Timeline::TransformConstraint { constraint, curves } => {
-                apply_transform_constraint(skeleton, *constraint, curves, time, alpha, blend);
-            }
-            Timeline::PathConstraintPosition { constraint, curves } => {
-                apply_path_position(skeleton, *constraint, curves, time, alpha, blend);
-            }
-            Timeline::PathConstraintSpacing { constraint, curves } => {
-                apply_path_spacing(skeleton, *constraint, curves, time, alpha, blend);
-            }
-            Timeline::PathConstraintMix { constraint, curves } => {
-                apply_path_mix(skeleton, *constraint, curves, time, alpha, blend);
-            }
-            Timeline::Physics {
-                constraint,
-                property,
-                curves,
-            } => {
-                apply_physics(skeleton, *constraint, *property, curves, time, alpha, blend);
-            }
-            Timeline::PhysicsReset { constraint, frames } => {
-                apply_physics_reset(skeleton, *constraint, frames, last_time, time);
-            }
-
-            // --- Deform / Sequence (Phase 6b) --------------------------------
-            Timeline::Deform {
-                slot,
-                attachment,
-                curves,
-                vertices,
-            } => {
-                apply_deform(
-                    skeleton,
-                    *slot,
-                    *attachment,
-                    curves,
-                    vertices,
-                    time,
-                    alpha,
-                    blend,
+            let (_, [r, g, b, a]) = curve_values::<4>(&curves.frames, &curves.curves, time, 5);
+            let c = &mut pose.color;
+            if alpha == 1.0 {
+                set_color(c, Color::new(r, g, b, a));
+            } else if from == MixFrom::Setup {
+                let s = setup.color;
+                set_color(
+                    c,
+                    Color::new(
+                        s.r + (r - s.r) * alpha,
+                        s.g + (g - s.g) * alpha,
+                        s.b + (b - s.b) * alpha,
+                        s.a + (a - s.a) * alpha,
+                    ),
                 );
+            } else {
+                let d = Color::new(
+                    (r - c.r) * alpha,
+                    (g - c.g) * alpha,
+                    (b - c.b) * alpha,
+                    (a - c.a) * alpha,
+                );
+                add_color(c, d);
             }
-            Timeline::Sequence {
-                slot,
-                attachment,
-                frames,
-            } => {
-                apply_sequence(skeleton, *slot, *attachment, frames, time, blend, direction);
+        }),
+        Timeline::Rgb { slot, curves } => color_timeline(sk, sd, *slot, applied, |pose, setup| {
+            let c = &mut pose.color;
+            if time < curves.frames[0] {
+                let s = setup.color;
+                match from {
+                    MixFrom::Setup => {
+                        c.r = s.r;
+                        c.g = s.g;
+                        c.b = s.b;
+                    }
+                    MixFrom::First => {
+                        c.r += (s.r - c.r) * alpha;
+                        c.g += (s.g - c.g) * alpha;
+                        c.b += (s.b - c.b) * alpha;
+                    }
+                    MixFrom::Current => {}
+                }
+                return;
             }
+            let (_, [mut r, mut g, mut b]) =
+                curve_values::<3>(&curves.frames, &curves.curves, time, 4);
+            if alpha != 1.0 {
+                let base = if from == MixFrom::Setup {
+                    setup.color
+                } else {
+                    *c
+                };
+                r = base.r + (r - base.r) * alpha;
+                g = base.g + (g - base.g) * alpha;
+                b = base.b + (b - base.b) * alpha;
+            }
+            c.r = clamp01(r);
+            c.g = clamp01(g);
+            c.b = clamp01(b);
+        }),
+        Timeline::Alpha { slot, curves } => {
+            color_timeline(sk, sd, *slot, applied, |pose, setup| {
+                let c = &mut pose.color;
+                if time < curves.frames[0] {
+                    match from {
+                        MixFrom::Setup => c.a = setup.color.a,
+                        MixFrom::First => c.a += (setup.color.a - c.a) * alpha,
+                        MixFrom::Current => {}
+                    }
+                    return;
+                }
+                let mut a = curve_value1(&curves.frames, &curves.curves, time);
+                if alpha != 1.0 {
+                    let base = if from == MixFrom::Setup {
+                        setup.color.a
+                    } else {
+                        c.a
+                    };
+                    a = base + (a - base) * alpha;
+                }
+                c.a = clamp01(a);
+            })
+        }
+        Timeline::Rgba2 { slot, curves } => {
+            color_timeline(sk, sd, *slot, applied, |pose, setup| {
+                let sl = setup.color;
+                let sdk = setup.dark_color.unwrap_or(Color::new(0.0, 0.0, 0.0, 0.0));
+                if time < curves.frames[0] {
+                    match from {
+                        MixFrom::Setup => {
+                            set_color(&mut pose.color, sl);
+                            pose.dark_color.r = sdk.r;
+                            pose.dark_color.g = sdk.g;
+                            pose.dark_color.b = sdk.b;
+                        }
+                        MixFrom::First => {
+                            let dl = delta(sl, pose.color, alpha);
+                            add_color(&mut pose.color, dl);
+                            let d = &mut pose.dark_color;
+                            d.r += (sdk.r - d.r) * alpha;
+                            d.g += (sdk.g - d.g) * alpha;
+                            d.b += (sdk.b - d.b) * alpha;
+                        }
+                        MixFrom::Current => {}
+                    }
+                    return;
+                }
+                let (_, [r, g, b, a, mut r2, mut g2, mut b2]) =
+                    curve_values::<7>(&curves.frames, &curves.curves, time, 8);
+                if alpha == 1.0 {
+                    set_color(&mut pose.color, Color::new(r, g, b, a));
+                } else if from == MixFrom::Setup {
+                    set_color(
+                        &mut pose.color,
+                        Color::new(
+                            sl.r + (r - sl.r) * alpha,
+                            sl.g + (g - sl.g) * alpha,
+                            sl.b + (b - sl.b) * alpha,
+                            sl.a + (a - sl.a) * alpha,
+                        ),
+                    );
+                    r2 = sdk.r + (r2 - sdk.r) * alpha;
+                    g2 = sdk.g + (g2 - sdk.g) * alpha;
+                    b2 = sdk.b + (b2 - sdk.b) * alpha;
+                } else {
+                    let l = pose.color;
+                    add_color(
+                        &mut pose.color,
+                        Color::new(
+                            (r - l.r) * alpha,
+                            (g - l.g) * alpha,
+                            (b - l.b) * alpha,
+                            (a - l.a) * alpha,
+                        ),
+                    );
+                    let d = pose.dark_color;
+                    r2 = d.r + (r2 - d.r) * alpha;
+                    g2 = d.g + (g2 - d.g) * alpha;
+                    b2 = d.b + (b2 - d.b) * alpha;
+                }
+                pose.dark_color.r = clamp01(r2);
+                pose.dark_color.g = clamp01(g2);
+                pose.dark_color.b = clamp01(b2);
+            })
+        }
+        Timeline::Rgb2 { slot, curves } => color_timeline(sk, sd, *slot, applied, |pose, setup| {
+            let sl = setup.color;
+            let sdk = setup.dark_color.unwrap_or(Color::new(0.0, 0.0, 0.0, 0.0));
+            let (l, d) = (&mut pose.color, &mut pose.dark_color);
+            if time < curves.frames[0] {
+                match from {
+                    MixFrom::Setup => {
+                        l.r = sl.r;
+                        l.g = sl.g;
+                        l.b = sl.b;
+                        d.r = sdk.r;
+                        d.g = sdk.g;
+                        d.b = sdk.b;
+                    }
+                    MixFrom::First => {
+                        l.r += (sl.r - l.r) * alpha;
+                        l.g += (sl.g - l.g) * alpha;
+                        l.b += (sl.b - l.b) * alpha;
+                        d.r += (sdk.r - d.r) * alpha;
+                        d.g += (sdk.g - d.g) * alpha;
+                        d.b += (sdk.b - d.b) * alpha;
+                    }
+                    MixFrom::Current => {}
+                }
+                return;
+            }
+            let (_, [mut r, mut g, mut b, mut r2, mut g2, mut b2]) =
+                curve_values::<6>(&curves.frames, &curves.curves, time, 7);
+            if alpha != 1.0 {
+                let (bl, bd) = if from == MixFrom::Setup {
+                    (sl, sdk)
+                } else {
+                    (*l, *d)
+                };
+                r = bl.r + (r - bl.r) * alpha;
+                g = bl.g + (g - bl.g) * alpha;
+                b = bl.b + (b - bl.b) * alpha;
+                r2 = bd.r + (r2 - bd.r) * alpha;
+                g2 = bd.g + (g2 - bd.g) * alpha;
+                b2 = bd.b + (b2 - bd.b) * alpha;
+            }
+            l.r = clamp01(r);
+            l.g = clamp01(g);
+            l.b = clamp01(b);
+            d.r = clamp01(r2);
+            d.g = clamp01(g2);
+            d.b = clamp01(b2);
+        }),
 
-            // Other variants either don't exist yet or are handled by the
-            // matchers above. An explicit catch-all keeps the compiler
-            // honest while Phase 6 continues to land.
-            #[allow(unreachable_patterns)]
-            _ => {}
+        Timeline::Attachment {
+            slot,
+            frames,
+            names,
+        } => {
+            let si = slot.index();
+            if !sk.bones[sk.slots[si].bone.index()].active {
+                return;
+            }
+            let name = if out || time < frames[0] {
+                if from == MixFrom::Current {
+                    return;
+                }
+                sd.slots[si].attachment_name.as_deref()
+            } else {
+                names[search(frames, time, 1)].as_deref()
+            };
+            set_attachment_by_name(sk, sd, *slot, name, applied);
+        }
+
+        Timeline::Deform {
+            slot,
+            attachment,
+            curves,
+            vertices,
+        } => apply_deform(
+            sk,
+            sd,
+            *slot,
+            *attachment,
+            curves,
+            vertices,
+            time,
+            alpha,
+            from,
+            add,
+            applied,
+        ),
+
+        Timeline::Sequence {
+            slot,
+            attachment,
+            frames,
+        } => apply_sequence(sk, sd, *slot, *attachment, frames, time, from, out, applied),
+
+        Timeline::DrawOrder {
+            frames,
+            draw_orders,
+        } => {
+            let slot_count = sk.slots.len();
+            let pose = sk.draw_order.select_mut(applied);
+            let setup_order = |pose: &mut Vec<SlotId>| {
+                pose.clear();
+                pose.extend((0..slot_count).map(|i| SlotId(i as u16)));
+            };
+            if out || time < frames[0] {
+                if from != MixFrom::Current {
+                    setup_order(pose);
+                }
+                return;
+            }
+            match &draw_orders[search(frames, time, 1)] {
+                None => setup_order(pose),
+                Some(order) => pose.clone_from(order),
+            }
+        }
+
+        Timeline::DrawOrderFolder {
+            slots,
+            frames,
+            draw_orders,
+        } => {
+            let pose = sk.draw_order.select_mut(applied);
+            let order = if out || time < frames[0] {
+                if from == MixFrom::Current {
+                    return;
+                }
+                None
+            } else {
+                draw_orders[search(frames, time, 1)].as_deref()
+            };
+            // Folder slots keep their positions in the pose; only which
+            // folder slot sits in each position changes.
+            let mut found = 0;
+            for entry in pose.iter_mut() {
+                if found == slots.len() {
+                    break;
+                }
+                if slots.contains(entry) {
+                    *entry = match order {
+                        None => slots[found],
+                        Some(order) => slots[order[found] as usize],
+                    };
+                    found += 1;
+                }
+            }
+        }
+
+        Timeline::Event {
+            frames,
+            events: keys,
+        } => {
+            let Some(events) = events.as_deref_mut() else {
+                return;
+            };
+            fire_events(frames, keys, last_time, time, events);
+        }
+
+        Timeline::IkConstraint { constraint, curves } => {
+            let Some(Constraint::Ik(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_ik()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            let frames = &curves.frames;
+            if time < frames[0] {
+                match from {
+                    MixFrom::Setup => *pose = setup,
+                    MixFrom::First => {
+                        pose.mix += (setup.mix - pose.mix) * alpha;
+                        pose.softness += (setup.softness - pose.softness) * alpha;
+                        pose.bend_direction = setup.bend_direction;
+                        pose.compress = setup.compress;
+                        pose.stretch = setup.stretch;
+                    }
+                    MixFrom::Current => {}
+                }
+                return;
+            }
+            let (i, [mix, softness]) = curve_values::<2>(frames, &curves.curves, time, 6);
+            let base = if from == MixFrom::Setup { setup } else { *pose };
+            pose.mix = base.mix + (mix - base.mix) * alpha;
+            pose.softness = base.softness + (softness - base.softness) * alpha;
+            if out {
+                if from == MixFrom::Setup {
+                    pose.bend_direction = base.bend_direction;
+                    pose.compress = base.compress;
+                    pose.stretch = base.stretch;
+                }
+            } else {
+                pose.bend_direction = frames[i + 3] as i32;
+                pose.compress = frames[i + 4] != 0.0;
+                pose.stretch = frames[i + 5] != 0.0;
+            }
+        }
+
+        Timeline::TransformConstraint { constraint, curves } => {
+            let Some(Constraint::Transform(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_transform()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            let mut v = [
+                &mut pose.mix_rotate,
+                &mut pose.mix_x,
+                &mut pose.mix_y,
+                &mut pose.mix_scale_x,
+                &mut pose.mix_scale_y,
+                &mut pose.mix_shear_y,
+            ];
+            let s = [
+                setup.mix_rotate,
+                setup.mix_x,
+                setup.mix_y,
+                setup.mix_scale_x,
+                setup.mix_scale_y,
+                setup.mix_shear_y,
+            ];
+            mix_channels(
+                &mut v,
+                &s,
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+            );
+        }
+
+        Timeline::PathConstraintPosition { constraint, curves } => {
+            let Some(Constraint::Path(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_path()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            pose.position = absolute_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                pose.position,
+                setup.position,
+                None,
+            );
+        }
+        Timeline::PathConstraintSpacing { constraint, curves } => {
+            let Some(Constraint::Path(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_path()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            pose.spacing = absolute_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                false,
+                pose.spacing,
+                setup.spacing,
+                None,
+            );
+        }
+        Timeline::PathConstraintMix { constraint, curves } => {
+            let Some(Constraint::Path(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_path()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            let mut v = [&mut pose.mix_rotate, &mut pose.mix_x, &mut pose.mix_y];
+            let s = [setup.mix_rotate, setup.mix_x, setup.mix_y];
+            mix_channels(
+                &mut v,
+                &s,
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+            );
+        }
+
+        Timeline::Physics {
+            constraint,
+            property,
+            curves,
+        } => {
+            let add = add && t.is_additive();
+            match constraint {
+                None => {
+                    let value = if time >= curves.frames[0] {
+                        curve_value1(&curves.frames, &curves.curves, time)
+                    } else {
+                        0.0
+                    };
+                    for i in 0..sk.physics.len() {
+                        let id = sk.physics[i];
+                        let data = sd.constraints[id.index()].as_physics().expect("kind");
+                        if !sk.constraints_active[id.index()] || !physics_global(data, *property) {
+                            continue;
+                        }
+                        let Constraint::Physics(c) = &mut sk.constraints[id.index()] else {
+                            continue;
+                        };
+                        let pose = c.posed.select_mut(applied);
+                        let v = absolute_value(
+                            &curves.frames,
+                            &curves.curves,
+                            time,
+                            alpha,
+                            from,
+                            add,
+                            physics_get(pose, *property),
+                            physics_get(&data.setup, *property),
+                            Some(value),
+                        );
+                        physics_set(pose, *property, v);
+                    }
+                }
+                Some(id) => {
+                    let data = sd.constraints[id.index()].as_physics().expect("kind");
+                    let Some(Constraint::Physics(c)) = active_constraint(sk, *id) else {
+                        return;
+                    };
+                    let pose = c.posed.select_mut(applied);
+                    let v = absolute_value(
+                        &curves.frames,
+                        &curves.curves,
+                        time,
+                        alpha,
+                        from,
+                        add,
+                        physics_get(pose, *property),
+                        physics_get(&data.setup, *property),
+                        None,
+                    );
+                    physics_set(pose, *property, v);
+                }
+            }
+        }
+        Timeline::PhysicsReset { constraint, frames } => {
+            physics_reset(sk, *constraint, frames, last_time, time);
+        }
+
+        Timeline::Slider { constraint, curves } => {
+            let Some(Constraint::Slider(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_slider()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            pose.time = absolute_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                pose.time,
+                setup.time,
+                None,
+            );
+        }
+        Timeline::SliderMix { constraint, curves } => {
+            let Some(Constraint::Slider(c)) = active_constraint(sk, *constraint) else {
+                return;
+            };
+            let setup = sd.constraints[constraint.index()]
+                .as_slider()
+                .expect("kind")
+                .setup;
+            let pose = c.posed.select_mut(applied);
+            pose.mix = absolute_value(
+                &curves.frames,
+                &curves.curves,
+                time,
+                alpha,
+                from,
+                add,
+                pose.mix,
+                setup.mix,
+                None,
+            );
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/// Runs `f` on an active bone's selected pose and its setup pose.
+#[inline]
+fn bone1(
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    bone: BoneId,
+    applied: bool,
+    f: impl FnOnce(&mut crate::skeleton::BonePose, &crate::data::BoneLocal),
+) {
+    let b = &mut sk.bones[bone.index()];
+    if b.active {
+        f(b.posed.select_mut(applied), &sd.bones[bone.index()].setup);
+    }
+}
 
-/// Look up the runtime bone. Returns `None` when the bone is inactive
-/// (timeline should skip it — matches every spine-cpp bone apply).
-fn active_bone(skeleton: &mut Skeleton, bone_id: BoneId) -> Option<usize> {
-    let idx = bone_id.index();
-    if skeleton.bones[idx].active {
-        Some(idx)
+#[inline]
+fn color_timeline(
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    applied: bool,
+    f: impl FnOnce(&mut SlotPose, &crate::data::SlotData),
+) {
+    let s = &mut sk.slots[slot.index()];
+    if sk.bones[s.bone.index()].active {
+        f(s.posed.select_mut(applied), &sd.slots[slot.index()]);
+    }
+}
+
+#[inline]
+fn active_constraint(sk: &mut Skeleton, id: ConstraintId) -> Option<&mut Constraint> {
+    if sk.constraints_active[id.index()] {
+        Some(&mut sk.constraints[id.index()])
     } else {
         None
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rotate
-// ---------------------------------------------------------------------------
-
-fn apply_rotate(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].rotation;
-    let bone = &mut skeleton.bones[idx];
-    bone.rotation = relative_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        bone.rotation,
-        setup,
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Translate (and X/Y splits)
-// ---------------------------------------------------------------------------
-
-fn apply_translate(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup_x = skeleton.data.bones[idx].x;
-    let setup_y = skeleton.data.bones[idx].y;
-    let bone = &mut skeleton.bones[idx];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                bone.x = setup_x;
-                bone.y = setup_y;
-            }
-            MixBlend::First => {
-                bone.x += (setup_x - bone.x) * alpha;
-                bone.y += (setup_y - bone.y) * alpha;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let (x, y) = curve_value2(&curves.frames, &curves.curves, time);
-    match blend {
-        MixBlend::Setup => {
-            bone.x = setup_x + x * alpha;
-            bone.y = setup_y + y * alpha;
-        }
-        MixBlend::First | MixBlend::Replace => {
-            bone.x += (setup_x + x - bone.x) * alpha;
-            bone.y += (setup_y + y - bone.y) * alpha;
-        }
-        MixBlend::Add => {
-            bone.x += x * alpha;
-            bone.y += y * alpha;
-        }
+#[inline]
+fn clamp01(v: f32) -> f32 {
+    if v < 0.0 {
+        0.0
+    } else if v > 1.0 {
+        1.0
+    } else {
+        v
     }
 }
 
-fn apply_translate_x(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].x;
-    let bone = &mut skeleton.bones[idx];
-    bone.x = relative_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        bone.x,
-        setup,
-    );
+/// `Color::set`, which clamps.
+#[inline]
+fn set_color(c: &mut Color, v: Color) {
+    c.r = clamp01(v.r);
+    c.g = clamp01(v.g);
+    c.b = clamp01(v.b);
+    c.a = clamp01(v.a);
 }
 
-fn apply_translate_y(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].y;
-    let bone = &mut skeleton.bones[idx];
-    bone.y = relative_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        bone.y,
-        setup,
-    );
+/// `Color::add`, which clamps.
+#[inline]
+fn add_color(c: &mut Color, d: Color) {
+    set_color(c, Color::new(c.r + d.r, c.g + d.g, c.b + d.b, c.a + d.a));
 }
 
-// ---------------------------------------------------------------------------
-// Scale (and X/Y splits)
-// ---------------------------------------------------------------------------
+#[inline]
+fn delta(to: Color, from: Color, alpha: f32) -> Color {
+    Color::new(
+        (to.r - from.r) * alpha,
+        (to.g - from.g) * alpha,
+        (to.b - from.b) * alpha,
+        (to.a - from.a) * alpha,
+    )
+}
 
-/// Literal port of `ScaleTimeline::apply` — the scale mix rules are
-/// intricate enough (sign-handling on abs magnitude, setup-vs-current pose
-/// baselines, direction-aware sign source) that factoring would muddy the
-/// diff against the reference.
-#[allow(clippy::too_many_arguments, clippy::float_cmp)]
-fn apply_scale(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
+/// Constraint mix timelines with `N` curve channels.
+fn mix_channels<const N: usize>(
+    v: &mut [&mut f32; N],
+    setup: &[f32; N],
+    frames: &[f32],
+    curves: &[f32],
     time: f32,
     alpha: f32,
-    blend: MixBlend,
-    direction: MixDirection,
+    from: MixFrom,
+    add: bool,
 ) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let data_scale_x = skeleton.data.bones[idx].scale_x;
-    let data_scale_y = skeleton.data.bones[idx].scale_y;
-    let bone = &mut skeleton.bones[idx];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                bone.scale_x = data_scale_x;
-                bone.scale_y = data_scale_y;
+    if time < frames[0] {
+        match from {
+            MixFrom::Setup => {
+                for c in 0..N {
+                    *v[c] = setup[c];
+                }
             }
-            MixBlend::First => {
-                bone.scale_x += (data_scale_x - bone.scale_x) * alpha;
-                bone.scale_y += (data_scale_y - bone.scale_y) * alpha;
+            MixFrom::First => {
+                for c in 0..N {
+                    *v[c] += (setup[c] - *v[c]) * alpha;
+                }
             }
-            _ => {}
+            MixFrom::Current => {}
         }
         return;
     }
-
-    let (mut x, mut y) = curve_value2(&curves.frames, &curves.curves, time);
-    x *= data_scale_x;
-    y *= data_scale_y;
-
-    if alpha == 1.0 {
-        if blend == MixBlend::Add {
-            bone.scale_x += x - data_scale_x;
-            bone.scale_y += y - data_scale_y;
+    let (_, values) = curve_values::<N>(frames, curves, time, N + 1);
+    for c in 0..N {
+        let base = if from == MixFrom::Setup {
+            setup[c]
         } else {
-            bone.scale_x = x;
-            bone.scale_y = y;
-        }
-        return;
-    }
-
-    if direction == MixDirection::Out {
-        match blend {
-            MixBlend::Setup => {
-                let bx = data_scale_x;
-                let by = data_scale_y;
-                bone.scale_x = bx + (x.abs() * bx.signum() - bx) * alpha;
-                bone.scale_y = by + (y.abs() * by.signum() - by) * alpha;
-            }
-            MixBlend::First | MixBlend::Replace => {
-                let bx = bone.scale_x;
-                let by = bone.scale_y;
-                bone.scale_x = bx + (x.abs() * bx.signum() - bx) * alpha;
-                bone.scale_y = by + (y.abs() * by.signum() - by) * alpha;
-            }
-            MixBlend::Add => {
-                bone.scale_x += (x - data_scale_x) * alpha;
-                bone.scale_y += (y - data_scale_y) * alpha;
-            }
-        }
-    } else {
-        match blend {
-            MixBlend::Setup => {
-                let bx = data_scale_x.abs() * x.signum();
-                let by = data_scale_y.abs() * y.signum();
-                bone.scale_x = bx + (x - bx) * alpha;
-                bone.scale_y = by + (y - by) * alpha;
-            }
-            MixBlend::First | MixBlend::Replace => {
-                let bx = bone.scale_x.abs() * x.signum();
-                let by = bone.scale_y.abs() * y.signum();
-                bone.scale_x = bx + (x - bx) * alpha;
-                bone.scale_y = by + (y - by) * alpha;
-            }
-            MixBlend::Add => {
-                bone.scale_x += (x - data_scale_x) * alpha;
-                bone.scale_y += (y - data_scale_y) * alpha;
-            }
-        }
+            *v[c]
+        };
+        *v[c] = if add {
+            base + values[c] * alpha
+        } else {
+            base + (values[c] - base) * alpha
+        };
     }
 }
 
-fn apply_scale_x(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-    direction: MixDirection,
+/// `AttachmentTimeline::setAttachment`.
+pub(crate) fn set_attachment_by_name(
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    name: Option<&str>,
+    applied: bool,
 ) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
+    let attachment = match name {
+        Some(n) if !n.is_empty() => sk.get_attachment(slot, n),
+        _ => None,
     };
-    let setup = skeleton.data.bones[idx].scale_x;
-    let bone = &mut skeleton.bones[idx];
-    bone.scale_x = scale_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        direction,
-        bone.scale_x,
-        setup,
-    );
+    sk.slots[slot.index()]
+        .posed
+        .select_mut(applied)
+        .set_attachment(attachment, sd);
 }
 
-fn apply_scale_y(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-    direction: MixDirection,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].scale_y;
-    let bone = &mut skeleton.bones[idx];
-    bone.scale_y = scale_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        direction,
-        bone.scale_y,
-        setup,
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Shear (and X/Y splits)
-// ---------------------------------------------------------------------------
-
-fn apply_shear(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup_x = skeleton.data.bones[idx].shear_x;
-    let setup_y = skeleton.data.bones[idx].shear_y;
-    let bone = &mut skeleton.bones[idx];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                bone.shear_x = setup_x;
-                bone.shear_y = setup_y;
-            }
-            MixBlend::First => {
-                bone.shear_x += (setup_x - bone.shear_x) * alpha;
-                bone.shear_y += (setup_y - bone.shear_y) * alpha;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let (x, y) = curve_value2(&curves.frames, &curves.curves, time);
-    match blend {
-        MixBlend::Setup => {
-            bone.shear_x = setup_x + x * alpha;
-            bone.shear_y = setup_y + y * alpha;
-        }
-        MixBlend::First | MixBlend::Replace => {
-            bone.shear_x += (setup_x + x - bone.shear_x) * alpha;
-            bone.shear_y += (setup_y + y - bone.shear_y) * alpha;
-        }
-        MixBlend::Add => {
-            bone.shear_x += x * alpha;
-            bone.shear_y += y * alpha;
-        }
-    }
-}
-
-fn apply_shear_x(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].shear_x;
-    let bone = &mut skeleton.bones[idx];
-    bone.shear_x = relative_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        bone.shear_x,
-        setup,
-    );
-}
-
-fn apply_shear_y(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].shear_y;
-    let bone = &mut skeleton.bones[idx];
-    bone.shear_y = relative_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        bone.shear_y,
-        setup,
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Inherit timeline (4.2)
-// ---------------------------------------------------------------------------
-
-fn apply_inherit(
-    skeleton: &mut Skeleton,
-    bone_id: BoneId,
+/// `EventTimeline::apply`: pushes events keyed in `(last_time, time]`.
+fn fire_events(
     frames: &[f32],
-    inherits: &[Inherit],
-    time: f32,
-    blend: MixBlend,
-    direction: MixDirection,
-) {
-    let Some(idx) = active_bone(skeleton, bone_id) else {
-        return;
-    };
-    let setup = skeleton.data.bones[idx].inherit;
-    let bone = &mut skeleton.bones[idx];
-
-    // Mixing out of an animation: only reset on Setup blend; otherwise
-    // preserve whatever state we're at.
-    if direction == MixDirection::Out {
-        if blend == MixBlend::Setup {
-            bone.inherit = setup;
-        }
-        return;
-    }
-
-    if time < frames[0] {
-        if blend == MixBlend::Setup || blend == MixBlend::First {
-            bone.inherit = setup;
-        }
-        return;
-    }
-
-    // Stepped lookup — no interpolation (you can't tween between enum values).
-    // spine-cpp uses `Animation::search(_frames, time, ENTRIES) + INHERIT`
-    // where ENTRIES = 2, INHERIT = 1; our storage splits frames (times only)
-    // and inherits into sibling vecs so the index maps through step = 1.
-    let i = search(frames, time, 1);
-    bone.inherit = inherits[i];
-}
-
-// ---------------------------------------------------------------------------
-// Slot timelines
-// ---------------------------------------------------------------------------
-
-/// `true` iff the slot's bone is currently active. spine-cpp's slot applies
-/// always gate on `slot->_bone._active`; we derive the bone via data since
-/// our `Slot` runtime doesn't cache a bone reference.
-fn slot_bone_active(skeleton: &Skeleton, slot_id: SlotId) -> bool {
-    let bone_id = skeleton.data.slots[slot_id.index()].bone;
-    skeleton.bones[bone_id.index()].active
-}
-
-/// Sample N channel values (not including time) at `time` from a colour
-/// timeline with stride `1 + N`. Returns values in an array ordered R, G,
-/// B, A, ... per spine-cpp's `R=1, G=2, B=3, A=4` offset convention.
-///
-/// Handles LINEAR, STEPPED, and BEZIER curve types. Used by Rgba, Rgb,
-/// Rgba2, Rgb2.
-fn sample_color_channels<const N: usize>(frames: &[f32], curves: &[f32], time: f32) -> [f32; N] {
-    let entries = N + 1;
-    let i = search(frames, time, entries);
-    let curve_type = curves[i / entries] as i32;
-    let mut out = [0.0_f32; N];
-    match curve_type {
-        CURVE_LINEAR => {
-            let before = frames[i];
-            for (k, o) in out.iter_mut().enumerate() {
-                *o = frames[i + 1 + k];
-            }
-            let t = (time - before) / (frames[i + entries] - before);
-            for (k, o) in out.iter_mut().enumerate() {
-                *o += (frames[i + entries + 1 + k] - *o) * t;
-            }
-        }
-        CURVE_STEPPED => {
-            for (k, o) in out.iter_mut().enumerate() {
-                *o = frames[i + 1 + k];
-            }
-        }
-        _ => {
-            let bezier_0 = (curve_type - CURVE_BEZIER) as usize;
-            for (k, o) in out.iter_mut().enumerate() {
-                *o = bezier_value(
-                    frames,
-                    curves,
-                    time,
-                    i,
-                    1 + k,
-                    bezier_0 + k * BEZIER_SIZE,
-                    entries,
-                );
-            }
-        }
-    }
-    out
-}
-
-/// Clamped element-wise add, for `Color::add` parity. spine-cpp's
-/// `Color::add` clamps each channel into `[0, 1]`; our [`Color::set`]
-/// already does this via the constructor.
-fn color_add(c: &mut Color, r: f32, g: f32, b: f32, a: f32) {
-    let (cr, cg, cb, ca) = (c.r, c.g, c.b, c.a);
-    *c = Color::new(cr + r, cg + g, cb + b, ca + a);
-}
-
-/// Blend timeline RGBA values `(r, g, b, a)` into `c` with `alpha`.
-/// Equivalent to `color_add(c, (r - c.r) * alpha, ...)` but without the
-/// aliasing hazards of holding `&mut c` while reading `c`.
-fn color_lerp_toward(c: &mut Color, r: f32, g: f32, b: f32, a: f32, alpha: f32) {
-    let dr = (r - c.r) * alpha;
-    let dg = (g - c.g) * alpha;
-    let db = (b - c.b) * alpha;
-    let da = (a - c.a) * alpha;
-    color_add(c, dr, dg, db, da);
-}
-
-/// Same as [`color_lerp_toward`] but leaves alpha untouched (RGB-only
-/// timelines).
-fn color_lerp_rgb_toward(c: &mut Color, r: f32, g: f32, b: f32, alpha: f32) {
-    let dr = (r - c.r) * alpha;
-    let dg = (g - c.g) * alpha;
-    let db = (b - c.b) * alpha;
-    color_add(c, dr, dg, db, 0.0);
-}
-
-#[allow(clippy::float_cmp)] // `alpha == 1.0` is a tag check, not imprecise equality
-fn apply_rgba(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    if !slot_bone_active(skeleton, slot_id) {
-        return;
-    }
-    let setup = skeleton.data.slots[slot_id.index()].color;
-    let slot = &mut skeleton.slots[slot_id.index()];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                slot.color = setup;
-            }
-            MixBlend::First => {
-                color_lerp_toward(&mut slot.color, setup.r, setup.g, setup.b, setup.a, alpha);
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let [r, g, b, a] = sample_color_channels::<4>(&curves.frames, &curves.curves, time);
-    if alpha == 1.0 {
-        slot.color = Color::new(r, g, b, a);
-    } else {
-        if blend == MixBlend::Setup {
-            slot.color = setup;
-        }
-        color_lerp_toward(&mut slot.color, r, g, b, a, alpha);
-    }
-}
-
-#[allow(clippy::float_cmp)]
-fn apply_rgb(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    if !slot_bone_active(skeleton, slot_id) {
-        return;
-    }
-    let setup = skeleton.data.slots[slot_id.index()].color;
-    let slot = &mut skeleton.slots[slot_id.index()];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                slot.color = setup;
-            }
-            MixBlend::First => {
-                color_lerp_toward(&mut slot.color, setup.r, setup.g, setup.b, setup.a, alpha);
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let [r, g, b] = sample_color_channels::<3>(&curves.frames, &curves.curves, time);
-    if alpha == 1.0 {
-        slot.color = Color::new(r, g, b, slot.color.a);
-    } else {
-        if blend == MixBlend::Setup {
-            slot.color = Color::new(setup.r, setup.g, setup.b, slot.color.a);
-        }
-        color_lerp_rgb_toward(&mut slot.color, r, g, b, alpha);
-    }
-}
-
-#[allow(clippy::float_cmp)]
-fn apply_alpha(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    if !slot_bone_active(skeleton, slot_id) {
-        return;
-    }
-    let setup = skeleton.data.slots[slot_id.index()].color;
-    let slot = &mut skeleton.slots[slot_id.index()];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => slot.color.a = setup.a,
-            MixBlend::First => slot.color.a += (setup.a - slot.color.a) * alpha,
-            _ => {}
-        }
-        return;
-    }
-
-    let a = curve_value1(&curves.frames, &curves.curves, time);
-    if alpha == 1.0 {
-        slot.color.a = a;
-    } else {
-        if blend == MixBlend::Setup {
-            slot.color.a = setup.a;
-        }
-        slot.color.a += (a - slot.color.a) * alpha;
-    }
-}
-
-#[allow(clippy::float_cmp)]
-fn apply_rgba2(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    if !slot_bone_active(skeleton, slot_id) {
-        return;
-    }
-    // Dark-color slots that weren't exported with a dark colour skip the
-    // timeline — matches spine-cpp's `_hasDarkColor` gate on RGBA2Timeline.
-    let setup_light = skeleton.data.slots[slot_id.index()].color;
-    let Some(setup_dark) = skeleton.data.slots[slot_id.index()].dark_color else {
-        return;
-    };
-    let slot = &mut skeleton.slots[slot_id.index()];
-    let Some(dark) = slot.dark_color.as_mut() else {
-        return;
-    };
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                slot.color = setup_light;
-                *dark = setup_dark;
-            }
-            MixBlend::First => {
-                color_lerp_toward(
-                    &mut slot.color,
-                    setup_light.r,
-                    setup_light.g,
-                    setup_light.b,
-                    setup_light.a,
-                    alpha,
-                );
-                color_lerp_rgb_toward(dark, setup_dark.r, setup_dark.g, setup_dark.b, alpha);
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    // stride 8: [t, r, g, b, a, r2, g2, b2]
-    let [r, g, b, a, r2, g2, b2] = sample_color_channels::<7>(&curves.frames, &curves.curves, time);
-    if alpha == 1.0 {
-        slot.color = Color::new(r, g, b, a);
-        *dark = Color::new(r2, g2, b2, dark.a);
-    } else {
-        if blend == MixBlend::Setup {
-            slot.color = setup_light;
-            *dark = Color::new(setup_dark.r, setup_dark.g, setup_dark.b, dark.a);
-        }
-        color_lerp_toward(&mut slot.color, r, g, b, a, alpha);
-        color_lerp_rgb_toward(dark, r2, g2, b2, alpha);
-    }
-}
-
-#[allow(clippy::float_cmp)]
-fn apply_rgb2(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    if !slot_bone_active(skeleton, slot_id) {
-        return;
-    }
-    let setup_light = skeleton.data.slots[slot_id.index()].color;
-    let Some(setup_dark) = skeleton.data.slots[slot_id.index()].dark_color else {
-        return;
-    };
-    let slot = &mut skeleton.slots[slot_id.index()];
-    let Some(dark) = slot.dark_color.as_mut() else {
-        return;
-    };
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                slot.color = Color::new(setup_light.r, setup_light.g, setup_light.b, slot.color.a);
-                *dark = Color::new(setup_dark.r, setup_dark.g, setup_dark.b, dark.a);
-            }
-            MixBlend::First => {
-                color_lerp_rgb_toward(
-                    &mut slot.color,
-                    setup_light.r,
-                    setup_light.g,
-                    setup_light.b,
-                    alpha,
-                );
-                color_lerp_rgb_toward(dark, setup_dark.r, setup_dark.g, setup_dark.b, alpha);
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    // stride 7: [t, r, g, b, r2, g2, b2]
-    let [r, g, b, r2, g2, b2] = sample_color_channels::<6>(&curves.frames, &curves.curves, time);
-    if alpha == 1.0 {
-        slot.color = Color::new(r, g, b, slot.color.a);
-        *dark = Color::new(r2, g2, b2, dark.a);
-    } else {
-        if blend == MixBlend::Setup {
-            slot.color = Color::new(setup_light.r, setup_light.g, setup_light.b, slot.color.a);
-            *dark = Color::new(setup_dark.r, setup_dark.g, setup_dark.b, dark.a);
-        }
-        color_lerp_rgb_toward(&mut slot.color, r, g, b, alpha);
-        color_lerp_rgb_toward(dark, r2, g2, b2, alpha);
-    }
-}
-
-fn apply_attachment(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    frames: &[f32],
-    names: &[Option<String>],
-    time: f32,
-    blend: MixBlend,
-    direction: MixDirection,
-) {
-    if !slot_bone_active(skeleton, slot_id) {
-        return;
-    }
-    let setup_name = skeleton.data.slots[slot_id.index()].attachment_name.clone();
-
-    // Mixing out: only reset to setup-pose attachment on Setup blend.
-    if direction == MixDirection::Out {
-        if blend == MixBlend::Setup {
-            let att = setup_name
-                .as_deref()
-                .and_then(|n| skeleton.get_attachment(slot_id, n));
-            skeleton.slots[slot_id.index()].attachment = att;
-        }
-        return;
-    }
-
-    if time < frames[0] {
-        if blend == MixBlend::Setup || blend == MixBlend::First {
-            let att = setup_name
-                .as_deref()
-                .and_then(|n| skeleton.get_attachment(slot_id, n));
-            skeleton.slots[slot_id.index()].attachment = att;
-        }
-        return;
-    }
-
-    // Stepped lookup (attachment name is discrete). Frames is just times, so
-    // step = 1; names[i] is the attachment for frame i.
-    let i = search(frames, time, 1);
-    let att = names[i]
-        .as_deref()
-        .and_then(|n| skeleton.get_attachment(slot_id, n));
-    skeleton.slots[slot_id.index()].attachment = att;
-}
-
-// ---------------------------------------------------------------------------
-// Skeleton-wide timelines
-// ---------------------------------------------------------------------------
-
-fn apply_draw_order(
-    skeleton: &mut Skeleton,
-    frames: &[f32],
-    draw_orders: &[Option<Vec<SlotId>>],
-    time: f32,
-    blend: MixBlend,
-    direction: MixDirection,
-) {
-    let slot_count = skeleton.slots.len();
-
-    // Mixing out on Setup blend: restore identity permutation. Otherwise
-    // leave draw_order alone.
-    if direction == MixDirection::Out {
-        if blend == MixBlend::Setup {
-            skeleton.draw_order.clear();
-            skeleton
-                .draw_order
-                .extend((0..slot_count).map(|i| SlotId(i as u16)));
-        }
-        return;
-    }
-
-    if time < frames[0] {
-        if blend == MixBlend::Setup || blend == MixBlend::First {
-            skeleton.draw_order.clear();
-            skeleton
-                .draw_order
-                .extend((0..slot_count).map(|i| SlotId(i as u16)));
-        }
-        return;
-    }
-
-    let i = search(frames, time, 1);
-    match &draw_orders[i] {
-        None => {
-            // A None frame means "restore identity order".
-            skeleton.draw_order.clear();
-            skeleton
-                .draw_order
-                .extend((0..slot_count).map(|i| SlotId(i as u16)));
-        }
-        Some(order) => {
-            skeleton.draw_order.clear();
-            skeleton.draw_order.extend_from_slice(order);
-        }
-    }
-}
-
-#[allow(clippy::float_cmp)] // matching spine-cpp's `frames[i - 1] != frameTime` equality check verbatim
-fn apply_event(
-    frames: &[f32],
-    keyframes: &[AnimationEvent],
-    last_time: f32,
+    keys: &[crate::data::AnimationEvent],
+    mut last_time: f32,
     time: f32,
     events: &mut Vec<Event>,
 ) {
     let frame_count = frames.len();
-    if frame_count == 0 {
-        return;
-    }
-
-    let (mut last_time, time) = if last_time > time {
-        // Looped back: fire every event after last_time (to infinity),
-        // then re-enter with last_time = -1 so the caller-visible range
-        // [0, time] fires on the wrap.
-        apply_event(frames, keyframes, last_time, f32::MAX, events);
-        (-1.0_f32, time)
+    if last_time > time {
+        // Looped: fire the rest of the previous loop first.
+        fire_events(frames, keys, last_time, f32::MAX, events);
+        last_time = -1.0;
     } else if last_time >= frames[frame_count - 1] {
         return;
-    } else {
-        (last_time, time)
-    };
-
+    }
     if time < frames[0] {
         return;
     }
-
-    let mut i: usize = if last_time < frames[0] {
+    let mut i = if last_time < frames[0] {
         0
     } else {
-        // spine-cpp: Animation::search(frames, lastTime) + 1, then walk back
-        // to fire every event keyed at the same time as the one we landed on.
         let mut i = search(frames, last_time, 1) + 1;
-        let frame_time = frames[i.min(frame_count - 1)];
+        let frame_time = frames[i];
         while i > 0 && frames[i - 1] == frame_time {
             i -= 1;
         }
         i
     };
-
     while i < frame_count && time >= frames[i] {
-        let k = &keyframes[i];
+        let k = &keys[i];
         events.push(Event {
             data: k.event,
             time: k.time,
@@ -1139,356 +1029,10 @@ fn apply_event(
         });
         i += 1;
     }
-    let _ = &mut last_time; // silences unused_mut after the `if lastTime > time` branch
 }
 
-// ---------------------------------------------------------------------------
-// Constraint timelines (Phase 3d)
-// ---------------------------------------------------------------------------
-
-/// Sample `N` channel values at `time` from a stride-`(1 + N)` timeline.
-/// Identical shape to [`sample_color_channels`] but meant for the constraint
-/// channel layouts (`mix_rotate` / `mix_x` / `mix_y` / etc.). Returning the
-/// frame index `i` lets IK's stepped flag lookup share the search.
-fn sample_constraint_channels<const N: usize>(
-    frames: &[f32],
-    curves: &[f32],
-    time: f32,
-) -> ([f32; N], usize) {
-    let entries = N + 1;
-    let i = search(frames, time, entries);
-    let curve_type = curves[i / entries] as i32;
-    let mut out = [0.0_f32; N];
-    match curve_type {
-        CURVE_LINEAR => {
-            let before = frames[i];
-            for (k, o) in out.iter_mut().enumerate() {
-                *o = frames[i + 1 + k];
-            }
-            let t = (time - before) / (frames[i + entries] - before);
-            for (k, o) in out.iter_mut().enumerate() {
-                *o += (frames[i + entries + 1 + k] - *o) * t;
-            }
-        }
-        CURVE_STEPPED => {
-            for (k, o) in out.iter_mut().enumerate() {
-                *o = frames[i + 1 + k];
-            }
-        }
-        _ => {
-            let bezier_0 = (curve_type - CURVE_BEZIER) as usize;
-            for (k, o) in out.iter_mut().enumerate() {
-                *o = bezier_value(
-                    frames,
-                    curves,
-                    time,
-                    i,
-                    1 + k,
-                    bezier_0 + k * BEZIER_SIZE,
-                    entries,
-                );
-            }
-        }
-    }
-    (out, i)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_ik_constraint(
-    skeleton: &mut Skeleton,
-    constraint_id: crate::data::IkConstraintId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-    direction: MixDirection,
-) {
-    // Stride 6: [t, mix, softness, bend_direction, compress, stretch].
-    // Only mix and softness are curve-interpolated; bend/compress/stretch
-    // are discrete flags read directly from the frame's left edge.
-    const ENTRIES: usize = 6;
-    const MIX: usize = 1;
-    const SOFTNESS: usize = 2;
-    const BEND_DIRECTION: usize = 3;
-    const COMPRESS: usize = 4;
-    const STRETCH: usize = 5;
-
-    let idx = constraint_id.index();
-    if !skeleton.ik_constraints[idx].active {
-        return;
-    }
-    let data = skeleton.data.ik_constraints[idx].clone();
-    let c = &mut skeleton.ik_constraints[idx];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                c.mix = data.mix;
-                c.softness = data.softness;
-                c.bend_direction = data.bend_direction;
-                c.compress = data.compress;
-                c.stretch = data.stretch;
-            }
-            MixBlend::First => {
-                c.mix += (data.mix - c.mix) * alpha;
-                c.softness += (data.softness - c.softness) * alpha;
-                c.bend_direction = data.bend_direction;
-                c.compress = data.compress;
-                c.stretch = data.stretch;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let i = search(&curves.frames, time, ENTRIES);
-    let curve_type = curves.curves[i / ENTRIES] as i32;
-    let (mix, softness) = match curve_type {
-        CURVE_LINEAR => {
-            let before = curves.frames[i];
-            let mut m = curves.frames[i + MIX];
-            let mut s = curves.frames[i + SOFTNESS];
-            let t = (time - before) / (curves.frames[i + ENTRIES] - before);
-            m += (curves.frames[i + ENTRIES + MIX] - m) * t;
-            s += (curves.frames[i + ENTRIES + SOFTNESS] - s) * t;
-            (m, s)
-        }
-        CURVE_STEPPED => (curves.frames[i + MIX], curves.frames[i + SOFTNESS]),
-        _ => {
-            let bezier_0 = (curve_type - CURVE_BEZIER) as usize;
-            let m = bezier_value(
-                &curves.frames,
-                &curves.curves,
-                time,
-                i,
-                MIX,
-                bezier_0,
-                ENTRIES,
-            );
-            let s = bezier_value(
-                &curves.frames,
-                &curves.curves,
-                time,
-                i,
-                SOFTNESS,
-                bezier_0 + BEZIER_SIZE,
-                ENTRIES,
-            );
-            (m, s)
-        }
-    };
-    let bend_f = curves.frames[i + BEND_DIRECTION];
-    let compress_f = curves.frames[i + COMPRESS];
-    let stretch_f = curves.frames[i + STRETCH];
-
-    if blend == MixBlend::Setup {
-        c.mix = data.mix + (mix - data.mix) * alpha;
-        c.softness = data.softness + (softness - data.softness) * alpha;
-        if direction == MixDirection::Out {
-            c.bend_direction = data.bend_direction;
-            c.compress = data.compress;
-            c.stretch = data.stretch;
-        } else {
-            c.bend_direction = bend_f as i8;
-            c.compress = compress_f != 0.0;
-            c.stretch = stretch_f != 0.0;
-        }
-    } else {
-        c.mix += (mix - c.mix) * alpha;
-        c.softness += (softness - c.softness) * alpha;
-        if direction == MixDirection::In {
-            c.bend_direction = bend_f as i8;
-            c.compress = compress_f != 0.0;
-            c.stretch = stretch_f != 0.0;
-        }
-    }
-}
-
-fn apply_transform_constraint(
-    skeleton: &mut Skeleton,
-    constraint_id: crate::data::TransformConstraintId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let idx = constraint_id.index();
-    if !skeleton.transform_constraints[idx].active {
-        return;
-    }
-    let data = skeleton.data.transform_constraints[idx].clone();
-    let c = &mut skeleton.transform_constraints[idx];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                c.mix_rotate = data.mix_rotate;
-                c.mix_x = data.mix_x;
-                c.mix_y = data.mix_y;
-                c.mix_scale_x = data.mix_scale_x;
-                c.mix_scale_y = data.mix_scale_y;
-                c.mix_shear_y = data.mix_shear_y;
-            }
-            MixBlend::First => {
-                c.mix_rotate += (data.mix_rotate - c.mix_rotate) * alpha;
-                c.mix_x += (data.mix_x - c.mix_x) * alpha;
-                c.mix_y += (data.mix_y - c.mix_y) * alpha;
-                c.mix_scale_x += (data.mix_scale_x - c.mix_scale_x) * alpha;
-                c.mix_scale_y += (data.mix_scale_y - c.mix_scale_y) * alpha;
-                c.mix_shear_y += (data.mix_shear_y - c.mix_shear_y) * alpha;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let ([rotate, x, y, scale_x, scale_y, shear_y], _) =
-        sample_constraint_channels::<6>(&curves.frames, &curves.curves, time);
-
-    if blend == MixBlend::Setup {
-        c.mix_rotate = data.mix_rotate + (rotate - data.mix_rotate) * alpha;
-        c.mix_x = data.mix_x + (x - data.mix_x) * alpha;
-        c.mix_y = data.mix_y + (y - data.mix_y) * alpha;
-        c.mix_scale_x = data.mix_scale_x + (scale_x - data.mix_scale_x) * alpha;
-        c.mix_scale_y = data.mix_scale_y + (scale_y - data.mix_scale_y) * alpha;
-        c.mix_shear_y = data.mix_shear_y + (shear_y - data.mix_shear_y) * alpha;
-    } else {
-        c.mix_rotate += (rotate - c.mix_rotate) * alpha;
-        c.mix_x += (x - c.mix_x) * alpha;
-        c.mix_y += (y - c.mix_y) * alpha;
-        c.mix_scale_x += (scale_x - c.mix_scale_x) * alpha;
-        c.mix_scale_y += (scale_y - c.mix_scale_y) * alpha;
-        c.mix_shear_y += (shear_y - c.mix_shear_y) * alpha;
-    }
-}
-
-fn apply_path_position(
-    skeleton: &mut Skeleton,
-    constraint_id: crate::data::PathConstraintId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let idx = constraint_id.index();
-    if !skeleton.path_constraints[idx].active {
-        return;
-    }
-    let setup = skeleton.data.path_constraints[idx].position;
-    let c = &mut skeleton.path_constraints[idx];
-    c.position = absolute_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        c.position,
-        setup,
-    );
-}
-
-fn apply_path_spacing(
-    skeleton: &mut Skeleton,
-    constraint_id: crate::data::PathConstraintId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let idx = constraint_id.index();
-    if !skeleton.path_constraints[idx].active {
-        return;
-    }
-    let setup = skeleton.data.path_constraints[idx].spacing;
-    let c = &mut skeleton.path_constraints[idx];
-    c.spacing = absolute_value(
-        &curves.frames,
-        &curves.curves,
-        time,
-        alpha,
-        blend,
-        c.spacing,
-        setup,
-    );
-}
-
-fn apply_path_mix(
-    skeleton: &mut Skeleton,
-    constraint_id: crate::data::PathConstraintId,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    let idx = constraint_id.index();
-    if !skeleton.path_constraints[idx].active {
-        return;
-    }
-    let data = skeleton.data.path_constraints[idx].clone();
-    let c = &mut skeleton.path_constraints[idx];
-
-    if time < curves.frames[0] {
-        match blend {
-            MixBlend::Setup => {
-                c.mix_rotate = data.mix_rotate;
-                c.mix_x = data.mix_x;
-                c.mix_y = data.mix_y;
-            }
-            MixBlend::First => {
-                c.mix_rotate += (data.mix_rotate - c.mix_rotate) * alpha;
-                c.mix_x += (data.mix_x - c.mix_x) * alpha;
-                c.mix_y += (data.mix_y - c.mix_y) * alpha;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    let ([rotate, x, y], _) = sample_constraint_channels::<3>(&curves.frames, &curves.curves, time);
-
-    if blend == MixBlend::Setup {
-        c.mix_rotate = data.mix_rotate + (rotate - data.mix_rotate) * alpha;
-        c.mix_x = data.mix_x + (x - data.mix_x) * alpha;
-        c.mix_y = data.mix_y + (y - data.mix_y) * alpha;
-    } else {
-        c.mix_rotate += (rotate - c.mix_rotate) * alpha;
-        c.mix_x += (x - c.mix_x) * alpha;
-        c.mix_y += (y - c.mix_y) * alpha;
-    }
-}
-
-/// Get a physics-property value off the runtime constraint, per
-/// [`PhysicsProperty`].
-fn physics_get(c: &PhysicsConstraint, prop: PhysicsProperty) -> f32 {
-    match prop {
-        PhysicsProperty::Inertia => c.inertia,
-        PhysicsProperty::Strength => c.strength,
-        PhysicsProperty::Damping => c.damping,
-        PhysicsProperty::Mass => c.mass_inverse,
-        PhysicsProperty::Wind => c.wind,
-        PhysicsProperty::Gravity => c.gravity,
-        PhysicsProperty::Mix => c.mix,
-    }
-}
-
-/// Setup-pose value for a physics property.
-fn physics_setup(data: &PhysicsConstraintData, prop: PhysicsProperty) -> f32 {
-    match prop {
-        PhysicsProperty::Inertia => data.inertia,
-        PhysicsProperty::Strength => data.strength,
-        PhysicsProperty::Damping => data.damping,
-        PhysicsProperty::Mass => data.mass_inverse,
-        PhysicsProperty::Wind => data.wind,
-        PhysicsProperty::Gravity => data.gravity,
-        PhysicsProperty::Mix => data.mix,
-    }
-}
-
-/// Is the per-property "global" flag set on this constraint's data?
-/// spine-cpp's `global(prop)` virtual — governs whether a `None`-constraint
-/// physics timeline applies to this constraint.
-fn physics_global(data: &PhysicsConstraintData, prop: PhysicsProperty) -> bool {
-    match prop {
+fn physics_global(data: &PhysicsConstraintData, p: PhysicsProperty) -> bool {
+    match p {
         PhysicsProperty::Inertia => data.inertia_global,
         PhysicsProperty::Strength => data.strength_global,
         PhysicsProperty::Damping => data.damping_global,
@@ -1499,174 +1043,109 @@ fn physics_global(data: &PhysicsConstraintData, prop: PhysicsProperty) -> bool {
     }
 }
 
-fn physics_set(c: &mut PhysicsConstraint, prop: PhysicsProperty, value: f32) {
-    match prop {
-        PhysicsProperty::Inertia => c.inertia = value,
-        PhysicsProperty::Strength => c.strength = value,
-        PhysicsProperty::Damping => c.damping = value,
-        PhysicsProperty::Mass => c.mass_inverse = value,
-        PhysicsProperty::Wind => c.wind = value,
-        PhysicsProperty::Gravity => c.gravity = value,
-        PhysicsProperty::Mix => c.mix = value,
+fn physics_get(pose: &crate::data::PhysicsConstraintPose, p: PhysicsProperty) -> f32 {
+    match p {
+        PhysicsProperty::Inertia => pose.inertia,
+        PhysicsProperty::Strength => pose.strength,
+        PhysicsProperty::Damping => pose.damping,
+        PhysicsProperty::Mass => 1.0 / pose.mass_inverse,
+        PhysicsProperty::Wind => pose.wind,
+        PhysicsProperty::Gravity => pose.gravity,
+        PhysicsProperty::Mix => pose.mix,
     }
 }
 
-#[allow(clippy::single_match_else)] // dual-arm Some/None match reads cleaner than if let + else
-fn apply_physics(
-    skeleton: &mut Skeleton,
-    constraint_id: Option<PhysicsConstraintId>,
-    property: PhysicsProperty,
-    curves: &CurveFrames,
-    time: f32,
-    alpha: f32,
-    blend: MixBlend,
-) {
-    match constraint_id {
-        Some(id) => {
-            let idx = id.index();
-            if !skeleton.physics_constraints[idx].active {
-                return;
-            }
-            let setup = physics_setup(&skeleton.data.physics_constraints[idx], property);
-            let current = physics_get(&skeleton.physics_constraints[idx], property);
-            let new_value = absolute_value(
-                &curves.frames,
-                &curves.curves,
-                time,
-                alpha,
-                blend,
-                current,
-                setup,
-            );
-            physics_set(&mut skeleton.physics_constraints[idx], property, new_value);
-        }
-        None => {
-            // Apply to every active physics constraint whose data carries
-            // the matching `_global` flag. spine-cpp samples the curve once
-            // at top-level (returns 0 when before the first frame) and
-            // passes it as the overriding value to getAbsoluteValue's
-            // 6-arg overload.
-            let value = if time >= curves.frames[0] {
-                curve_value1(&curves.frames, &curves.curves, time)
-            } else {
-                0.0
-            };
-            for i in 0..skeleton.physics_constraints.len() {
-                if !skeleton.physics_constraints[i].active {
-                    continue;
-                }
-                if !physics_global(&skeleton.data.physics_constraints[i], property) {
-                    continue;
-                }
-                let setup = physics_setup(&skeleton.data.physics_constraints[i], property);
-                let current = physics_get(&skeleton.physics_constraints[i], property);
-                // getAbsoluteValue(time, alpha, blend, current, setup, value)
-                // overload: uses passed `value` rather than sampling internally.
-                let new_value = if time < curves.frames[0] {
-                    match blend {
-                        MixBlend::Setup => setup,
-                        MixBlend::First => current + (setup - current) * alpha,
-                        _ => current,
-                    }
-                } else if blend == MixBlend::Setup {
-                    setup + (value - setup) * alpha
-                } else {
-                    current + (value - current) * alpha
-                };
-                physics_set(&mut skeleton.physics_constraints[i], property, new_value);
-            }
-        }
+fn physics_set(pose: &mut crate::data::PhysicsConstraintPose, p: PhysicsProperty, v: f32) {
+    match p {
+        PhysicsProperty::Inertia => pose.inertia = v,
+        PhysicsProperty::Strength => pose.strength = v,
+        PhysicsProperty::Damping => pose.damping = v,
+        PhysicsProperty::Mass => pose.mass_inverse = 1.0 / v,
+        PhysicsProperty::Wind => pose.wind = v,
+        PhysicsProperty::Gravity => pose.gravity = v,
+        PhysicsProperty::Mix => pose.mix = v,
     }
 }
 
-fn apply_physics_reset(
-    skeleton: &mut Skeleton,
-    constraint_id: Option<PhysicsConstraintId>,
+fn physics_reset(
+    sk: &mut Skeleton,
+    constraint: Option<ConstraintId>,
     frames: &[f32],
-    last_time: f32,
+    mut last_time: f32,
     time: f32,
 ) {
-    // Active check is a function of constraint_id; precompute the target set.
-    // Matches spine-cpp: skip the whole thing if the named constraint isn't
-    // active (but when `None`, still run — "all active" filter below).
-    if let Some(id) = constraint_id
-        && !skeleton.physics_constraints[id.index()].active
+    if let Some(id) = constraint
+        && !sk.constraints_active[id.index()]
     {
         return;
     }
-
-    // Wrap-around for looped animations: fire every event past last_time,
-    // then re-enter with last_time = -1 for the [0, time] portion.
-    let (last_time, time) = if last_time > time {
-        apply_physics_reset(skeleton, constraint_id, frames, last_time, f32::MAX);
-        (-1.0_f32, time)
+    if last_time > time {
+        physics_reset(sk, constraint, frames, last_time, f32::MAX);
+        last_time = -1.0;
     } else if last_time >= frames[frames.len() - 1] {
         return;
-    } else {
-        (last_time, time)
-    };
-
+    }
     if time < frames[0] {
         return;
     }
-
-    // spine-cpp: if last_time < frames[0] || time >= frames[search(frames, last_time) + 1]
-    let trigger = if last_time < frames[0] {
-        true
-    } else {
-        let next_frame_idx = (search(frames, last_time, 1) + 1).min(frames.len() - 1);
-        time >= frames[next_frame_idx]
-    };
-    if !trigger {
-        return;
-    }
-
-    match constraint_id {
-        Some(id) => {
-            skeleton.physics_constraints[id.index()].reset = true;
-        }
-        None => {
-            for c in &mut skeleton.physics_constraints {
-                if c.active {
-                    c.reset = true;
+    if last_time < frames[0] || time >= frames[search(frames, last_time, 1) + 1] {
+        let skeleton_time = sk.time;
+        let reset = |c: &mut Constraint| {
+            if let Constraint::Physics(p) = c {
+                PhysicsConstraint::reset(p, skeleton_time);
+            }
+        };
+        match constraint {
+            Some(id) => reset(&mut sk.constraints[id.index()]),
+            None => {
+                for i in 0..sk.physics.len() {
+                    let id = sk.physics[i];
+                    if sk.constraints_active[id.index()] {
+                        reset(&mut sk.constraints[id.index()]);
+                    }
                 }
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Deform (Phase 6b) — literal port of `spine-cpp/src/spine/DeformTimeline.cpp`
-// ---------------------------------------------------------------------------
-
-/// Returns `Some(&VertexData)` for a `VertexAttachment`-style attachment,
-/// `None` otherwise. Used by `apply_deform` / `apply_sequence` to
-/// resolve the slot's currently-attached geometry.
-fn vertex_attachment(att: &Attachment) -> Option<&VertexData> {
-    match att {
-        Attachment::Mesh(m) => Some(&m.vertex_data),
-        Attachment::BoundingBox(b) => Some(&b.vertex_data),
-        Attachment::Path(p) => Some(&p.vertex_data),
-        Attachment::Clipping(c) => Some(&c.vertex_data),
-        _ => None,
+/// `Attachment::isTimelineActive`: whether the slot, or any slot the
+/// attachment's timelines also drive, shows an attachment using them.
+fn is_timeline_active(
+    sk: &Skeleton,
+    sd: &SkeletonData,
+    attachment: AttachmentId,
+    slot: SlotId,
+    applied: bool,
+) -> bool {
+    let uses = |s: SlotId| {
+        let slot = &sk.slots[s.index()];
+        sk.bones[slot.bone.index()].active
+            && slot
+                .posed
+                .select(applied)
+                .attachment
+                .is_some_and(|a| sd.attachments[a.index()].timeline_attachment(a) == attachment)
+    };
+    if uses(slot) {
+        return true;
     }
+    sd.attachments[attachment.index()]
+        .timeline_link()
+        .is_some_and(|l| l.slots.iter().any(|&s| uses(s)))
 }
 
-/// Returns the attachment's **effective** timeline-attachment target.
-/// `None` in the stored field means "self" (matches spine-cpp's
-/// constructor default `_timelineAttachment(this)`).
-fn effective_timeline_attachment(vd: &VertexData, own_id: AttachmentId) -> AttachmentId {
-    vd.timeline_attachment.unwrap_or(own_id)
+fn timeline_slots(sd: &SkeletonData, attachment: AttachmentId) -> &[SlotId] {
+    sd.attachments[attachment.index()]
+        .timeline_link()
+        .map_or(&[], |l| l.slots.as_slice())
 }
 
-/// `DeformTimeline`'s bespoke `getCurvePercent` — returns the 0..1
-/// interpolation factor between `frame` and `frame+1` based on
-/// `time`. Different from the generic `curve_value*` helpers because
-/// Deform keyframes carry vertex arrays rather than scalar values.
+/// `DeformTimeline::getCurvePercent`.
 fn deform_curve_percent(curves: &CurveFrames, frame: usize, time: f32) -> f32 {
     let frames = &curves.frames;
-    let curve_arr = &curves.curves;
-    let i = curve_arr[frame] as i32;
+    let c = &curves.curves;
+    let i = c[frame] as i32;
     if i == CURVE_LINEAR {
         let x = frames[frame];
         return (time - x) / (frames[frame + 1] - x);
@@ -1674,924 +1153,327 @@ fn deform_curve_percent(curves: &CurveFrames, frame: usize, time: f32) -> f32 {
     if i == CURVE_STEPPED {
         return 0.0;
     }
-    // BEZIER: `i - CURVE_BEZIER` is the offset into the samples tail.
     let mut j = (i - CURVE_BEZIER) as usize;
-    if curve_arr[j] > time {
+    if c[j] > time {
         let x = frames[frame];
-        return curve_arr[j + 1] * (time - x) / (curve_arr[j] - x);
+        return c[j + 1] * (time - x) / (c[j] - x);
     }
     let n = j + BEZIER_SIZE;
     j += 2;
     while j < n {
-        if curve_arr[j] >= time {
-            let x = curve_arr[j - 2];
-            let y = curve_arr[j - 1];
-            return y + (time - x) / (curve_arr[j] - x) * (curve_arr[j + 1] - y);
+        if c[j] >= time {
+            let x = c[j - 2];
+            let y = c[j - 1];
+            return y + (time - x) / (c[j] - x) * (c[j + 1] - y);
         }
         j += 2;
     }
-    let x = curve_arr[n - 2];
-    let y = curve_arr[n - 1];
+    let x = c[n - 2];
+    let y = c[n - 1];
     y + (1.0 - y) * (time - x) / (frames[frame + 1] - x)
 }
 
-// Literal port — spine-cpp `DeformTimeline::apply` is a single ~125-line
-// function. Splitting it into helpers breaks diff-ability.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::needless_range_loop
-)]
 fn apply_deform(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    timeline_target: AttachmentId,
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    attachment: AttachmentId,
     curves: &CurveFrames,
     vertices: &[Vec<f32>],
     time: f32,
-    mut alpha: f32,
-    mut blend: MixBlend,
+    alpha: f32,
+    from: MixFrom,
+    add: bool,
+    applied: bool,
 ) {
-    // Slot's bone must be active.
-    let slot_bone = skeleton.data.slots[slot_id.index()].bone;
-    if !skeleton.bones[slot_bone.index()].active {
+    if !is_timeline_active(sk, sd, attachment, slot, applied) {
         return;
     }
-
-    // Resolve the slot's currently-attached VertexAttachment and
-    // compare its timeline-attachment against the timeline's stored
-    // target. Bail if the current attachment isn't a vertex
-    // attachment or points somewhere else.
-    let Some(slot_attachment_id) = skeleton.slots[slot_id.index()].attachment else {
-        return;
-    };
-    let (bones_empty, setup_vertex_len, setup_vertices_ptr_offset) = {
-        let att = &skeleton.data.attachments[slot_attachment_id.index()];
-        let Some(vd) = vertex_attachment(att) else {
-            return;
-        };
-        if effective_timeline_attachment(vd, slot_attachment_id) != timeline_target {
-            return;
+    let frames = &curves.frames;
+    let targets = std::iter::once(slot).chain(timeline_slots(sd, attachment).iter().copied());
+    if time < frames[0] {
+        for s in targets {
+            deform_before_first(
+                sk,
+                sd,
+                s,
+                attachment,
+                vertices[0].len(),
+                alpha,
+                from,
+                applied,
+            );
         }
+        return;
+    }
+    let (v1, v2, percent) = if time >= frames[frames.len() - 1] {
+        (&vertices[frames.len() - 1], None, 0.0)
+    } else {
+        let frame = search(frames, time, 1);
         (
-            vd.bones.is_empty(),
-            vd.vertices.len(),
-            slot_attachment_id.index(),
+            &vertices[frame],
+            Some(&vertices[frame + 1]),
+            deform_curve_percent(curves, frame, time),
         )
     };
-
-    // Read `vertexCount` from the first keyframe (spine-cpp:
-    // `vertices[0].size()`). With zero frames we'd have bailed; with a
-    // non-empty timeline every frame stores the same length.
-    let Some(vertex_count) = vertices.first().map(Vec::len) else {
-        return;
-    };
-    if vertex_count == 0 {
-        return;
-    }
-
-    // If the slot's deform buffer is empty, spine-cpp forces Setup
-    // blend — there's nothing to blend against.
-    if skeleton.slots[slot_id.index()].deform.is_empty() {
-        blend = MixBlend::Setup;
-    }
-
-    let frames = &curves.frames;
-
-    // --- Before first frame -----------------------------------------------
-    if time < frames[0] {
-        let deform = &mut skeleton.slots[slot_id.index()].deform;
-        match blend {
-            MixBlend::Setup => {
-                deform.clear();
-            }
-            MixBlend::First => {
-                if (alpha - 1.0).abs() < f32::EPSILON {
-                    deform.clear();
-                    return;
-                }
-                deform.resize(vertex_count, 0.0);
-                if bones_empty {
-                    // Unweighted: blend toward setup-pose vertices.
-                    // Re-borrow `setup` via the known attachment index.
-                    let setup = match &skeleton.data.attachments[setup_vertices_ptr_offset] {
-                        Attachment::Mesh(m) => &m.vertex_data.vertices,
-                        Attachment::BoundingBox(b) => &b.vertex_data.vertices,
-                        Attachment::Path(p) => &p.vertex_data.vertices,
-                        Attachment::Clipping(c) => &c.vertex_data.vertices,
-                        _ => return,
-                    };
-                    for i in 0..vertex_count {
-                        deform[i] += (setup[i] - deform[i]) * alpha;
-                    }
-                } else {
-                    // Weighted: scale existing offsets toward zero.
-                    let factor = 1.0 - alpha;
-                    for i in 0..vertex_count {
-                        deform[i] *= factor;
-                    }
-                }
-            }
-            MixBlend::Replace | MixBlend::Add => {}
-        }
-        // Silence unused-var warning when the only branch taken was
-        // Replace/Add which uses nothing.
-        let _ = setup_vertex_len;
-        return;
-    }
-
-    // --- After or at last frame / interpolated ----------------------------
-    {
-        let deform = &mut skeleton.slots[slot_id.index()].deform;
-        deform.resize(vertex_count, 0.0);
-    }
-
-    // After the last frame: snap to the last keyframe.
-    if time >= frames[frames.len() - 1] {
-        let last = &vertices[frames.len() - 1];
-        apply_deform_frame(
-            skeleton,
-            slot_id,
-            setup_vertices_ptr_offset,
-            bones_empty,
-            vertex_count,
-            last,
-            last,
-            /* percent = */ 1.0,
-            alpha,
-            blend,
-            /* after_last = */ true,
+    for s in targets {
+        deform_slot(
+            sk, sd, s, attachment, v1, v2, percent, alpha, from, add, applied,
         );
-        return;
     }
-
-    // Interpolate between `frame` and `frame + 1`.
-    let frame = search(frames, time, 1);
-    let percent = deform_curve_percent(curves, frame, time);
-    let prev = &vertices[frame];
-    let next = &vertices[frame + 1];
-    apply_deform_frame(
-        skeleton,
-        slot_id,
-        setup_vertices_ptr_offset,
-        bones_empty,
-        vertex_count,
-        prev,
-        next,
-        percent,
-        alpha,
-        blend,
-        /* after_last = */ false,
-    );
-
-    // If `alpha` was mutated into `1 - alpha` inside the "before first"
-    // branch, avoid leaking the change.
-    alpha = alpha.clamp(0.0, 1.0);
-    let _ = alpha;
 }
 
-/// Core of the per-vertex deform blend. `prev`/`next` are already
-/// slot-aware vertex arrays (pre-added setup for unweighted).
-/// `after_last` short-circuits when `percent == 1` and there's no
-/// interpolation to do (matches spine-cpp's post-last-frame branch).
-// Also a direct port of spine-cpp's branchy per-frame blend body.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::needless_range_loop
-)]
-fn apply_deform_frame(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    attachment_idx: usize,
-    bones_empty: bool,
+/// The vertex attachment a slot shows, if its timelines are `attachment`'s.
+fn deform_target<'a>(
+    sk: &'a mut Skeleton,
+    sd: &'a SkeletonData,
+    slot: SlotId,
+    attachment: AttachmentId,
+    applied: bool,
+) -> Option<(&'a mut SlotPose, &'a crate::data::VertexData)> {
+    let s = &mut sk.slots[slot.index()];
+    if !sk.bones[s.bone.index()].active {
+        return None;
+    }
+    let pose = s.posed.select_mut(applied);
+    let a = pose.attachment?;
+    let att: &Attachment = &sd.attachments[a.index()];
+    if att.timeline_attachment(a) != attachment {
+        return None;
+    }
+    Some((pose, att.vertex_data()?))
+}
+
+fn deform_before_first(
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    attachment: AttachmentId,
     vertex_count: usize,
-    prev: &[f32],
-    next: &[f32],
+    alpha: f32,
+    mut from: MixFrom,
+    applied: bool,
+) {
+    let Some((pose, vd)) = deform_target(sk, sd, slot, attachment, applied) else {
+        return;
+    };
+    let deform = &mut pose.deform;
+    if deform.is_empty() {
+        from = MixFrom::Setup;
+    }
+    match from {
+        MixFrom::Setup => deform.clear(),
+        MixFrom::First => {
+            if alpha == 1.0 {
+                deform.clear();
+                return;
+            }
+            deform.resize(vertex_count, 0.0);
+            if vd.bones.is_empty() {
+                for i in 0..vertex_count {
+                    deform[i] += (vd.vertices[i] - deform[i]) * alpha;
+                }
+            } else {
+                let a = 1.0 - alpha;
+                for d in deform.iter_mut() {
+                    *d *= a;
+                }
+            }
+        }
+        MixFrom::Current => {}
+    }
+}
+
+/// `DeformTimeline::applyToSlot` / `applyToPose`.
+fn deform_slot(
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    attachment: AttachmentId,
+    v1: &[f32],
+    v2: Option<&Vec<f32>>,
     percent: f32,
     alpha: f32,
-    blend: MixBlend,
-    after_last: bool,
+    mut from: MixFrom,
+    add: bool,
+    applied: bool,
 ) {
-    // Helper: read setup vertices for the current attachment.
-    // Returns empty slice when the attachment kind doesn't carry
-    // vertex data — callers only reach this code when it does.
-    let setup_vertices: &[f32] = match &skeleton.data.attachments[attachment_idx] {
-        Attachment::Mesh(m) => &m.vertex_data.vertices,
-        Attachment::BoundingBox(b) => &b.vertex_data.vertices,
-        Attachment::Path(p) => &p.vertex_data.vertices,
-        Attachment::Clipping(c) => &c.vertex_data.vertices,
-        _ => &[],
+    let Some((pose, vd)) = deform_target(sk, sd, slot, attachment, applied) else {
+        return;
     };
-
-    // Clone into locals so we can take `&mut deform` without holding a
-    // borrow on skeleton.data.
-    let setup_vec: Vec<f32> = if bones_empty && !setup_vertices.is_empty() {
-        setup_vertices.to_vec()
-    } else {
-        Vec::new()
-    };
-
-    let deform = &mut skeleton.slots[slot_id.index()].deform;
-
-    if (alpha - 1.0).abs() < f32::EPSILON {
-        if blend == MixBlend::Add {
-            if bones_empty {
-                if after_last {
-                    // Unweighted, alpha=1, after last, Add.
+    let vertex_count = v1.len();
+    let deform = &mut pose.deform;
+    if deform.is_empty() {
+        from = MixFrom::Setup;
+    }
+    let from_setup = from == MixFrom::Setup;
+    deform.resize(vertex_count, 0.0);
+    let unweighted = vd.bones.is_empty();
+    let setup = &vd.vertices;
+    let Some(v2) = v2 else {
+        if alpha == 1.0 {
+            if add && !from_setup {
+                if unweighted {
                     for i in 0..vertex_count {
-                        deform[i] += next[i] - setup_vec[i];
+                        deform[i] += v1[i] - setup[i];
                     }
                 } else {
                     for i in 0..vertex_count {
-                        let p = prev[i];
-                        deform[i] += p + (next[i] - p) * percent - setup_vec[i];
+                        deform[i] += v1[i];
                     }
                 }
-            } else if after_last {
+            } else {
+                deform.copy_from_slice(v1);
+            }
+        } else if from_setup {
+            if unweighted {
                 for i in 0..vertex_count {
-                    deform[i] += next[i];
+                    let s = setup[i];
+                    deform[i] = s + (v1[i] - s) * alpha;
                 }
             } else {
                 for i in 0..vertex_count {
-                    let p = prev[i];
-                    deform[i] += p + (next[i] - p) * percent;
+                    deform[i] = v1[i] * alpha;
+                }
+            }
+        } else if add {
+            if unweighted {
+                for i in 0..vertex_count {
+                    deform[i] += (v1[i] - setup[i]) * alpha;
+                }
+            } else {
+                for i in 0..vertex_count {
+                    deform[i] += v1[i] * alpha;
                 }
             }
         } else {
-            // Setup/First/Replace, alpha=1 → overwrite.
-            if after_last {
-                deform.copy_from_slice(&next[..vertex_count]);
-            } else {
-                for i in 0..vertex_count {
-                    let p = prev[i];
-                    deform[i] = p + (next[i] - p) * percent;
-                }
+            for i in 0..vertex_count {
+                deform[i] += (v1[i] - deform[i]) * alpha;
             }
         }
         return;
-    }
-
-    match blend {
-        MixBlend::Setup => {
-            if bones_empty {
-                if after_last {
-                    for i in 0..vertex_count {
-                        let s = setup_vec[i];
-                        deform[i] = s + (next[i] - s) * alpha;
-                    }
-                } else {
-                    for i in 0..vertex_count {
-                        let p = prev[i];
-                        let s = setup_vec[i];
-                        deform[i] = s + (p + (next[i] - p) * percent - s) * alpha;
-                    }
-                }
-            } else if after_last {
+    };
+    let lerp = |i: usize| v1[i] + (v2[i] - v1[i]) * percent;
+    if alpha == 1.0 {
+        if add && !from_setup {
+            if unweighted {
                 for i in 0..vertex_count {
-                    deform[i] = next[i] * alpha;
+                    deform[i] += lerp(i) - setup[i];
                 }
             } else {
                 for i in 0..vertex_count {
-                    let p = prev[i];
-                    deform[i] = (p + (next[i] - p) * percent) * alpha;
+                    deform[i] += lerp(i);
                 }
+            }
+        } else if percent == 0.0 {
+            deform.copy_from_slice(v1);
+        } else {
+            for i in 0..vertex_count {
+                deform[i] = lerp(i);
             }
         }
-        MixBlend::First | MixBlend::Replace => {
-            if after_last {
-                for i in 0..vertex_count {
-                    deform[i] += (next[i] - deform[i]) * alpha;
-                }
-            } else {
-                for i in 0..vertex_count {
-                    let p = prev[i];
-                    deform[i] += (p + (next[i] - p) * percent - deform[i]) * alpha;
-                }
+    } else if from_setup {
+        if unweighted {
+            for i in 0..vertex_count {
+                let s = setup[i];
+                deform[i] = s + (lerp(i) - s) * alpha;
+            }
+        } else {
+            for i in 0..vertex_count {
+                deform[i] = lerp(i) * alpha;
             }
         }
-        MixBlend::Add => {
-            if bones_empty {
-                if after_last {
-                    for i in 0..vertex_count {
-                        deform[i] += (next[i] - setup_vec[i]) * alpha;
-                    }
-                } else {
-                    for i in 0..vertex_count {
-                        let p = prev[i];
-                        deform[i] += (p + (next[i] - p) * percent - setup_vec[i]) * alpha;
-                    }
-                }
-            } else if after_last {
-                for i in 0..vertex_count {
-                    deform[i] += next[i] * alpha;
-                }
-            } else {
-                for i in 0..vertex_count {
-                    let p = prev[i];
-                    deform[i] += (p + (next[i] - p) * percent) * alpha;
-                }
+    } else if add {
+        if unweighted {
+            for i in 0..vertex_count {
+                deform[i] += (lerp(i) - setup[i]) * alpha;
             }
+        } else {
+            for i in 0..vertex_count {
+                deform[i] += lerp(i) * alpha;
+            }
+        }
+    } else {
+        for i in 0..vertex_count {
+            deform[i] += (lerp(i) - deform[i]) * alpha;
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sequence (Phase 6b) — literal port of
-// `spine-cpp/src/spine/SequenceTimeline.cpp`.
-// ---------------------------------------------------------------------------
-
-const SEQUENCE_ENTRIES: usize = 3;
-const SEQUENCE_MODE: usize = 1;
-const SEQUENCE_DELAY: usize = 2;
-
-#[allow(clippy::too_many_arguments)]
 fn apply_sequence(
-    skeleton: &mut Skeleton,
-    slot_id: SlotId,
-    timeline_target: AttachmentId,
+    sk: &mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    attachment: AttachmentId,
     frames: &[f32],
     time: f32,
-    blend: MixBlend,
-    direction: MixDirection,
+    from: MixFrom,
+    out: bool,
+    applied: bool,
 ) {
-    // Bone-active check.
-    let slot_bone = skeleton.data.slots[slot_id.index()].bone;
-    if !skeleton.bones[slot_bone.index()].active {
+    if !is_timeline_active(sk, sd, attachment, slot, applied) {
         return;
     }
-
-    // Resolve the slot's current attachment; it must either *be* the
-    // timeline target, or be a vertex attachment whose
-    // timeline-attachment points at the target (linked mesh).
-    let Some(slot_attachment_id) = skeleton.slots[slot_id.index()].attachment else {
+    let Some(sequence) = sd.attachments[attachment.index()].sequence() else {
         return;
     };
-    let sequence_regions_count: i32 = {
-        let att = &skeleton.data.attachments[slot_attachment_id.index()];
-        let matched = slot_attachment_id == timeline_target
-            || match att {
-                Attachment::Mesh(_)
-                | Attachment::BoundingBox(_)
-                | Attachment::Path(_)
-                | Attachment::Clipping(_) => {
-                    let vd = vertex_attachment(att).expect("matched a vertex attachment above");
-                    effective_timeline_attachment(vd, slot_attachment_id) == timeline_target
+    let targets = std::iter::once(slot).chain(timeline_slots(sd, attachment).iter().copied());
+    if out || time < frames[0] {
+        if from != MixFrom::Current {
+            for s in targets {
+                if let Some(pose) = sequence_target(sk, sd, s, attachment, applied) {
+                    pose.sequence_index = -1;
                 }
-                _ => false,
-            };
-        if !matched {
-            return;
-        }
-
-        // Pull the sequence off the *timeline target* attachment
-        // (mirrors spine-cpp, which uses `_attachment->getSequence()`).
-        let target_att = &skeleton.data.attachments[timeline_target.index()];
-        let seq_opt = match target_att {
-            Attachment::Region(r) => r.sequence.as_ref(),
-            Attachment::Mesh(m) => m.sequence.as_ref(),
-            _ => None,
-        };
-        let Some(seq) = seq_opt else {
-            return;
-        };
-        seq.regions.len() as i32
-    };
-
-    if direction == MixDirection::Out {
-        if blend == MixBlend::Setup {
-            skeleton.slots[slot_id.index()].sequence_index = -1;
+            }
         }
         return;
     }
-
-    // Before first frame: reset on Setup/First, hold otherwise.
-    if time < frames[0] {
-        if matches!(blend, MixBlend::Setup | MixBlend::First) {
-            skeleton.slots[slot_id.index()].sequence_index = -1;
-        }
-        return;
-    }
-
-    let i = search(frames, time, SEQUENCE_ENTRIES);
+    let i = search(frames, time, 3);
     let before = frames[i];
-    let mode_and_index = frames[i + SEQUENCE_MODE] as i32;
-    let delay = frames[i + SEQUENCE_DELAY];
-
+    let mode_and_index = frames[i + 1] as i32;
+    let delay = frames[i + 2];
+    let count = sequence.count() as i32;
     let mut index = mode_and_index >> 4;
-    let count = sequence_regions_count;
-    let mode_bits = mode_and_index & 0xf;
-    let mode = sequence_mode_from_bits(mode_bits);
-
-    if mode != SequenceMode::Hold {
+    let mode = mode_and_index & 0xf;
+    if mode != 0 {
         index += ((time - before) / delay + 0.0001) as i32;
-        match mode {
-            SequenceMode::Hold => {}
-            SequenceMode::Once => {
-                index = (count - 1).min(index);
-            }
-            SequenceMode::Loop => {
-                if count > 0 {
-                    index = index.rem_euclid(count);
-                }
-            }
-            SequenceMode::PingPong => {
+        index = match mode {
+            1 => (count - 1).min(index),
+            2 => index % count,
+            3 => {
                 let n = (count << 1) - 2;
-                index = if n == 0 { 0 } else { index.rem_euclid(n) };
-                if index >= count {
-                    index = n - index;
-                }
+                let i = if n == 0 { 0 } else { index % n };
+                if i >= count { n - i } else { i }
             }
-            SequenceMode::OnceReverse => {
-                index = (count - 1 - index).max(0);
-            }
-            SequenceMode::LoopReverse => {
-                if count > 0 {
-                    index = count - 1 - index.rem_euclid(count);
-                }
-            }
-            SequenceMode::PingPongReverse => {
+            4 => (count - 1 - index).max(0),
+            5 => count - 1 - (index % count),
+            6 => {
                 let n = (count << 1) - 2;
-                index = if n == 0 {
-                    0
-                } else {
-                    (index + count - 1).rem_euclid(n)
-                };
-                if index >= count {
-                    index = n - index;
-                }
+                let i = if n == 0 { 0 } else { (index + count - 1) % n };
+                if i >= count { n - i } else { i }
             }
-        }
+            _ => index,
+        };
     }
-    skeleton.slots[slot_id.index()].sequence_index = index;
-}
-
-/// Decode the low nibble of spine-cpp's `modeAndIndex` into the
-/// corresponding `SequenceMode` variant. Matches the enum order in
-/// `spine-cpp/include/spine/Sequence.h`.
-fn sequence_mode_from_bits(bits: i32) -> SequenceMode {
-    match bits {
-        1 => SequenceMode::Once,
-        2 => SequenceMode::Loop,
-        3 => SequenceMode::PingPong,
-        4 => SequenceMode::OnceReverse,
-        5 => SequenceMode::LoopReverse,
-        6 => SequenceMode::PingPongReverse,
-        // 0 is the canonical Hold; unknown bits also fall through to
-        // Hold since the apply loop treats it as "preserve frame".
-        _ => SequenceMode::Hold,
+    for s in targets {
+        if let Some(pose) = sequence_target(sk, sd, s, attachment, applied) {
+            pose.sequence_index = index;
+        }
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::float_cmp)]
-mod tests {
-    use super::*;
-    use crate::animation::CURVE_LINEAR;
-    use crate::data::{BoneData, SkeletonData};
-    use std::sync::Arc;
-
-    /// Build a one-bone skeleton and return its Skeleton + a helper that
-    /// always yields `&mut skeleton.bones[0]`. Bones default to setup pose,
-    /// but we tweak `setup_rotation` via `root_rotation`.
-    fn one_bone(root_rotation: f32) -> Skeleton {
-        let mut sd = SkeletonData::default();
-        let mut root = BoneData::new(BoneId(0), "root", None);
-        root.rotation = root_rotation;
-        sd.bones.push(root);
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-        sk
+fn sequence_target<'a>(
+    sk: &'a mut Skeleton,
+    sd: &SkeletonData,
+    slot: SlotId,
+    attachment: AttachmentId,
+    applied: bool,
+) -> Option<&'a mut SlotPose> {
+    let s = &mut sk.slots[slot.index()];
+    if !sk.bones[s.bone.index()].active {
+        return None;
     }
-
-    #[test]
-    fn rotate_setup_blend_overwrites_to_setup_plus_value() {
-        // Linear ramp from 5 at t=0 to 15 at t=1. Setup rotation = 10.
-        let curves = CurveFrames {
-            frames: vec![0.0, 5.0, 1.0, 15.0],
-            curves: vec![CURVE_LINEAR as f32, CURVE_LINEAR as f32],
-        };
-        let tl = Timeline::Rotate {
-            bone: BoneId(0),
-            curves,
-        };
-
-        let mut sk = one_bone(10.0);
-        sk.bones[0].rotation = 999.0; // clobber to ensure Setup overwrites
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        // time 0.5 on the ramp = 10 (timeline value). Setup + value * alpha
-        // = 10 + 10 * 1.0 = 20.
-        assert!((sk.bones[0].rotation - 20.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn translate_before_first_frame_setup_returns_data_values() {
-        let curves = CurveFrames {
-            frames: vec![1.0, 3.0, 4.0, 2.0, 6.0, 8.0], // first frame t=1
-            curves: vec![CURVE_LINEAR as f32, CURVE_LINEAR as f32],
-        };
-        let tl = Timeline::Translate {
-            bone: BoneId(0),
-            curves,
-        };
-        let mut sd = SkeletonData::default();
-        let mut root = BoneData::new(BoneId(0), "root", None);
-        root.x = 7.0;
-        root.y = 9.0;
-        sd.bones.push(root);
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-        sk.bones[0].x = 100.0;
-        sk.bones[0].y = 200.0;
-
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.0, // before first frame (t=1)
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.bones[0].x, 7.0);
-        assert_eq!(sk.bones[0].y, 9.0);
-    }
-
-    #[test]
-    fn scale_alpha_one_setup_replaces_with_curve_times_setup() {
-        // Scale curve value at t=0.5 is 2.0 (linear from 2→2). Setup scale = 3.
-        // Expected: bone.scale_x = 2.0 * 3.0 = 6.0.
-        let curves = CurveFrames {
-            frames: vec![0.0, 2.0, 2.0, 1.0, 2.0, 2.0],
-            curves: vec![CURVE_LINEAR as f32, CURVE_LINEAR as f32],
-        };
-        let tl = Timeline::Scale {
-            bone: BoneId(0),
-            curves,
-        };
-
-        let mut sd = SkeletonData::default();
-        let mut root = BoneData::new(BoneId(0), "root", None);
-        root.scale_x = 3.0;
-        root.scale_y = 3.0;
-        sd.bones.push(root);
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0, // alpha = 1 replaces directly
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert!((sk.bones[0].scale_x - 6.0).abs() < 1e-6);
-        assert!((sk.bones[0].scale_y - 6.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn inactive_bone_is_skipped() {
-        let curves = CurveFrames {
-            frames: vec![0.0, 42.0, 1.0, 99.0],
-            curves: vec![CURVE_LINEAR as f32, CURVE_LINEAR as f32],
-        };
-        let tl = Timeline::Rotate {
-            bone: BoneId(0),
-            curves,
-        };
-
-        let mut sk = one_bone(0.0);
-        sk.bones[0].active = false;
-        sk.bones[0].rotation = 7.7;
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.bones[0].rotation, 7.7);
-    }
-
-    /// Rgba timeline writes linear-interpolated colour at alpha=1 with
-    /// Setup blend.
-    #[test]
-    fn rgba_timeline_setup_blend_writes_interpolated_color() {
-        use crate::data::SlotData;
-        let mut sd = SkeletonData::default();
-        sd.bones.push(BoneData::new(BoneId(0), "root", None));
-        sd.slots
-            .push(SlotData::new(crate::data::SlotId(0), "body", BoneId(0)));
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-
-        // Linear from (0, 0, 0, 0) at t=0 to (1, 0.5, 0.25, 0.75) at t=1.
-        let curves = CurveFrames {
-            frames: vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.5, 0.25, 0.75],
-            curves: vec![CURVE_LINEAR as f32, CURVE_LINEAR as f32],
-        };
-        let tl = Timeline::Rgba {
-            slot: crate::data::SlotId(0),
-            curves,
-        };
-
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        let c = sk.slots[0].color;
-        assert!((c.r - 0.5).abs() < 1e-6);
-        assert!((c.g - 0.25).abs() < 1e-6);
-        assert!((c.b - 0.125).abs() < 1e-6);
-        assert!((c.a - 0.375).abs() < 1e-6);
-    }
-
-    /// `DrawOrder` timeline writes a permutation frame's order.
-    #[test]
-    fn draw_order_timeline_applies_permutation() {
-        use crate::data::SlotData;
-        let mut sd = SkeletonData::default();
-        sd.bones.push(BoneData::new(BoneId(0), "root", None));
-        for (i, name) in ["a", "b", "c"].iter().enumerate() {
-            sd.slots.push(SlotData::new(
-                crate::data::SlotId(i as u16),
-                *name,
-                BoneId(0),
-            ));
-        }
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-
-        let sid = crate::data::SlotId;
-        let tl = Timeline::DrawOrder {
-            frames: vec![0.0, 1.0],
-            draw_orders: vec![
-                Some(vec![sid(2), sid(0), sid(1)]), // swap at t=0
-                None,                               // identity at t=1
-            ],
-        };
-
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.draw_order, vec![sid(2), sid(0), sid(1)]);
-
-        // Time past the second frame restores identity via None sentinel.
-        tl.apply(
-            &mut sk,
-            0.5,
-            2.0,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.draw_order, vec![sid(0), sid(1), sid(2)]);
-    }
-
-    /// Event timeline fires every event keyed between (`last_time`, time].
-    #[test]
-    fn event_timeline_fires_events_in_window() {
-        use crate::data::{AnimationEvent, EventData, EventId};
-
-        let mut sd = SkeletonData::default();
-        sd.events.push(EventData::new(EventId(0), "step"));
-        sd.events.push(EventData::new(EventId(1), "clap"));
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-
-        let tl = Timeline::Event {
-            frames: vec![0.5, 1.0, 1.5],
-            events: vec![
-                AnimationEvent {
-                    time: 0.5,
-                    event: EventId(0),
-                    int_value: 1,
-                    float_value: 0.0,
-                    string_value: None,
-                    volume: 1.0,
-                    balance: 0.0,
-                },
-                AnimationEvent {
-                    time: 1.0,
-                    event: EventId(1),
-                    int_value: 2,
-                    float_value: 0.0,
-                    string_value: None,
-                    volume: 1.0,
-                    balance: 0.0,
-                },
-                AnimationEvent {
-                    time: 1.5,
-                    event: EventId(0),
-                    int_value: 3,
-                    float_value: 0.0,
-                    string_value: None,
-                    volume: 1.0,
-                    balance: 0.0,
-                },
-            ],
-        };
-
-        // Window (0.0, 1.2] should fire events at 0.5 and 1.0 but not 1.5.
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            1.2,
-            &mut events,
-            1.0,
-            MixBlend::Replace,
-            MixDirection::In,
-        );
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].int_value, 1);
-        assert_eq!(events[1].int_value, 2);
-    }
-
-    #[test]
-    fn ik_constraint_timeline_writes_mix_and_stepped_flags() {
-        use crate::data::{IkConstraintData, IkConstraintId};
-
-        let mut sd = SkeletonData::default();
-        sd.bones.push(BoneData::new(BoneId(0), "root", None));
-        sd.bones
-            .push(BoneData::new(BoneId(1), "child", Some(BoneId(0))));
-        let mut ik = IkConstraintData::new(IkConstraintId(0), "ik", BoneId(1));
-        ik.bones.push(BoneId(0));
-        ik.mix = 0.5;
-        ik.softness = 10.0;
-        ik.bend_direction = 1;
-        sd.ik_constraints.push(ik);
-
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-        // update_cache sets active=true for the IK.
-        assert!(sk.ik_constraints[0].active);
-
-        // Timeline: stride 6 [t, mix, softness, bend, compress, stretch].
-        // Linear from [0, 0.8, 20, -1, 1, 0] at t=0 to [0.2, 1.0, 0, 0, 1] at t=1.
-        let curves = CurveFrames {
-            frames: vec![
-                0.0, 0.8, 20.0, -1.0, 1.0, 0.0, // frame 0
-                1.0, 0.2, 1.0, 0.0, 0.0, 1.0, // frame 1
-            ],
-            curves: vec![CURVE_LINEAR as f32, CURVE_STEPPED as f32],
-        };
-        let tl = Timeline::IkConstraint {
-            constraint: IkConstraintId(0),
-            curves,
-        };
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        let c = &sk.ik_constraints[0];
-        // Linear midpoint: mix = (0.8 + 0.2) / 2 = 0.5 with Setup blend
-        // (data.mix = 0.5 + (0.5 - 0.5)*1 = 0.5). softness = (20 + 1)/2 = 10.5.
-        assert!((c.mix - 0.5).abs() < 1e-6);
-        assert!((c.softness - 10.5).abs() < 1e-6);
-        // Stepped fields come straight from frame 0.
-        assert_eq!(c.bend_direction, -1);
-        assert!(c.compress);
-        assert!(!c.stretch);
-    }
-
-    #[test]
-    fn physics_reset_sets_flag_when_window_crosses_frame() {
-        use crate::data::{PhysicsConstraintData, PhysicsConstraintId};
-
-        let mut sd = SkeletonData::default();
-        sd.bones.push(BoneData::new(BoneId(0), "root", None));
-        sd.physics_constraints.push(PhysicsConstraintData::new(
-            PhysicsConstraintId(0),
-            "phys",
-            BoneId(0),
-        ));
-        let mut sk = Skeleton::new(Arc::new(sd));
-        sk.update_cache();
-        // Skin-required check would make active=false; flip it for this test
-        // since our scaffold constraint is otherwise unactivated.
-        sk.physics_constraints[0].active = true;
-        sk.physics_constraints[0].reset = false;
-
-        let tl = Timeline::PhysicsReset {
-            constraint: Some(PhysicsConstraintId(0)),
-            frames: vec![0.5, 1.5],
-        };
-
-        // last_time = 0.0, time = 0.6 → crosses frame at 0.5 → should set
-        // reset = true.
-        let mut events = Vec::new();
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.6,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert!(sk.physics_constraints[0].reset);
-
-        // Second call in [0.6, 0.8] — still within frame-0 segment, no
-        // new reset should fire. Reset the flag first to detect.
-        sk.physics_constraints[0].reset = false;
-        tl.apply(
-            &mut sk,
-            0.6,
-            0.8,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert!(!sk.physics_constraints[0].reset);
-    }
-
-    #[test]
-    fn inherit_timeline_steps_to_last_keyframe() {
-        let tl = Timeline::Inherit {
-            bone: BoneId(0),
-            frames: vec![0.0, 1.0, 2.0],
-            inherits: vec![
-                Inherit::OnlyTranslation,
-                Inherit::NoScale,
-                Inherit::NoScaleOrReflection,
-            ],
-        };
-
-        let mut sk = one_bone(0.0);
-        assert_eq!(sk.bones[0].inherit, Inherit::Normal);
-
-        let mut events = Vec::new();
-        // At t=0.5 → frame 0 → OnlyTranslation.
-        tl.apply(
-            &mut sk,
-            0.0,
-            0.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.bones[0].inherit, Inherit::OnlyTranslation);
-        // At t=1.5 → frame 1 → NoScale.
-        tl.apply(
-            &mut sk,
-            0.0,
-            1.5,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.bones[0].inherit, Inherit::NoScale);
-        // At t=5.0 (past last) → stays at last frame (NoScaleOrReflection).
-        tl.apply(
-            &mut sk,
-            0.0,
-            5.0,
-            &mut events,
-            1.0,
-            MixBlend::Setup,
-            MixDirection::In,
-        );
-        assert_eq!(sk.bones[0].inherit, Inherit::NoScaleOrReflection);
-    }
+    let pose = s.posed.select_mut(applied);
+    let a = pose.attachment?;
+    (sd.attachments[a.index()].timeline_attachment(a) == attachment).then_some(pose)
 }

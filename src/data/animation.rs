@@ -29,7 +29,7 @@
 //! and supporting enums. Evaluation of these timelines lives in the
 //! [`crate::animation`] module.
 
-use crate::data::{AttachmentId, BoneId, ConstraintId, EventId, Inherit, SlotId};
+use crate::data::{Attachment, AttachmentId, BoneId, ConstraintId, EventId, Inherit, SlotId};
 use crate::math::Color;
 
 /// A named collection of timelines driving a skeleton over a fixed duration.
@@ -42,6 +42,13 @@ pub struct Animation {
     pub bones: Vec<BoneId>,
     /// Nonessential editor color.
     pub color: Color,
+    /// Property ids of every timeline, concatenated; see
+    /// [`Self::timeline_property_ids`].
+    property_ids: Vec<PropertyId>,
+    /// End offset into `property_ids` per timeline.
+    property_ends: Vec<u32>,
+    /// `property_ids`, sorted, for [`Self::has_property`].
+    sorted_property_ids: Vec<PropertyId>,
 }
 
 impl Animation {
@@ -53,8 +60,97 @@ impl Animation {
             timelines: Vec::new(),
             bones: Vec::new(),
             color: Color::WHITE,
+            property_ids: Vec::new(),
+            property_ends: Vec::new(),
+            sorted_property_ids: Vec::new(),
         }
     }
+
+    /// Sets the timelines and caches their property ids. `attachments` are
+    /// the skeleton's, which deform and sequence ids depend on.
+    pub fn set_timelines(&mut self, timelines: Vec<Timeline>, attachments: &[Attachment]) {
+        self.property_ids.clear();
+        self.property_ends.clear();
+        for t in &timelines {
+            t.push_property_ids(attachments, &mut self.property_ids);
+            self.property_ends.push(self.property_ids.len() as u32);
+        }
+        self.sorted_property_ids.clone_from(&self.property_ids);
+        self.sorted_property_ids.sort_unstable();
+        self.sorted_property_ids.dedup();
+        self.timelines = timelines;
+    }
+
+    /// The properties timeline `i` writes.
+    #[must_use]
+    pub fn timeline_property_ids(&self, i: usize) -> &[PropertyId] {
+        let start = if i == 0 {
+            0
+        } else {
+            self.property_ends[i - 1] as usize
+        };
+        &self.property_ids[start..self.property_ends[i] as usize]
+    }
+
+    /// Whether any timeline writes `id`.
+    #[must_use]
+    pub fn has_property(&self, id: PropertyId) -> bool {
+        self.sorted_property_ids.binary_search(&id).is_ok()
+    }
+
+    /// Whether any timeline writes any of `ids`.
+    #[must_use]
+    pub fn has_timeline(&self, ids: &[PropertyId]) -> bool {
+        ids.iter().any(|&id| self.has_property(id))
+    }
+}
+
+/// A `(property kind, target)` pair packed as spine-cpp does, used by
+/// `AnimationState` to tell which timelines touch the same property.
+pub type PropertyId = i64;
+
+/// Property kinds, in spine-cpp's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
+pub enum Property {
+    Rotate = 0,
+    X,
+    Y,
+    ScaleX,
+    ScaleY,
+    ShearX,
+    ShearY,
+    Inherit,
+    Rgb,
+    Alpha,
+    Rgb2,
+    Attachment,
+    Deform,
+    Event,
+    DrawOrder,
+    IkConstraint,
+    TransformConstraint,
+    PathConstraintPosition,
+    PathConstraintSpacing,
+    PathConstraintMix,
+    PhysicsConstraintInertia,
+    PhysicsConstraintStrength,
+    PhysicsConstraintDamping,
+    PhysicsConstraintMass,
+    PhysicsConstraintWind,
+    PhysicsConstraintGravity,
+    PhysicsConstraintMix,
+    PhysicsConstraintReset,
+    Sequence,
+    SliderTime,
+    SliderMix,
+    DrawOrderFolder,
+}
+
+#[inline]
+#[must_use]
+pub fn property_id(property: Property, payload: i64) -> PropertyId {
+    ((property as i64) << 32) | payload
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -262,6 +358,150 @@ pub enum Timeline {
 }
 
 impl Timeline {
+    fn push_property_ids(&self, attachments: &[Attachment], out: &mut Vec<PropertyId>) {
+        use Property as P;
+        let mut push = |p: P, payload: i64| out.push(property_id(p, payload));
+        match self {
+            Timeline::Rotate { bone, .. } => push(P::Rotate, bone.0.into()),
+            Timeline::Translate { bone, .. } => {
+                push(P::X, bone.0.into());
+                push(P::Y, bone.0.into());
+            }
+            Timeline::TranslateX { bone, .. } => push(P::X, bone.0.into()),
+            Timeline::TranslateY { bone, .. } => push(P::Y, bone.0.into()),
+            Timeline::Scale { bone, .. } => {
+                push(P::ScaleX, bone.0.into());
+                push(P::ScaleY, bone.0.into());
+            }
+            Timeline::ScaleX { bone, .. } => push(P::ScaleX, bone.0.into()),
+            Timeline::ScaleY { bone, .. } => push(P::ScaleY, bone.0.into()),
+            Timeline::Shear { bone, .. } => {
+                push(P::ShearX, bone.0.into());
+                push(P::ShearY, bone.0.into());
+            }
+            Timeline::ShearX { bone, .. } => push(P::ShearX, bone.0.into()),
+            Timeline::ShearY { bone, .. } => push(P::ShearY, bone.0.into()),
+            Timeline::Inherit { bone, .. } => push(P::Inherit, bone.0.into()),
+            Timeline::Attachment { slot, .. } => push(P::Attachment, slot.0.into()),
+            Timeline::Rgba { slot, .. } => {
+                push(P::Rgb, slot.0.into());
+                push(P::Alpha, slot.0.into());
+            }
+            Timeline::Rgb { slot, .. } => push(P::Rgb, slot.0.into()),
+            Timeline::Alpha { slot, .. } => push(P::Alpha, slot.0.into()),
+            Timeline::Rgba2 { slot, .. } => {
+                push(P::Rgb, slot.0.into());
+                push(P::Alpha, slot.0.into());
+                push(P::Rgb2, slot.0.into());
+            }
+            Timeline::Rgb2 { slot, .. } => {
+                push(P::Rgb, slot.0.into());
+                push(P::Rgb2, slot.0.into());
+            }
+            Timeline::Deform {
+                slot, attachment, ..
+            } => push(
+                P::Deform,
+                ((i64::from(slot.0) << 16) | i64::from(attachment.0)) & 0xffff_ffff,
+            ),
+            Timeline::Sequence {
+                slot, attachment, ..
+            } => {
+                let sequence_id = attachments[attachment.index()]
+                    .sequence()
+                    .map_or(0, |s| i64::from(s.id));
+                push(
+                    P::Sequence,
+                    ((i64::from(slot.0) << 16) | sequence_id) & 0xffff_ffff,
+                );
+            }
+            Timeline::DrawOrder { .. } => push(P::DrawOrder, 0),
+            Timeline::DrawOrderFolder { slots, .. } => {
+                for slot in slots {
+                    push(P::DrawOrderFolder, slot.0.into());
+                }
+            }
+            Timeline::Event { .. } => push(P::Event, 0),
+            Timeline::IkConstraint { constraint, .. } => push(P::IkConstraint, constraint.0.into()),
+            Timeline::TransformConstraint { constraint, .. } => {
+                push(P::TransformConstraint, constraint.0.into());
+            }
+            Timeline::PathConstraintPosition { constraint, .. } => {
+                push(P::PathConstraintPosition, constraint.0.into());
+            }
+            Timeline::PathConstraintSpacing { constraint, .. } => {
+                push(P::PathConstraintSpacing, constraint.0.into());
+            }
+            Timeline::PathConstraintMix { constraint, .. } => {
+                push(P::PathConstraintMix, constraint.0.into());
+            }
+            Timeline::Physics {
+                constraint,
+                property,
+                ..
+            } => {
+                let p = match property {
+                    PhysicsProperty::Inertia => P::PhysicsConstraintInertia,
+                    PhysicsProperty::Strength => P::PhysicsConstraintStrength,
+                    PhysicsProperty::Damping => P::PhysicsConstraintDamping,
+                    PhysicsProperty::Mass => P::PhysicsConstraintMass,
+                    PhysicsProperty::Wind => P::PhysicsConstraintWind,
+                    PhysicsProperty::Gravity => P::PhysicsConstraintGravity,
+                    PhysicsProperty::Mix => P::PhysicsConstraintMix,
+                };
+                push(p, constraint.map_or(-1, |c| c.0.into()) & 0xffff_ffff);
+            }
+            Timeline::PhysicsReset { constraint, .. } => push(
+                P::PhysicsConstraintReset,
+                constraint.map_or(-1, |c| c.0.into()) & 0xffff_ffff,
+            ),
+            Timeline::Slider { constraint, .. } => push(P::SliderTime, constraint.0.into()),
+            Timeline::SliderMix { constraint, .. } => push(P::SliderMix, constraint.0.into()),
+        }
+    }
+
+    /// Whether the timeline can blend additively over lower tracks.
+    #[must_use]
+    pub fn is_additive(&self) -> bool {
+        matches!(
+            self,
+            Timeline::Rotate { .. }
+                | Timeline::Translate { .. }
+                | Timeline::TranslateX { .. }
+                | Timeline::TranslateY { .. }
+                | Timeline::Scale { .. }
+                | Timeline::ScaleX { .. }
+                | Timeline::ScaleY { .. }
+                | Timeline::Shear { .. }
+                | Timeline::ShearX { .. }
+                | Timeline::ShearY { .. }
+                | Timeline::Deform { .. }
+                | Timeline::TransformConstraint { .. }
+                | Timeline::PathConstraintPosition { .. }
+                | Timeline::Physics {
+                    property: PhysicsProperty::Wind | PhysicsProperty::Gravity,
+                    ..
+                }
+                | Timeline::SliderMix { .. }
+        )
+    }
+
+    /// Whether the timeline sets values rather than interpolating them, so
+    /// it never needs holding while mixing.
+    #[must_use]
+    pub fn is_instant(&self) -> bool {
+        matches!(
+            self,
+            Timeline::Inherit { .. }
+                | Timeline::Attachment { .. }
+                | Timeline::Sequence { .. }
+                | Timeline::Event { .. }
+                | Timeline::DrawOrder { .. }
+                | Timeline::DrawOrderFolder { .. }
+                | Timeline::PhysicsReset { .. }
+        )
+    }
+
     /// The bone a bone timeline keys.
     #[must_use]
     pub fn bone(&self) -> Option<BoneId> {

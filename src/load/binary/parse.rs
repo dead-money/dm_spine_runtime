@@ -1385,6 +1385,8 @@ impl<'loader> SkeletonBinary<'loader> {
             anim.timelines.push(Timeline::Event { frames, events });
         }
 
+        let timelines = std::mem::take(&mut anim.timelines);
+        anim.set_timelines(timelines, &sd.attachments);
         anim.duration = timeline_duration(&anim);
         if nonessential {
             anim.color = r.read_color()?;

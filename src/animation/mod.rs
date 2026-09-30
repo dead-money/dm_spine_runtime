@@ -32,19 +32,15 @@
 //! — the code that reads those shapes and pushes values into a
 //! [`Skeleton`][crate::skeleton::Skeleton].
 
-#[cfg(any())] // 4.3-port-gate
 pub mod apply;
 pub mod curve;
-#[cfg(any())] // 4.3-port-gate
-pub mod property;
 #[cfg(any())] // 4.3-port-gate
 pub mod state;
 #[cfg(any())] // 4.3-port-gate
 pub mod state_data;
 
+pub use crate::data::animation::{Property, PropertyId};
 pub use curve::{bezier_value, compute_bezier_samples, curve_value1, curve_value2, search};
-#[cfg(any())] // 4.3-port-gate
-pub use property::{Property, PropertyId, animation_has_timeline, property_ids};
 #[cfg(any())] // 4.3-port-gate
 pub use state::{
     AnimationNotFound, AnimationState, EMPTY_ANIMATION_ID, EntryId, EventType, StateEvent,
@@ -54,18 +50,6 @@ pub use state::{
 pub use state_data::{AnimationStateData, MixAnimationNotFound};
 
 use crate::data::EventId;
-
-/// Applies a slider's animation to the applied pose.
-// 4.3-port-gate: replaced by the timeline port.
-pub(crate) fn apply_slider_animation(
-    _skeleton: &mut crate::skeleton::Skeleton,
-    _animation: crate::data::AnimationId,
-    _time: f32,
-    _looping: bool,
-    _mix: f32,
-    _additive: bool,
-) {
-}
 
 /// Runtime event firing — one per animation frame that tripped since the
 /// previous `apply` call. Carries a copy of the frame's int/float/string
@@ -88,38 +72,17 @@ pub struct Event {
     pub balance: f32,
 }
 
-/// How a timeline blends with the existing pose when applied.
-///
-/// Ported from `spine-cpp/include/spine/MixBlend.h`.
+/// What a timeline mixes from before and between its keys.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum MixBlend {
-    /// Overwrite the target property with the timeline's value (setup
-    /// pose + timeline, scaled by `alpha`). Used on the first frame an
-    /// animation starts driving a property.
+pub enum MixFrom {
+    /// The current pose, which a lower track or the app may have written.
     #[default]
+    Current,
+    /// The setup pose, ignoring the current pose.
     Setup,
-    /// Same as `Setup` on the first pose of a track, but subsequent poses
-    /// read from the current skeleton state. Used to seed the "first"
-    /// value a track contributes so later tracks can blend against it.
+    /// The current pose, returning to setup before the first key. Used for
+    /// the first entry on a track to key a property.
     First,
-    /// Blend timeline value into current pose, replacing whatever was
-    /// there before. Non-additive.
-    Replace,
-    /// Add timeline value onto current pose. Useful for layering e.g. a
-    /// breathing animation on top of a walk cycle.
-    Add,
-}
-
-/// Direction a timeline is mixing in a crossfade.
-///
-/// `In` = alpha is ramping toward 1 (this animation taking over); `Out` =
-/// alpha is ramping toward 0 (this animation handing off to setup or the
-/// next track).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum MixDirection {
-    #[default]
-    In,
-    Out,
 }
 
 /// Number of floats per bezier segment stored in `CurveFrames::curves`.

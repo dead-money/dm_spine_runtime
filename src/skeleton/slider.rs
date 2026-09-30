@@ -131,13 +131,17 @@ impl Skeleton {
         for &b in &animation.bones {
             bone::modify_local(&mut self.bones, b.index(), &f);
         }
-        crate::animation::apply_slider_animation(
-            self,
+        self.apply_animation(
             animation_id,
             p.time,
+            p.time,
             data.looping,
+            None,
             p.mix,
+            crate::animation::MixFrom::Current,
             data.additive,
+            false,
+            true,
         );
     }
 }
