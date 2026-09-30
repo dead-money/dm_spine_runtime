@@ -27,9 +27,11 @@
 
 //! Top-level immutable data container for a single Spine skeleton.
 
+use std::sync::Arc;
+
 use crate::data::{
-    Animation, Attachment, BoneData, ConstraintData, ConstraintId, EventData, Skin, SkinId,
-    SlotData,
+    Animation, Attachment, AttachmentId, AttachmentRef, BoneData, ConstraintData, ConstraintId,
+    EventData, Skin, SkinId, SkinKeys, SlotData, SlotId, Timeline,
 };
 
 /// Stores the setup pose and every piece of stateless data the runtime needs
@@ -51,8 +53,11 @@ pub struct SkeletonData {
     /// Slots in setup-pose draw order.
     pub slots: Vec<SlotData>,
     /// All skins, including the default skin (if present, always at index 0
-    /// when the skeleton has one).
-    pub skins: Vec<Skin>,
+    /// when the skeleton has one). Shared so skeletons can wear them as is.
+    pub skins: Vec<Arc<Skin>>,
+    /// Every `(slot, placeholder)` pair the skins, setup pose and attachment
+    /// timelines mention.
+    pub skin_keys: SkinKeys,
     /// Index of the default skin in [`Self::skins`], or `None` if no default
     /// skin was defined.
     pub default_skin: Option<SkinId>,
@@ -97,7 +102,7 @@ impl SkeletonData {
     }
 
     #[must_use]
-    pub fn find_skin(&self, name: &str) -> Option<&Skin> {
+    pub fn find_skin(&self, name: &str) -> Option<&Arc<Skin>> {
         self.skins.iter().find(|s| s.name == name)
     }
 
@@ -119,9 +124,45 @@ impl SkeletonData {
             .map(|i| ConstraintId(i as u16))
     }
 
+    /// The data attachment a data skin holds for a placeholder name.
+    #[must_use]
+    pub fn skin_attachment(
+        &self,
+        skin: SkinId,
+        slot: SlotId,
+        placeholder: &str,
+    ) -> Option<AttachmentId> {
+        match self.skins[skin.index()].get_named(&self.skin_keys, slot, placeholder)? {
+            AttachmentRef::Data(id) => Some(id),
+            AttachmentRef::Owned(_) => None,
+        }
+    }
+
+    /// Interns setup attachment names and attachment timeline names. Loaders
+    /// call it once the skins and animations are in.
+    pub fn intern_attachment_keys(&mut self) {
+        let keys = &mut self.skin_keys;
+        let mut intern = |slot: SlotId, name: Option<&str>| {
+            name.filter(|n| !n.is_empty()).map(|n| keys.intern(slot, n))
+        };
+        for slot in &mut self.slots {
+            slot.attachment_key = intern(slot.index, slot.attachment_name.as_deref());
+        }
+        for animation in &mut self.animations {
+            for timeline in &mut animation.timelines {
+                if let Timeline::Attachment {
+                    slot, names, keys, ..
+                } = timeline
+                {
+                    *keys = names.iter().map(|n| intern(*slot, n.as_deref())).collect();
+                }
+            }
+        }
+    }
+
     /// Convenience for grabbing the default skin, if any.
     #[must_use]
-    pub fn default_skin(&self) -> Option<&Skin> {
+    pub fn default_skin(&self) -> Option<&Arc<Skin>> {
         self.default_skin.and_then(|id| self.skins.get(id.index()))
     }
 }
@@ -139,7 +180,7 @@ mod tests {
         sd.slots.push(SlotData::new(SlotId(0), "body", BoneId(1)));
         sd.events.push(EventData::new(EventId(0), "footstep"));
         sd.animations.push(Animation::new("walk", 1.0));
-        sd.skins.push(Skin::new("default"));
+        sd.skins.push(Arc::new(Skin::new("default")));
         sd.default_skin = Some(SkinId(0));
         sd
     }

@@ -29,7 +29,9 @@
 //! and supporting enums. Evaluation of these timelines lives in the
 //! [`crate::animation`] module.
 
-use crate::data::{Attachment, AttachmentId, BoneId, ConstraintId, EventId, Inherit, SlotId};
+use crate::data::{
+    Attachment, AttachmentId, BoneId, ConstraintId, EventId, Inherit, SkinKey, SlotId,
+};
 use crate::math::Color;
 
 /// A named collection of timelines driving a skeleton over a fixed duration.
@@ -252,6 +254,8 @@ pub enum Timeline {
         frames: Vec<f32>,
         /// Attachment name per frame, or `None` to clear the slot's attachment.
         names: Vec<Option<String>>,
+        /// `names` interned; `None` for no or an empty name.
+        keys: Vec<Option<SkinKey>>,
     },
     Rgba {
         slot: SlotId,
@@ -559,6 +563,7 @@ mod tests {
                 slot: SlotId(0),
                 frames: vec![],
                 names: vec![],
+                keys: vec![],
             },
             Timeline::Rgba {
                 slot: SlotId(0),

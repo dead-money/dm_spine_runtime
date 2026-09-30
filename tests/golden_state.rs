@@ -226,9 +226,7 @@ fn check_frame(label: &str, sk: &Skeleton, fx: &Frame) -> Option<String> {
     }
     for (i, (slot, want)) in sk.slots.iter().zip(&fx.slots).enumerate() {
         let pose = slot.applied();
-        let name = pose
-            .attachment
-            .map(|a| data.attachments[a.index()].name().to_string());
+        let name = pose.attachment.map(|a| sk.attachment(a).name().to_string());
         if name != want.attachment {
             return Some(format!(
                 "{label}: slot {i} ({}) attachment: want {:?} got {name:?}",

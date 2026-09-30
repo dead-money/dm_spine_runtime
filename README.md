@@ -72,7 +72,8 @@ for dt in frame_deltas {
 - **Skeleton and animation state.** 4.3's pose system (setup, local, and constrained poses per bone and slot) with all five `Inherit` modes, and a multi-track `AnimationState` with crossfade mixing, additive tracks, hold modes, queuing, empty animations, and events.
 - **Constraints.** IK (one- and two-bone, with bend, softness, and stretch), Transform (4.3's from/to property mapping), Path (every spacing and rotate mode), Physics (damped spring on a fixed timestep), and Slider (drives an animation from a bone property or a timeline).
 - **Clipping and bounds.** `SkeletonClipping` (Sutherland-Hodgman plus convex decomposition, with 4.3's convex and inverse modes) and `SkeletonBounds` (AABB, point-in-polygon, segment-polygon hit tests).
-- **Render commands.** `SkeletonRenderer::render` walks the draw order, emits region and mesh attachments through the clipper, and merges adjacent runs that share texture, blend mode, and color into one command.
+- **Render commands.** `SkeletonRenderer::render` walks the draw order, emits region and mesh attachments through the clipper, and merges adjacent runs that share texture, blend mode, and color into one command. `RenderOptions` can add each vertex's slot index and attachment tag, and merge runs whose colors differ, so a shader can draw a whole skeleton in a few commands.
+- **Runtime skins.** Build skins at runtime from copies of data attachments, pointed at other atlas regions or plain texture rects and tagged for your shader. Skeletons wearing the same assembled skin share it.
 
 ## How it works
 

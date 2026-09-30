@@ -30,9 +30,12 @@
 
 #![allow(clippy::many_single_char_names, clippy::needless_range_loop)]
 
+use std::sync::Arc;
+
+use crate::data::skin::resolve;
 use crate::data::{
-    Attachment, AttachmentId, ConstraintId, PathAttachment, PathConstraintData, PositionMode,
-    RotateMode, SkeletonData, SlotId, SpacingMode,
+    Attachment, AttachmentRef, ConstraintId, PathAttachment, PathConstraintData, PositionMode,
+    RotateMode, SkeletonData, Skin, SlotId, SpacingMode,
 };
 use crate::math::util::{DEG_RAD, EPSILON, PI, PI_2};
 use crate::skeleton::bone::{self};
@@ -52,16 +55,19 @@ impl Skeleton {
     ) {
         let slot_index = data.slot;
         let slot_bone = self.slots[slot_index.index()].bone;
-        if let Some(skin) = self.skin {
-            self.sort_path_slot(&sd.skins[skin.index()], slot_index, slot_bone, sd);
+        let skin = self.skin.clone();
+        if let Some(skin) = &skin {
+            self.sort_path_slot(skin, slot_index, slot_bone, sd);
         }
-        if let Some(default) = sd.default_skin
-            && Some(default) != self.skin
+        if let Some(default) = sd.default_skin()
+            && !skin.as_ref().is_some_and(|s| Arc::ptr_eq(s, default))
         {
-            self.sort_path_slot(&sd.skins[default.index()], slot_index, slot_bone, sd);
+            self.sort_path_slot(default, slot_index, slot_bone, sd);
         }
-        let attachment = self.slots[slot_index.index()].posed.pose.attachment;
-        self.sort_path_attachment(attachment, slot_bone, sd);
+        if let Some(attachment) = self.slots[slot_index.index()].posed.pose.attachment {
+            let attachment = resolve(&sd.attachments, skin.as_deref(), attachment);
+            self.sort_path_attachment(attachment, slot_bone);
+        }
         for &b in &data.bones {
             self.sort_bone(b);
             self.constrain_bone(b);
@@ -77,23 +83,23 @@ impl Skeleton {
 
     fn sort_path_slot(
         &mut self,
-        skin: &crate::data::Skin,
+        skin: &Skin,
         slot: SlotId,
         slot_bone: crate::data::BoneId,
         sd: &SkeletonData,
     ) {
-        for (_, attachment) in skin.slot_attachments(slot) {
-            self.sort_path_attachment(Some(attachment), slot_bone, sd);
+        for &key in sd.skin_keys.slot_keys(slot) {
+            if let Some(attachment) = skin.get(key) {
+                self.sort_path_attachment(skin.resolve(&sd.attachments, attachment), slot_bone);
+            }
+        }
+        for (_, attachment) in skin.extra_on(slot) {
+            self.sort_path_attachment(skin.resolve(&sd.attachments, attachment), slot_bone);
         }
     }
 
-    fn sort_path_attachment(
-        &mut self,
-        attachment: Option<AttachmentId>,
-        slot_bone: crate::data::BoneId,
-        sd: &SkeletonData,
-    ) {
-        let Some(Attachment::Path(path)) = attachment.map(|a| &sd.attachments[a.index()]) else {
+    fn sort_path_attachment(&mut self, attachment: &Attachment, slot_bone: crate::data::BoneId) {
+        let Attachment::Path(path) = attachment else {
             return;
         };
         let bones = &path.vertex_data.bones;
@@ -121,10 +127,18 @@ impl Skeleton {
         sd: &SkeletonData,
     ) {
         let slot = &self.slots[data.slot.index()];
-        let Some(attachment_id) = slot.applied().attachment else {
+        let Some(attachment) = slot.applied().attachment else {
             return;
         };
-        let Attachment::Path(path) = &sd.attachments[attachment_id.index()] else {
+        let owner;
+        let attachment = match attachment {
+            AttachmentRef::Data(id) => &sd.attachments[id.index()],
+            AttachmentRef::Owned(_) => {
+                owner = self.skin.clone();
+                resolve(&sd.attachments, owner.as_deref(), attachment)
+            }
+        };
+        let Attachment::Path(path) = attachment else {
             return;
         };
         let Constraint::Path(c) = &mut self.constraints[id.index()] else {

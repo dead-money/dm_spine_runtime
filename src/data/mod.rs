@@ -63,7 +63,7 @@ pub use constraint::{
 };
 pub use event::EventData;
 pub use skeleton::SkeletonData;
-pub use skin::Skin;
+pub use skin::{AttachmentRef, Skin, SkinKeys};
 pub use slot::{BlendMode, SlotData};
 
 /// Typed indices into the parent [`SkeletonData`] vectors.
@@ -105,6 +105,10 @@ define_id!(
 define_id!(
     /// Index into [`SkeletonData::skins`].
     pub SkinId(u16)
+);
+define_id!(
+    /// Index into [`SkeletonData::skin_keys`]: one `(slot, placeholder)` pair.
+    pub SkinKey(u32)
 );
 define_id!(
     /// Index into [`SkeletonData::events`].

@@ -27,7 +27,7 @@
 
 //! Runtime slots and the draw order.
 
-use crate::data::{AttachmentId, BoneId, SkeletonData, SlotData, SlotId};
+use crate::data::{AttachmentId, AttachmentRef, BoneId, SlotData, SlotId};
 use crate::math::Color;
 use crate::skeleton::pose::{Pose, Posed};
 
@@ -37,7 +37,9 @@ pub struct SlotPose {
     /// Meaningful only when `has_dark_color`.
     pub dark_color: Color,
     pub has_dark_color: bool,
-    pub attachment: Option<AttachmentId>,
+    pub attachment: Option<AttachmentRef>,
+    /// The data attachment whose timelines drive `attachment`.
+    pub timeline_attachment: Option<AttachmentId>,
     /// Sequence frame, or -1 for the sequence's setup frame.
     pub sequence_index: i32,
     /// Deformed vertices for the attachment. Empty means undeformed.
@@ -51,6 +53,7 @@ impl Default for SlotPose {
             dark_color: Color::new(0.0, 0.0, 0.0, 0.0),
             has_dark_color: false,
             attachment: None,
+            timeline_attachment: None,
             sequence_index: 0,
             deform: Vec::new(),
         }
@@ -65,6 +68,7 @@ impl Pose for SlotPose {
         }
         self.has_dark_color = other.has_dark_color;
         self.attachment = other.attachment;
+        self.timeline_attachment = other.timeline_attachment;
         self.sequence_index = other.sequence_index;
         self.deform.clone_from(&other.deform);
     }
@@ -72,17 +76,31 @@ impl Pose for SlotPose {
 
 impl SlotPose {
     /// Changes the attachment, keeping deform only when both attachments
-    /// share timelines. Resets the sequence frame.
-    pub fn set_attachment(&mut self, attachment: Option<AttachmentId>, data: &SkeletonData) {
+    /// share timelines. Resets the sequence frame. `timeline` is the new
+    /// attachment's [`timeline_attachment`](crate::data::Attachment::timeline_attachment).
+    pub fn set_attachment(
+        &mut self,
+        attachment: Option<AttachmentRef>,
+        timeline: Option<AttachmentId>,
+    ) {
         if self.attachment == attachment {
             return;
         }
-        let timeline_of = |id: AttachmentId| data.attachments[id.index()].timeline_attachment(id);
-        match (attachment, self.attachment) {
-            (Some(new), Some(old)) if timeline_of(new) == timeline_of(old) => {}
-            _ => self.deform.clear(),
+        self.replace_attachment(attachment, timeline);
+    }
+
+    /// [`Self::set_attachment`] without the same-ref shortcut, for refs from
+    /// a different skin.
+    pub(crate) fn replace_attachment(
+        &mut self,
+        attachment: Option<AttachmentRef>,
+        timeline: Option<AttachmentId>,
+    ) {
+        if attachment.is_none() || timeline.is_none() || timeline != self.timeline_attachment {
+            self.deform.clear();
         }
         self.attachment = attachment;
+        self.timeline_attachment = timeline;
         self.sequence_index = -1;
     }
 }
@@ -118,12 +136,13 @@ impl Slot {
     }
 
     /// Resets color, dark color and attachment. `attachment` is the setup
-    /// attachment resolved through the skeleton's skins.
+    /// attachment resolved through the skeleton's skins, with its timeline
+    /// attachment.
     pub fn setup_pose(
         &mut self,
         data: &SlotData,
-        attachment: Option<AttachmentId>,
-        skeleton_data: &SkeletonData,
+        attachment: Option<AttachmentRef>,
+        timeline: Option<AttachmentId>,
     ) {
         let pose = &mut self.posed.pose;
         pose.color = data.color;
@@ -134,10 +153,10 @@ impl Slot {
         }
         pose.sequence_index = 0;
         if data.attachment_name.is_none() {
-            pose.set_attachment(None, skeleton_data);
+            pose.set_attachment(None, None);
         } else {
             pose.attachment = None;
-            pose.set_attachment(attachment, skeleton_data);
+            pose.set_attachment(attachment, timeline);
         }
     }
 }

@@ -63,12 +63,15 @@ use thiserror::Error;
 
 use crate::animation::{BEZIER_SIZE, compute_bezier_samples};
 use crate::data::attachment::{Attachment, Sequence, VertexData};
+use std::sync::Arc;
+
 use crate::data::{
-    Animation, AnimationEvent, AnimationId, AttachmentId, BlendMode, BoneData, BoneId,
-    ConstraintData, ConstraintId, CurveFrames, EventData, EventId, FromProperty, IkConstraintData,
-    Inherit, PathConstraintData, PhysicsConstraintData, PhysicsProperty, PositionMode, RotateMode,
-    ScaleYMode, SkeletonData, Skin, SkinId, SliderData, SliderProperty, SlotData, SlotId,
-    SpacingMode, Timeline, ToProperty, TransformConstraintData, TransformProperty,
+    Animation, AnimationEvent, AnimationId, AttachmentId, AttachmentRef, BlendMode, BoneData,
+    BoneId, ConstraintData, ConstraintId, CurveFrames, EventData, EventId, FromProperty,
+    IkConstraintData, Inherit, PathConstraintData, PhysicsConstraintData, PhysicsProperty,
+    PositionMode, RotateMode, ScaleYMode, SkeletonData, Skin, SkinId, SliderData, SliderProperty,
+    SlotData, SlotId, SpacingMode, Timeline, ToProperty, TransformConstraintData,
+    TransformProperty,
 };
 use crate::load::AttachmentLoader;
 use crate::load::AttachmentLoaderError;
@@ -335,6 +338,7 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
+        sd.intern_attachment_keys();
         Ok(sd)
     }
 
@@ -610,7 +614,8 @@ impl<'loader> SkeletonJson<'loader> {
                     {
                         let id = AttachmentId(sd.attachments.len() as u32);
                         sd.attachments.push(attachment);
-                        skin.set_attachment(slot, placeholder, id);
+                        let key = sd.skin_keys.intern(slot, placeholder);
+                        skin.set(key, AttachmentRef::Data(id));
                     }
                 }
             }
@@ -619,7 +624,7 @@ impl<'loader> SkeletonJson<'loader> {
         if skin_name == "default" {
             sd.default_skin = Some(SkinId(sd.skins.len() as u16));
         }
-        sd.skins.push(skin);
+        sd.skins.push(Arc::new(skin));
         Ok(())
     }
 
@@ -857,8 +862,8 @@ impl<'loader> SkeletonJson<'loader> {
                 entity: "linked mesh skin",
                 name: lm.skin_name.clone().unwrap_or_default(),
             })?;
-            let source = sd.skins[skin_id.index()]
-                .get_attachment(lm.source_slot, &lm.source)
+            let source = sd
+                .skin_attachment(skin_id, lm.source_slot, &lm.source)
                 .ok_or_else(|| JsonError::NotFound {
                     entity: "linked mesh source",
                     name: lm.source.clone(),
@@ -922,6 +927,7 @@ impl<'loader> SkeletonJson<'loader> {
                                 slot,
                                 frames,
                                 names,
+                                keys: Vec::new(),
                             });
                         }
                         "rgba" => {
@@ -1213,7 +1219,8 @@ impl<'loader> SkeletonJson<'loader> {
                 let skin = sd
                     .skins
                     .iter()
-                    .find(|s| s.name == *skin_name)
+                    .position(|s| s.name == *skin_name)
+                    .map(|i| SkinId(i as u16))
                     .ok_or_else(|| JsonError::NotFound {
                         entity: "animation skin",
                         name: skin_name.clone(),
@@ -1238,7 +1245,7 @@ impl<'loader> SkeletonJson<'loader> {
                     })?;
                     for (att_name, tmap) in att_map {
                         let attachment_id =
-                            skin.get_attachment(slot, att_name).ok_or_else(|| {
+                            sd.skin_attachment(skin, slot, att_name).ok_or_else(|| {
                                 JsonError::NotFound {
                                     entity: "animation attachment",
                                     name: att_name.clone(),

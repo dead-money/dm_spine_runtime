@@ -38,6 +38,7 @@ pub mod ik;
 pub mod path;
 pub mod physics;
 pub mod pose;
+pub mod region_geometry;
 #[allow(clippy::module_inception)]
 pub mod skeleton;
 pub mod slider;
@@ -52,6 +53,7 @@ pub use constraint::{
     Constraint, IkConstraint, PathConstraint, PhysicsConstraint, Slider, TransformConstraint,
 };
 pub use pose::{Pose, Posed};
+pub use region_geometry::RegionGeometry;
 pub use skeleton::{Skeleton, SkinNotFound};
 pub use slot::{DrawOrder, Slot, SlotPose};
 pub use update_cache::{ResetEntry, UpdateCacheEntry};
