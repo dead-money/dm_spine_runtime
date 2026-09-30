@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: EsotericSoftware/spine-runtimes
+          ref: '4.2'
           path: spine-runtimes
 
       - name: Install Rust toolchain
