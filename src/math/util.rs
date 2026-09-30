@@ -37,7 +37,7 @@
 //! are not re-exported.
 
 /// spine-cpp's float constants, computed the same way so rounding matches.
-pub const PI: f32 = 3.141_592_7;
+pub const PI: f32 = std::f32::consts::PI;
 pub const PI_2: f32 = PI * 2.0;
 pub const INV_PI_2: f32 = 1.0 / PI_2;
 pub const DEG_RAD: f32 = PI / 180.0;

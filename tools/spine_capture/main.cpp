@@ -36,6 +36,13 @@
 //       updateWorldTransform(Physics_None).
 //   spine_capture --render <atlas> <skel> <out.json>
 //       SkeletonRenderer command summaries for the setup pose.
+//   spine_capture --state <atlas> <skel> <out.json> <script>
+//       Drives an AnimationState with a ';'-separated script and dumps
+//       bone poses at each `dump` plus lifecycle events. Commands:
+//       mix:D, set:T:ANIM:LOOP, add:T:ANIM:LOOP:DELAY, empty:T:DUR,
+//       addempty:T:DUR:DELAY, additive:T:0|1, alpha:T:A,
+//       interp:T:linear|smooth|slowFast|fastSlow|circle, step:N, dump.
+//       Each step is update(1/60), apply, updateWorldTransform(Physics_None).
 //   spine_capture --list <atlas> <skel>
 //       Animation and skin names, one JSON line.
 //   spine_capture --bench <atlas> <skel> <anim> <frames> [skin]
@@ -50,6 +57,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace spine;
 
@@ -180,6 +188,33 @@ static void write_render(FILE *out, Skeleton &skeleton, const char *skel_path, c
     fprintf(out, "\n  ]\n}\n");
 }
 
+static void write_bones(FILE *out, Skeleton &skeleton, const char *indent) {
+    fprintf(out, "%s\"bones\": [\n", indent);
+    Array<Bone *> &bones = skeleton.getBones();
+    for (size_t i = 0; i < bones.size(); ++i) {
+        Bone *b = bones[i];
+        BoneData &bd = b->getData();
+        BonePose &p = b->getAppliedPose();
+        // Constraints that write the world matrix leave the local pose stale
+        // until validated; the goldens compare the validated values.
+        p.validateLocalTransform(skeleton);
+        fprintf(out, "%s  {\"index\": %d, \"name\": \"%s\", \"parent\": ", indent, bd.getIndex(),
+                json_escape(bd.getName().buffer()).c_str());
+        if (bd.getParent())
+            fprintf(out, "%d", bd.getParent()->getIndex());
+        else
+            fprintf(out, "null");
+        fprintf(out,
+                ", \"inherit\": \"%s\", \"active\": %s, \"a\": %.9g, \"b\": %.9g, \"c\": %.9g, \"d\": %.9g, "
+                "\"world_x\": %.9g, \"world_y\": %.9g, \"ax\": %.9g, \"ay\": %.9g, \"a_rotation\": %.9g, "
+                "\"a_scale_x\": %.9g, \"a_scale_y\": %.9g, \"a_shear_x\": %.9g, \"a_shear_y\": %.9g}%s\n",
+                inherit_name(p.getInherit()), b->isActive() ? "true" : "false", p.getA(), p.getB(), p.getC(), p.getD(),
+                p.getWorldX(), p.getWorldY(), p.getX(), p.getY(), p.getRotation(), p.getScaleX(), p.getScaleY(),
+                p.getShearX(), p.getShearY(), i + 1 == bones.size() ? "" : ",");
+    }
+    fprintf(out, "%s]\n", indent);
+}
+
 static void write_pose(FILE *out, Skeleton &skeleton, const char *skel_path, const char *atlas_path,
                        const char *anim_name, float anim_time) {
     fprintf(out, "{\n");
@@ -201,40 +236,127 @@ static void write_pose(FILE *out, Skeleton &skeleton, const char *skel_path, con
         fprintf(out, "%s\"%s\"", i ? ", " : "", json_escape(cache_entry_name(skeleton, cache[i]).c_str()).c_str());
     fprintf(out, "],\n");
 
-    fprintf(out, "  \"bones\": [\n");
-    Array<Bone *> &bones = skeleton.getBones();
-    for (size_t i = 0; i < bones.size(); ++i) {
-        Bone *b = bones[i];
-        BoneData &bd = b->getData();
-        BonePose &p = b->getAppliedPose();
-        // Constraints that write the world matrix leave the local pose stale
-        // until validated; the goldens compare the validated values.
-        p.validateLocalTransform(skeleton);
-        fprintf(out, "    {\n");
-        fprintf(out, "      \"index\": %d,\n", bd.getIndex());
-        fprintf(out, "      \"name\": \"%s\",\n", json_escape(bd.getName().buffer()).c_str());
-        if (bd.getParent())
-            fprintf(out, "      \"parent\": %d,\n", bd.getParent()->getIndex());
-        else
-            fprintf(out, "      \"parent\": null,\n");
-        fprintf(out, "      \"inherit\": \"%s\",\n", inherit_name(p.getInherit()));
-        fprintf(out, "      \"active\": %s,\n", b->isActive() ? "true" : "false");
-        fprintf(out, "      \"a\": %.9g,\n", p.getA());
-        fprintf(out, "      \"b\": %.9g,\n", p.getB());
-        fprintf(out, "      \"c\": %.9g,\n", p.getC());
-        fprintf(out, "      \"d\": %.9g,\n", p.getD());
-        fprintf(out, "      \"world_x\": %.9g,\n", p.getWorldX());
-        fprintf(out, "      \"world_y\": %.9g,\n", p.getWorldY());
-        fprintf(out, "      \"ax\": %.9g,\n", p.getX());
-        fprintf(out, "      \"ay\": %.9g,\n", p.getY());
-        fprintf(out, "      \"a_rotation\": %.9g,\n", p.getRotation());
-        fprintf(out, "      \"a_scale_x\": %.9g,\n", p.getScaleX());
-        fprintf(out, "      \"a_scale_y\": %.9g,\n", p.getScaleY());
-        fprintf(out, "      \"a_shear_x\": %.9g,\n", p.getShearX());
-        fprintf(out, "      \"a_shear_y\": %.9g\n", p.getShearY());
-        fprintf(out, "    }%s\n", i + 1 == bones.size() ? "" : ",");
+    write_bones(out, skeleton, "  ");
+    fprintf(out, "}\n");
+}
+
+
+struct StateLog {
+    std::string events;
+    bool first = true;
+};
+
+static void state_listener(AnimationState *state, EventType type, TrackEntry *entry, Event *event, void *user) {
+    (void) state;
+    StateLog *log = (StateLog *) user;
+    const char *kind = "";
+    switch (type) {
+        case EventType_Start: kind = "start"; break;
+        case EventType_Interrupt: kind = "interrupt"; break;
+        case EventType_End: kind = "end"; break;
+        case EventType_Complete: kind = "complete"; break;
+        case EventType_Dispose: kind = "dispose"; break;
+        case EventType_Event: kind = "event"; break;
     }
-    fprintf(out, "  ]\n}\n");
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s\"%s:%d:%s%s%s\"", log->first ? "" : ", ", kind, entry->getTrackIndex(),
+             json_escape(entry->getAnimation().getName().buffer()).c_str(), event ? ":" : "",
+             event ? json_escape(event->getData().getName().buffer()).c_str() : "");
+    log->events += buf;
+    log->first = false;
+}
+
+static Interpolation &interpolation_named(const std::string &name) {
+    if (name == "smooth") return Interpolation::smooth();
+    if (name == "slowFast") return Interpolation::slowFast();
+    if (name == "fastSlow") return Interpolation::fastSlow();
+    if (name == "circle") return Interpolation::circle();
+    return Interpolation::linear();
+}
+
+static int run_state(SkeletonData &data, FILE *out, const char *skel_path, const char *atlas_path, const char *script) {
+    Skeleton skeleton(data);
+    skeleton.setupPose();
+    AnimationStateData state_data(data);
+    AnimationState state(state_data);
+    StateLog log;
+    state.setListener(state_listener, &log);
+
+    fprintf(out, "{\n");
+    fprintf(out, "  \"source_skel\": \"%s\",\n", json_escape(skel_path).c_str());
+    fprintf(out, "  \"source_atlas\": \"%s\",\n", json_escape(atlas_path).c_str());
+    fprintf(out, "  \"script\": \"%s\",\n", json_escape(script).c_str());
+    fprintf(out, "  \"frames\": [\n");
+    bool first_frame = true;
+
+    std::string all(script);
+    size_t start = 0;
+    while (start < all.size()) {
+        size_t end = all.find(';', start);
+        if (end == std::string::npos) end = all.size();
+        std::string cmd = all.substr(start, end - start);
+        start = end + 1;
+        std::vector<std::string> f;
+        size_t p = 0;
+        while (true) {
+            size_t q = cmd.find(':', p);
+            f.push_back(cmd.substr(p, q == std::string::npos ? std::string::npos : q - p));
+            if (q == std::string::npos) break;
+            p = q + 1;
+        }
+        const std::string &op = f[0];
+        if (op == "mix") {
+            state_data.setDefaultMix((float) atof(f[1].c_str()));
+        } else if (op == "set") {
+            state.setAnimation(atoi(f[1].c_str()), String(f[2].c_str()), f[3] == "1");
+        } else if (op == "add") {
+            state.addAnimation(atoi(f[1].c_str()), String(f[2].c_str()), f[3] == "1", (float) atof(f[4].c_str()));
+        } else if (op == "empty") {
+            state.setEmptyAnimation(atoi(f[1].c_str()), (float) atof(f[2].c_str()));
+        } else if (op == "addempty") {
+            state.addEmptyAnimation(atoi(f[1].c_str()), (float) atof(f[2].c_str()), (float) atof(f[3].c_str()));
+        } else if (op == "additive") {
+            state.getTrack(atoi(f[1].c_str()))->setAdditive(f[2] == "1");
+        } else if (op == "alpha") {
+            state.getTrack(atoi(f[1].c_str()))->setAlpha((float) atof(f[2].c_str()));
+        } else if (op == "interp") {
+            state.getTrack(atoi(f[1].c_str()))->setMixInterpolation(interpolation_named(f[2]));
+        } else if (op == "step") {
+            for (int i = 0, n = atoi(f[1].c_str()); i < n; i++) {
+                state.update(1.0f / 60.0f);
+                state.apply(skeleton);
+                skeleton.updateWorldTransform(Physics_None);
+            }
+        } else if (op == "dump") {
+            fprintf(out, "%s    {\n", first_frame ? "" : ",\n");
+            first_frame = false;
+            write_bones(out, skeleton, "      ");
+            fprintf(out, "      ,\"slots\": [");
+            Array<Slot *> &slots = skeleton.getSlots();
+            for (size_t i = 0; i < slots.size(); ++i) {
+                SlotPose &sp = slots[i]->getAppliedPose();
+                Attachment *att = sp.getAttachment();
+                Color &c = sp.getColor();
+                fprintf(out, "%s{\"attachment\": ", i ? ", " : "");
+                if (att)
+                    fprintf(out, "\"%s\"", json_escape(att->getName().buffer()).c_str());
+                else
+                    fprintf(out, "null");
+                fprintf(out, ", \"color\": [%.9g, %.9g, %.9g, %.9g], \"sequence_index\": %d}", c.r, c.g, c.b, c.a,
+                        sp.getSequenceIndex());
+            }
+            fprintf(out, "],\n      \"draw_order\": [");
+            Array<Slot *> &order = skeleton.getDrawOrder().getAppliedPose();
+            for (size_t i = 0; i < order.size(); ++i)
+                fprintf(out, "%s%d", i ? ", " : "", order[i]->getData().getIndex());
+            fprintf(out, "]\n    }");
+        } else if (!op.empty()) {
+            fprintf(stderr, "unknown state command '%s'\n", op.c_str());
+            return 64;
+        }
+    }
+    fprintf(out, "\n  ],\n  \"events\": [%s]\n}\n", log.events.c_str());
+    return 0;
 }
 
 static void run_list(SkeletonData &data) {
@@ -299,8 +421,8 @@ static int run_bench(SkeletonData &data, const char *skel_path, const char *anim
 }
 
 int main(int argc, char **argv) {
-    enum { SETUP, ANIM, RENDER, LIST, BENCH } mode;
-    const char *atlas_path, *skel_path, *out_path = nullptr, *anim_name = nullptr, *skin = nullptr;
+    enum { SETUP, ANIM, RENDER, LIST, BENCH, STATE } mode;
+    const char *atlas_path, *skel_path, *out_path = nullptr, *anim_name = nullptr, *skin = nullptr, *script = nullptr;
     float anim_time = 0.0f;
     int frames = 0;
 
@@ -321,6 +443,12 @@ int main(int argc, char **argv) {
         atlas_path = argv[2];
         skel_path = argv[3];
         out_path = argv[4];
+    } else if (argc == 6 && strcmp(argv[1], "--state") == 0) {
+        mode = STATE;
+        atlas_path = argv[2];
+        skel_path = argv[3];
+        out_path = argv[4];
+        script = argv[5];
     } else if (argc == 4 && strcmp(argv[1], "--list") == 0) {
         mode = LIST;
         atlas_path = argv[2];
@@ -338,9 +466,10 @@ int main(int argc, char **argv) {
                 "  %s <atlas> <skel> <out.json>\n"
                 "  %s --anim <atlas> <skel> <out.json> <anim> <time>\n"
                 "  %s --render <atlas> <skel> <out.json>\n"
+                "  %s --state <atlas> <skel> <out.json> <script>\n"
                 "  %s --list <atlas> <skel>\n"
                 "  %s --bench <atlas> <skel> <anim> <frames> [skin]\n",
-                argv[0], argv[0], argv[0], argv[0], argv[0]);
+                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 64;
     }
 
@@ -379,6 +508,13 @@ int main(int argc, char **argv) {
     }
 
     int rc = 0;
+    if (mode == STATE) {
+        rc = run_state(*data, out, skel_path, atlas_path, script);
+        fclose(out);
+        delete data;
+        delete atlas;
+        return rc;
+    }
     {
         Skeleton skeleton(*data);
         skeleton.setupPose();

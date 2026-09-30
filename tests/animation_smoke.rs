@@ -47,7 +47,6 @@ fn examples_dir() -> PathBuf {
 }
 
 #[test]
-#[ignore = "Spine 4.3 phase 3"]
 fn all_animations_apply_without_panic() {
     let root = examples_dir();
     assert!(root.exists(), "missing examples dir: {}", root.display());
@@ -90,7 +89,6 @@ fn all_animations_apply_without_panic() {
             for anim_idx in 0..data.animations.len() {
                 let duration = data.animations[anim_idx].duration;
                 let mut sk = Skeleton::new(Arc::clone(&data));
-                sk.update_cache();
                 let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
                 let mut state = AnimationState::new(state_data);
                 let _ = state.set_animation(
@@ -101,14 +99,16 @@ fn all_animations_apply_without_panic() {
 
                 for t in [0.0_f32, 0.1, 0.333, 0.666, 0.999].iter().copied() {
                     let time = if duration > 0.0 { t * duration } else { 0.0 };
-                    state.update(time - state.current(0).unwrap().track_time);
-                    sk.set_to_setup_pose();
+                    let entry = state.track(0).unwrap();
+                    state.update(time - state.entry(entry).unwrap().track_time);
+                    sk.setup_pose();
                     let mut events = Vec::new();
                     state.apply(&mut sk, &mut events);
                     sk.update_world_transform(Physics::None);
 
                     // Light sanity checks: bone world matrices are finite.
                     for (i, bone) in sk.bones.iter().enumerate() {
+                        let bone = bone.applied();
                         assert!(
                             bone.a.is_finite()
                                 && bone.b.is_finite()
@@ -132,6 +132,7 @@ fn all_animations_apply_without_panic() {
         }
     }
 
+    eprintln!("exercised {animations_exercised} animations on {rigs_seen} rigs");
     assert!(rigs_seen >= 15, "exercised only {rigs_seen} rigs");
     assert!(
         animations_exercised >= 30,
