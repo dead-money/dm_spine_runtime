@@ -29,8 +29,10 @@
 
 use std::sync::Arc;
 
+use crate::data::skin::resolve;
 use crate::data::{
-    AttachmentId, BoneId, ConstraintData, ConstraintId, SkeletonData, SkinId, SlotId,
+    Attachment, AttachmentId, AttachmentRef, BoneId, ConstraintData, ConstraintId, SkeletonData,
+    Skin, SkinKey, SlotId,
 };
 use crate::math::Color;
 use crate::skeleton::Physics;
@@ -52,7 +54,7 @@ pub struct Skeleton {
     pub(crate) physics: Vec<ConstraintId>,
     pub(crate) update_cache: Vec<UpdateCacheEntry>,
     pub(crate) reset_cache: Vec<ResetEntry>,
-    pub skin: Option<SkinId>,
+    pub(crate) skin: Option<Arc<Skin>>,
     pub color: Color,
     pub x: f32,
     pub y: f32,
@@ -149,8 +151,8 @@ impl Skeleton {
             bone.active = !bone.sorted;
             bone.posed.unconstrain();
         }
-        if let Some(skin) = self.skin {
-            for &b in &data.skins[skin.index()].bones {
+        if let Some(skin) = &self.skin {
+            for &b in &skin.bones {
                 let mut bone = Some(b);
                 while let Some(id) = bone {
                     let bone_ref = &mut self.bones[id.index()];
@@ -171,7 +173,8 @@ impl Skeleton {
                 && (!constraint_data.skin_required()
                     || self
                         .skin
-                        .is_some_and(|s| data.skins[s.index()].constraints.contains(&id)));
+                        .as_ref()
+                        .is_some_and(|s| s.constraints.contains(&id)));
             self.constraints_active[i] = active;
             if active {
                 self.sort_constraint(id, &data);
@@ -311,10 +314,10 @@ impl Skeleton {
         for i in 0..self.slots.len() {
             let slot_data = &data.slots[i];
             let attachment = slot_data
-                .attachment_name
-                .as_deref()
-                .and_then(|name| self.get_attachment(SlotId(i as u16), name));
-            self.slots[i].setup_pose(slot_data, attachment, &data);
+                .attachment_key
+                .and_then(|key| self.get_attachment_by_key(key));
+            let timeline = self.timeline_attachment(attachment);
+            self.slots[i].setup_pose(slot_data, attachment, timeline);
         }
     }
 
@@ -336,19 +339,65 @@ impl Skeleton {
             .map(|i| SlotId(i as u16))
     }
 
+    /// The skin being worn, if any.
+    #[must_use]
+    pub fn skin(&self) -> Option<&Arc<Skin>> {
+        self.skin.as_ref()
+    }
+
+    /// The worn skin, for editing in place; cloned first if other skeletons
+    /// share it. Slots keep showing what they showed, as with any skin edit.
+    /// Call [`Self::update_cache`] after changing its bones or constraints.
+    pub fn skin_mut(&mut self) -> Option<&mut Skin> {
+        self.skin.as_mut().map(Arc::make_mut)
+    }
+
+    /// The attachment `r` refers to. Owned attachments come from the worn
+    /// skin.
+    ///
+    /// # Panics
+    ///
+    /// If `r` is owned and not in the worn skin.
+    #[inline]
+    #[must_use]
+    pub fn attachment(&self, r: AttachmentRef) -> &Attachment {
+        resolve(&self.data.attachments, self.skin.as_deref(), r)
+    }
+
+    /// The data attachment whose timelines drive `r`.
+    #[must_use]
+    pub fn timeline_attachment(&self, r: Option<AttachmentRef>) -> Option<AttachmentId> {
+        r.and_then(|r| self.attachment(r).timeline_attachment(r))
+    }
+
     /// The attachment for a placeholder on a slot, from the skin, falling
     /// back to the default skin.
     #[must_use]
-    pub fn get_attachment(&self, slot: SlotId, placeholder: &str) -> Option<AttachmentId> {
+    pub fn get_attachment(&self, slot: SlotId, placeholder: &str) -> Option<AttachmentRef> {
         if placeholder.is_empty() {
             return None;
         }
-        if let Some(skin) = self.skin
-            && let Some(att) = self.data.skins[skin.index()].get_attachment(slot, placeholder)
+        match self.data.skin_keys.find(slot, placeholder) {
+            Some(key) => self.get_attachment_by_key(key),
+            None => self
+                .skin
+                .as_ref()?
+                .extra_on(slot)
+                .find(|(n, _)| *n == placeholder)
+                .map(|(_, a)| a),
+        }
+    }
+
+    /// [`Self::get_attachment`] for an interned placeholder.
+    #[inline]
+    #[must_use]
+    pub fn get_attachment_by_key(&self, key: SkinKey) -> Option<AttachmentRef> {
+        if let Some(skin) = &self.skin
+            && let Some(att) = skin.get(key)
         {
             return Some(att);
         }
-        self.data.default_skin()?.get_attachment(slot, placeholder)
+        self.data.default_skin()?.get(key)
     }
 
     /// Shows the attachment for `placeholder` on a slot, or clears it with
@@ -361,55 +410,92 @@ impl Skeleton {
             },
             None => None,
         };
-        let data = Arc::clone(&self.data);
+        let timeline = self.timeline_attachment(attachment);
         self.slots[slot.index()]
             .posed
             .pose
-            .set_attachment(attachment, &data);
+            .set_attachment(attachment, timeline);
     }
 
-    /// Changes the skin. Attachments from the old skin are swapped for the
-    /// new skin's; with no old skin, setup attachments come from the new one.
-    pub fn set_skin(&mut self, new_skin: Option<SkinId>) {
-        if self.skin == new_skin {
+    /// Changes the skin. Slots showing the old skin's attachments switch to
+    /// the new skin's for the same placeholder; with no old skin, setup
+    /// attachments come from the new one. A slot left showing an attachment
+    /// the old skin owned is cleared, since that attachment goes with it.
+    pub fn set_skin(&mut self, new_skin: Option<Arc<Skin>>) {
+        let same = match (&self.skin, &new_skin) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
             return;
         }
         let data = Arc::clone(&self.data);
-        if let Some(new_id) = new_skin {
-            let new = &data.skins[new_id.index()];
-            if let Some(old_id) = self.skin {
-                for (slot, placeholder, old_att) in data.skins[old_id.index()].attachments() {
-                    let pose = &mut self.slots[slot.index()].posed.pose;
-                    if pose.attachment == Some(old_att)
-                        && let Some(att) = new.get_attachment(slot, placeholder)
-                    {
-                        pose.set_attachment(Some(att), &data);
+        let old_skin = std::mem::replace(&mut self.skin, new_skin);
+        let new = self.skin.clone();
+        for i in 0..self.slots.len() {
+            let slot = SlotId(i as u16);
+            let Some(current) = self.slots[i].posed.pose.attachment else {
+                if old_skin.is_none()
+                    && let Some(new) = &new
+                    && let Some(key) = data.slots[i].attachment_key
+                    && let Some(att) = new.get(key)
+                {
+                    self.show_new_skin_attachment(i, att);
+                }
+                continue;
+            };
+            let replacement = match (&old_skin, &new) {
+                (None, Some(new)) => data.slots[i].attachment_key.and_then(|key| new.get(key)),
+                (Some(old), Some(new)) => {
+                    let keyed = data
+                        .skin_keys
+                        .slot_keys(slot)
+                        .iter()
+                        .find(|&&k| old.get(k) == Some(current))
+                        .map(|&k| new.get(k));
+                    match keyed {
+                        Some(found) => found,
+                        None => old
+                            .extra_on(slot)
+                            .find(|(_, a)| *a == current)
+                            .and_then(|(n, _)| new.get_named(&data.skin_keys, slot, n)),
                     }
                 }
-            } else {
-                for (i, slot) in self.slots.iter_mut().enumerate() {
-                    if let Some(name) = data.slots[i].attachment_name.as_deref()
-                        && let Some(att) = new.get_attachment(SlotId(i as u16), name)
-                    {
-                        slot.posed.pose.set_attachment(Some(att), &data);
-                    }
+                (_, None) => None,
+            };
+            match replacement {
+                Some(att) => self.show_new_skin_attachment(i, att),
+                None if matches!(current, AttachmentRef::Owned(_)) => {
+                    self.slots[i].posed.pose.set_attachment(None, None);
                 }
+                None => {}
             }
         }
-        self.skin = new_skin;
         self.update_cache();
     }
 
+    fn show_new_skin_attachment(&mut self, slot: usize, att: AttachmentRef) {
+        let timeline = self.timeline_attachment(Some(att));
+        let pose = &mut self.slots[slot].posed.pose;
+        if matches!(att, AttachmentRef::Owned(_)) {
+            pose.replace_attachment(Some(att), timeline);
+        } else {
+            pose.set_attachment(Some(att), timeline);
+        }
+    }
+
+    /// Wears one of the data's skins.
+    ///
     /// # Errors
     /// [`SkinNotFound`] if the data has no skin with that name.
     pub fn set_skin_by_name(&mut self, name: &str) -> Result<(), SkinNotFound> {
-        let id = self
+        let skin = self
             .data
-            .skins
-            .iter()
-            .position(|s| s.name == name)
+            .find_skin(name)
+            .cloned()
             .ok_or_else(|| SkinNotFound(name.to_string()))?;
-        self.set_skin(Some(SkinId(id as u16)));
+        self.set_skin(Some(skin));
         Ok(())
     }
 

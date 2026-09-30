@@ -36,7 +36,7 @@
 
 #![allow(clippy::many_single_char_names)] // spine-cpp short names preserved for diff parity.
 
-use crate::data::{Attachment, AttachmentId};
+use crate::data::{Attachment, AttachmentRef};
 use crate::skeleton::Skeleton;
 
 /// One bounding-box attachment's world polygon — interleaved
@@ -69,7 +69,7 @@ impl BoundsPolygon {
 pub struct SkeletonBounds {
     /// `AttachmentId` of each bounding box, one per polygon. Parallel
     /// to [`Self::polygons`].
-    bounding_boxes: Vec<AttachmentId>,
+    bounding_boxes: Vec<AttachmentRef>,
     /// World-space polygons, one per entry in [`Self::bounding_boxes`].
     /// Buffers are pooled — on `update` we truncate the outer Vec to
     /// the active count but retain inner buffer capacity.
@@ -115,8 +115,7 @@ impl SkeletonBounds {
             let Some(attachment_id) = slot.applied().attachment else {
                 continue;
             };
-            let Attachment::BoundingBox(bbox) = &skeleton.data.attachments[attachment_id.index()]
-            else {
+            let Attachment::BoundingBox(bbox) = skeleton.attachment(attachment_id) else {
                 continue;
             };
 
@@ -264,11 +263,11 @@ impl SkeletonBounds {
         inside
     }
 
-    /// Returns the [`AttachmentId`] of the first bounding box
+    /// Returns the [`AttachmentRef`] of the first bounding box
     /// containing `(x, y)`, or `None`. Walks polygons in the order
     /// they were collected by [`Self::update`].
     #[must_use]
-    pub fn contains_point(&self, x: f32, y: f32) -> Option<AttachmentId> {
+    pub fn contains_point(&self, x: f32, y: f32) -> Option<AttachmentRef> {
         for (i, polygon) in self.polygons.iter().enumerate() {
             if Self::polygon_contains_point(polygon, x, y) {
                 return Some(self.bounding_boxes[i]);
@@ -277,11 +276,11 @@ impl SkeletonBounds {
         None
     }
 
-    /// Returns the [`AttachmentId`] of the first bounding box
+    /// Returns the [`AttachmentRef`] of the first bounding box
     /// whose polygon intersects the segment `(x1, y1) → (x2, y2)`,
     /// or `None`.
     #[must_use]
-    pub fn intersects_segment(&self, x1: f32, y1: f32, x2: f32, y2: f32) -> Option<AttachmentId> {
+    pub fn intersects_segment(&self, x1: f32, y1: f32, x2: f32, y2: f32) -> Option<AttachmentRef> {
         for (i, polygon) in self.polygons.iter().enumerate() {
             if Self::polygon_intersects_segment(polygon, x1, y1, x2, y2) {
                 return Some(self.bounding_boxes[i]);
@@ -339,7 +338,7 @@ impl SkeletonBounds {
     /// or `None` if it's not in the last `update` pass. Requires a
     /// prior call to [`Self::update`].
     #[must_use]
-    pub fn polygon_for(&self, attachment_id: AttachmentId) -> Option<&BoundsPolygon> {
+    pub fn polygon_for(&self, attachment_id: AttachmentRef) -> Option<&BoundsPolygon> {
         self.bounding_boxes
             .iter()
             .position(|&a| a == attachment_id)
@@ -355,7 +354,7 @@ impl SkeletonBounds {
     /// All bounding-box attachments collected by the last
     /// [`Self::update`] call. Parallel to [`Self::polygons`].
     #[must_use]
-    pub fn bounding_boxes(&self) -> &[AttachmentId] {
+    pub fn bounding_boxes(&self) -> &[AttachmentRef] {
         &self.bounding_boxes
     }
 

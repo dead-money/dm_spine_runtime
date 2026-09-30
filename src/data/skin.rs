@@ -25,15 +25,84 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Named set of attachments, keyed by slot and placeholder name, plus the
-//! skin-required bones and constraints the skin brings in.
+//! Skins: attachments keyed by slot and placeholder, plus the skin-required
+//! bones and constraints they bring in.
+//!
+//! Every `(slot, placeholder)` pair the data mentions (in skins, setup
+//! attachments and attachment timelines) is interned once as a [`SkinKey`],
+//! so a skin is a flat table indexed by key and lookups never hash strings.
 
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
-
-use crate::data::{AttachmentId, BoneId, ConstraintId, SlotId};
+use crate::data::{Attachment, AttachmentId, BoneId, ConstraintId, SkinKey, SlotId};
 use crate::math::Color;
 
+/// An attachment shown by a slot: one from the shared data, or one owned by
+/// the skeleton's current skin (a runtime copy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttachmentRef {
+    Data(AttachmentId),
+    /// Index into the owning skin's [`Skin::owned`].
+    Owned(u32),
+}
+
+/// Interned `(slot, placeholder)` pairs of one `SkeletonData`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SkinKeys {
+    keys: Vec<(SlotId, Box<str>)>,
+    by_slot: Vec<Vec<SkinKey>>,
+}
+
+impl SkinKeys {
+    /// The key for a pair, adding it if new.
+    pub fn intern(&mut self, slot: SlotId, placeholder: &str) -> SkinKey {
+        if let Some(key) = self.find(slot, placeholder) {
+            return key;
+        }
+        let key = SkinKey(self.keys.len() as u32);
+        self.keys.push((slot, placeholder.into()));
+        if self.by_slot.len() <= slot.index() {
+            self.by_slot.resize_with(slot.index() + 1, Vec::new);
+        }
+        self.by_slot[slot.index()].push(key);
+        key
+    }
+
+    /// Slots carry a handful of placeholders, so this is a short scan.
+    #[must_use]
+    pub fn find(&self, slot: SlotId, placeholder: &str) -> Option<SkinKey> {
+        self.slot_keys(slot)
+            .iter()
+            .copied()
+            .find(|k| *self.keys[k.index()].1 == *placeholder)
+    }
+
+    #[must_use]
+    pub fn slot(&self, key: SkinKey) -> SlotId {
+        self.keys[key.index()].0
+    }
+
+    #[must_use]
+    pub fn placeholder(&self, key: SkinKey) -> &str {
+        &self.keys[key.index()].1
+    }
+
+    #[must_use]
+    pub fn slot_keys(&self, slot: SlotId) -> &[SkinKey] {
+        self.by_slot.get(slot.index()).map_or(&[], Vec::as_slice)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// A skin for one `SkeletonData`: its keys and data attachment ids are only
+/// meaningful against that data.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Skin {
     pub name: String,
@@ -41,34 +110,13 @@ pub struct Skin {
     pub constraints: Vec<ConstraintId>,
     /// Nonessential editor color.
     pub color: Color,
-    /// Indexed by slot; each map is placeholder name to attachment.
-    slots: Vec<NameMap>,
+    /// Indexed by [`SkinKey`]; keys past the end are empty.
+    entries: Vec<Option<AttachmentRef>>,
+    /// Placeholders the data never mentions, so no timeline or setup pose
+    /// can reach them; only name lookups do.
+    extra: Vec<(SlotId, Box<str>, AttachmentRef)>,
+    owned: Vec<Attachment>,
 }
-
-/// FNV-1a: placeholder names are short, and attachment timelines look them
-/// up every frame.
-#[derive(Default)]
-struct NameHasher(u64);
-
-impl Hasher for NameHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h = if self.0 == 0 {
-            0xcbf2_9ce4_8422_2325
-        } else {
-            self.0
-        };
-        for &b in bytes {
-            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-        }
-        self.0 = h;
-    }
-}
-
-type NameMap = HashMap<String, AttachmentId, BuildHasherDefault<NameHasher>>;
 
 impl Skin {
     #[must_use]
@@ -80,77 +128,266 @@ impl Skin {
         }
     }
 
-    pub fn set_attachment(
-        &mut self,
-        slot: SlotId,
-        placeholder: impl Into<String>,
-        attachment: AttachmentId,
-    ) {
-        let i = slot.index();
-        if self.slots.len() <= i {
-            self.slots.resize_with(i + 1, NameMap::default);
+    #[inline]
+    #[must_use]
+    pub fn get(&self, key: SkinKey) -> Option<AttachmentRef> {
+        self.entries.get(key.index()).copied().flatten()
+    }
+
+    /// # Panics
+    ///
+    /// If `attachment` is an owned index this skin doesn't have.
+    pub fn set(&mut self, key: SkinKey, attachment: AttachmentRef) {
+        if let AttachmentRef::Owned(i) = attachment {
+            assert!(
+                (i as usize) < self.owned.len(),
+                "owned attachment {i} out of range"
+            );
         }
-        self.slots[i].insert(placeholder.into(), attachment);
+        if self.entries.len() <= key.index() {
+            self.entries.resize(key.index() + 1, None);
+        }
+        self.entries[key.index()] = Some(attachment);
+    }
+
+    /// Clears the entry. An owned attachment it pointed at stays in the
+    /// arena, since other entries may share it.
+    pub fn remove(&mut self, key: SkinKey) {
+        if let Some(e) = self.entries.get_mut(key.index()) {
+            *e = None;
+        }
+    }
+
+    /// The attachment for a placeholder name, including runtime-only names.
+    #[must_use]
+    pub fn get_named(
+        &self,
+        keys: &SkinKeys,
+        slot: SlotId,
+        placeholder: &str,
+    ) -> Option<AttachmentRef> {
+        match keys.find(slot, placeholder) {
+            Some(key) => self.get(key),
+            None => self
+                .extra
+                .iter()
+                .find(|(s, n, _)| *s == slot && **n == *placeholder)
+                .map(|e| e.2),
+        }
+    }
+
+    /// Sets by name. A name the data never mentions is kept as a
+    /// runtime-only placeholder.
+    ///
+    /// # Panics
+    ///
+    /// If `attachment` is an owned index this skin doesn't have.
+    pub fn set_named(
+        &mut self,
+        keys: &SkinKeys,
+        slot: SlotId,
+        placeholder: &str,
+        attachment: AttachmentRef,
+    ) {
+        if let Some(key) = keys.find(slot, placeholder) {
+            self.set(key, attachment);
+            return;
+        }
+        if let AttachmentRef::Owned(i) = attachment {
+            assert!(
+                (i as usize) < self.owned.len(),
+                "owned attachment {i} out of range"
+            );
+        }
+        self.set_extra(slot, placeholder, attachment);
+    }
+
+    pub fn remove_named(&mut self, keys: &SkinKeys, slot: SlotId, placeholder: &str) {
+        match keys.find(slot, placeholder) {
+            Some(key) => self.remove(key),
+            None => self
+                .extra
+                .retain(|(s, n, _)| !(*s == slot && **n == *placeholder)),
+        }
+    }
+
+    /// Runtime-only placeholders on `slot`.
+    pub fn extra_on(&self, slot: SlotId) -> impl Iterator<Item = (&str, AttachmentRef)> + '_ {
+        self.extra
+            .iter()
+            .filter(move |e| e.0 == slot)
+            .map(|(_, n, a)| (&**n, *a))
+    }
+
+    /// Moves `attachment` into this skin's arena. Pair with [`Self::set`].
+    pub fn add_owned(&mut self, attachment: Attachment) -> AttachmentRef {
+        self.owned.push(attachment);
+        AttachmentRef::Owned(self.owned.len() as u32 - 1)
     }
 
     #[must_use]
-    pub fn get_attachment(&self, slot: SlotId, placeholder: &str) -> Option<AttachmentId> {
-        self.slots.get(slot.index())?.get(placeholder).copied()
+    pub fn owned(&self) -> &[Attachment] {
+        &self.owned
     }
 
-    pub fn remove_attachment(&mut self, slot: SlotId, placeholder: &str) {
-        if let Some(map) = self.slots.get_mut(slot.index()) {
-            map.remove(placeholder);
-        }
+    #[must_use]
+    pub fn owned_mut(&mut self) -> &mut [Attachment] {
+        &mut self.owned
+    }
+
+    /// Every non-empty entry.
+    pub fn entries(&self) -> impl Iterator<Item = (SkinKey, AttachmentRef)> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.map(|a| (SkinKey(i as u32), a)))
     }
 
     #[must_use]
     pub fn attachment_count(&self) -> usize {
-        self.slots.iter().map(NameMap::len).sum()
+        self.entries.iter().flatten().count() + self.extra.len()
     }
 
-    /// Every `(slot, placeholder, attachment)` entry.
-    pub fn attachments(&self) -> impl Iterator<Item = (SlotId, &str, AttachmentId)> + '_ {
-        self.slots.iter().enumerate().flat_map(|(slot, map)| {
-            map.iter()
-                .map(move |(name, id)| (SlotId(slot as u16), name.as_str(), *id))
-        })
+    /// Adds `other`'s bones, constraints and entries, replacing entries with
+    /// the same key. Its owned attachments are copied into this skin; data
+    /// attachments are shared.
+    pub fn add_skin(&mut self, other: &Skin) {
+        self.add_requirements(other);
+        let base = self.owned.len() as u32;
+        self.owned.extend_from_slice(&other.owned);
+        let remap = |a: AttachmentRef| match a {
+            AttachmentRef::Owned(i) => AttachmentRef::Owned(base + i),
+            data @ AttachmentRef::Data(_) => data,
+        };
+        for (key, attachment) in other.entries() {
+            self.set(key, remap(attachment));
+        }
+        for (slot, name, attachment) in &other.extra {
+            self.set_extra(*slot, name, remap(*attachment));
+        }
     }
 
-    /// Entries on one slot.
-    pub fn slot_attachments(
-        &self,
-        slot: SlotId,
-    ) -> impl Iterator<Item = (&str, AttachmentId)> + '_ {
-        self.slots
-            .get(slot.index())
-            .into_iter()
-            .flat_map(|map| map.iter().map(|(name, id)| (name.as_str(), *id)))
+    /// Like [`Self::add_skin`], but every attachment becomes an owned copy
+    /// (see [`Attachment::copy`]).
+    pub fn copy_skin(&mut self, other: &Skin, attachments: &[Attachment]) {
+        self.add_requirements(other);
+        for (key, attachment) in other.entries() {
+            let copy = self.copy_of(other, attachments, attachment);
+            self.set(key, copy);
+        }
+        for (slot, name, attachment) in &other.extra {
+            let copy = self.copy_of(other, attachments, *attachment);
+            self.set_extra(*slot, name, copy);
+        }
+    }
+
+    fn copy_of(
+        &mut self,
+        other: &Skin,
+        attachments: &[Attachment],
+        attachment: AttachmentRef,
+    ) -> AttachmentRef {
+        let copy = other.resolve(attachments, attachment).copy(attachment);
+        self.add_owned(copy)
+    }
+
+    fn add_requirements(&mut self, other: &Skin) {
+        for &b in &other.bones {
+            if !self.bones.contains(&b) {
+                self.bones.push(b);
+            }
+        }
+        for &c in &other.constraints {
+            if !self.constraints.contains(&c) {
+                self.constraints.push(c);
+            }
+        }
+    }
+
+    fn set_extra(&mut self, slot: SlotId, placeholder: &str, attachment: AttachmentRef) {
+        match self
+            .extra
+            .iter_mut()
+            .find(|(s, n, _)| *s == slot && **n == *placeholder)
+        {
+            Some(e) => e.2 = attachment,
+            None => self.extra.push((slot, placeholder.into(), attachment)),
+        }
+    }
+
+    /// The attachment `r` refers to, reading owned ones from this skin.
+    ///
+    /// # Panics
+    ///
+    /// If `r` is owned and out of range for this skin.
+    #[inline]
+    #[must_use]
+    pub fn resolve<'a>(
+        &'a self,
+        attachments: &'a [Attachment],
+        r: AttachmentRef,
+    ) -> &'a Attachment {
+        match r {
+            AttachmentRef::Data(id) => &attachments[id.index()],
+            AttachmentRef::Owned(i) => &self.owned[i as usize],
+        }
+    }
+}
+
+/// Resolves `r` against the data's attachments and, for owned ones, `skin`.
+///
+/// # Panics
+///
+/// If `r` is owned and `skin` is `None` or doesn't hold it.
+#[inline]
+#[must_use]
+pub fn resolve<'a>(
+    attachments: &'a [Attachment],
+    skin: Option<&'a Skin>,
+    r: AttachmentRef,
+) -> &'a Attachment {
+    match r {
+        AttachmentRef::Data(id) => &attachments[id.index()],
+        AttachmentRef::Owned(i) => {
+            &skin.expect("owned attachment without a skin").owned[i as usize]
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::PointAttachment;
 
     #[test]
-    fn attachment_set_get_remove() {
-        let mut skin = Skin::new("default");
-        skin.set_attachment(SlotId(0), "body", AttachmentId(7));
-        skin.set_attachment(SlotId(3), "head", AttachmentId(8));
-        skin.set_attachment(SlotId(0), "body", AttachmentId(9));
-        assert_eq!(
-            skin.get_attachment(SlotId(0), "body"),
-            Some(AttachmentId(9))
-        );
-        assert_eq!(
-            skin.get_attachment(SlotId(3), "head"),
-            Some(AttachmentId(8))
-        );
-        assert_eq!(skin.get_attachment(SlotId(1), "head"), None);
-        assert_eq!(skin.get_attachment(SlotId(9), "head"), None);
-        assert_eq!(skin.attachment_count(), 2);
-        skin.remove_attachment(SlotId(0), "body");
-        assert_eq!(skin.attachment_count(), 1);
+    fn keys_intern_once_per_slot_and_name() {
+        let mut keys = SkinKeys::default();
+        let a = keys.intern(SlotId(2), "head");
+        let b = keys.intern(SlotId(0), "head");
+        assert_ne!(a, b);
+        assert_eq!(keys.intern(SlotId(2), "head"), a);
+        assert_eq!(keys.find(SlotId(0), "head"), Some(b));
+        assert_eq!(keys.find(SlotId(1), "head"), None);
+        assert_eq!(keys.slot(a), SlotId(2));
+        assert_eq!(keys.placeholder(b), "head");
+    }
+
+    #[test]
+    fn add_skin_remaps_owned_attachments() {
+        let (k0, k1) = (SkinKey(0), SkinKey(3));
+        let mut base = Skin::new("base");
+        let p = base.add_owned(Attachment::Point(PointAttachment::new("p")));
+        base.set(k0, p);
+        let mut other = Skin::new("other");
+        let q = other.add_owned(Attachment::Point(PointAttachment::new("q")));
+        other.set(k1, q);
+        other.set(k0, AttachmentRef::Data(AttachmentId(5)));
+        base.add_skin(&other);
+        assert_eq!(base.get(k0), Some(AttachmentRef::Data(AttachmentId(5))));
+        let q = base.get(k1).unwrap();
+        assert_eq!(base.resolve(&[], q).name(), "q");
+        assert_eq!(base.attachment_count(), 2);
+        base.remove(k1);
+        assert_eq!(base.get(k1), None);
     }
 }

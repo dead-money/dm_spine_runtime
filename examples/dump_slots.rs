@@ -62,7 +62,7 @@ fn main() {
         if slot.applied().color.a == 0.0 || !bone_active {
             continue;
         }
-        let att = &data.attachments[att_id.index()];
+        let att = sk.attachment(att_id);
         let (kind, name) = match att {
             Attachment::Region(r) => ("region", r.name.clone()),
             Attachment::Mesh(m) => ("mesh", m.name.clone()),

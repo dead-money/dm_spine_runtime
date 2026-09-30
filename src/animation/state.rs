@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
-use crate::animation::apply::{apply_timeline, set_attachment_by_name};
+use crate::animation::apply::{apply_timeline, set_attachment_by_key};
 use crate::animation::curve::{curve_value1, search, sign};
 use crate::animation::{AnimationStateData, Event, MixFrom};
 use crate::data::animation::PropertyId;
@@ -745,8 +745,8 @@ impl AnimationState {
         let setup_state = self.unkeyed_state + ATTACH_SETUP;
         for s in 0..skeleton.slots.len() {
             if skeleton.slots[s].attachment_state == setup_state {
-                let name = sd.slots[s].attachment_name.as_deref();
-                set_attachment_by_name(skeleton, &sd, crate::data::SlotId(s as u16), name, false);
+                let key = sd.slots[s].attachment_key;
+                set_attachment_by_key(skeleton, crate::data::SlotId(s as u16), key, false);
             }
         }
         self.unkeyed_state += 2;
@@ -894,9 +894,7 @@ impl AnimationState {
         retain: bool,
     ) {
         let Timeline::Attachment {
-            slot,
-            frames,
-            names,
+            slot, frames, keys, ..
         } = t
         else {
             return;
@@ -909,18 +907,18 @@ impl AnimationState {
             return;
         }
         let mut setup = time < frames[0];
-        let mut name = None;
+        let mut key = None;
         if !setup {
-            name = names[search(frames, time, 1)].as_deref();
-            setup = !retain && name.is_none_or(str::is_empty);
+            key = keys[search(frames, time, 1)];
+            setup = !retain && key.is_none();
         }
         if setup {
             if from == MixFrom::Current {
                 return;
             }
-            name = sd.slots[s].attachment_name.as_deref();
+            key = sd.slots[s].attachment_key;
         }
-        set_attachment_by_name(skeleton, sd, *slot, name, false);
+        set_attachment_by_key(skeleton, *slot, key, false);
         if retain {
             skeleton.slots[s].attachment_state = self.unkeyed_state + ATTACH_RETAIN;
         } else if !setup {

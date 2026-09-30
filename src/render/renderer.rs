@@ -81,7 +81,7 @@ impl SkeletonRenderer {
                 self.clipping.clip_end_slot(slot_id);
                 continue;
             };
-            let attachment = &sd.attachments[attachment_id.index()];
+            let attachment = skeleton.attachment(attachment_id);
             let is_clip = matches!(attachment, Attachment::Clipping(_));
             if (pose.color.a == 0.0 || !skeleton.bones[slot.bone.index()].active) && !is_clip {
                 self.clipping.clip_end_slot(slot_id);

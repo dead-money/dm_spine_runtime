@@ -28,7 +28,7 @@
 //! Setup-pose slot data. Slots position attachments relative to a bone and
 //! carry the slot's tint color and blend mode.
 
-use crate::data::{BoneId, SlotId};
+use crate::data::{BoneId, SkinKey, SlotId};
 use crate::math::Color;
 
 /// Rendering blend mode for a slot's attachment.
@@ -56,6 +56,8 @@ pub struct SlotData {
     /// Name of the attachment shown in the setup pose — `None` means no
     /// attachment is visible by default.
     pub attachment_name: Option<String>,
+    /// `attachment_name` interned; `None` for no or an empty name.
+    pub attachment_key: Option<SkinKey>,
     pub blend_mode: BlendMode,
 
     // Non-essential.
@@ -74,6 +76,7 @@ impl SlotData {
             color: Color::WHITE,
             dark_color: None,
             attachment_name: None,
+            attachment_key: None,
             blend_mode: BlendMode::Normal,
             visible: true,
             path: String::new(),

@@ -43,9 +43,10 @@ use crate::animation::curve::{
     sign,
 };
 use crate::animation::{BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, Event, MixFrom};
+use crate::data::skin::resolve;
 use crate::data::{
     AnimationId, Attachment, AttachmentId, BoneId, ConstraintId, CurveFrames,
-    PhysicsConstraintData, PhysicsProperty, SkeletonData, SlotId, Timeline,
+    PhysicsConstraintData, PhysicsProperty, SkeletonData, SkinKey, SlotId, Timeline,
 };
 use crate::math::Color;
 use crate::skeleton::{Constraint, PhysicsConstraint, Skeleton, SlotPose};
@@ -496,9 +497,7 @@ pub(crate) fn apply_timeline(
         }),
 
         Timeline::Attachment {
-            slot,
-            frames,
-            names,
+            slot, frames, keys, ..
         } => {
             let si = slot.index();
             if !sk.bones[sk.slots[si].bone.index()].active {
@@ -508,11 +507,11 @@ pub(crate) fn apply_timeline(
                 if from == MixFrom::Current {
                     return;
                 }
-                sd.slots[si].attachment_name.as_deref()
+                sd.slots[si].attachment_key
             } else {
-                names[search(frames, time, 1)].as_deref()
+                keys[search(frames, time, 1)]
             };
-            set_attachment_by_name(sk, sd, *slot, name, applied);
+            set_attachment_by_key(sk, *slot, name, applied);
         }
 
         Timeline::Deform {
@@ -964,21 +963,18 @@ fn mix_channels<const N: usize>(
 }
 
 /// `AttachmentTimeline::setAttachment`.
-pub(crate) fn set_attachment_by_name(
+pub(crate) fn set_attachment_by_key(
     sk: &mut Skeleton,
-    sd: &SkeletonData,
     slot: SlotId,
-    name: Option<&str>,
+    key: Option<SkinKey>,
     applied: bool,
 ) {
-    let attachment = match name {
-        Some(n) if !n.is_empty() => sk.get_attachment(slot, n),
-        _ => None,
-    };
+    let attachment = key.and_then(|k| sk.get_attachment_by_key(k));
+    let timeline = sk.timeline_attachment(attachment);
     sk.slots[slot.index()]
         .posed
         .select_mut(applied)
-        .set_attachment(attachment, sd);
+        .set_attachment(attachment, timeline);
 }
 
 /// `EventTimeline::apply`: pushes events keyed in `(last_time, time]`.
@@ -1115,11 +1111,7 @@ fn is_timeline_active(
     let uses = |s: SlotId| {
         let slot = &sk.slots[s.index()];
         sk.bones[slot.bone.index()].active
-            && slot
-                .posed
-                .select(applied)
-                .attachment
-                .is_some_and(|a| sd.attachments[a.index()].timeline_attachment(a) == attachment)
+            && slot.posed.select(applied).timeline_attachment == Some(attachment)
     };
     if uses(slot) {
         return true;
@@ -1230,11 +1222,10 @@ fn deform_target<'a>(
         return None;
     }
     let pose = s.posed.select_mut(applied);
-    let a = pose.attachment?;
-    let att: &Attachment = &sd.attachments[a.index()];
-    if att.timeline_attachment(a) != attachment {
+    if pose.timeline_attachment != Some(attachment) {
         return None;
     }
+    let att: &Attachment = resolve(&sd.attachments, sk.skin.as_deref(), pose.attachment?);
     Some((pose, att.vertex_data()?))
 }
 
@@ -1415,7 +1406,7 @@ fn apply_sequence(
     if out || time < frames[0] {
         if from != MixFrom::Current {
             for s in targets {
-                if let Some(pose) = sequence_target(sk, sd, s, attachment, applied) {
+                if let Some(pose) = sequence_target(sk, s, attachment, applied) {
                     pose.sequence_index = -1;
                 }
             }
@@ -1450,24 +1441,22 @@ fn apply_sequence(
         };
     }
     for s in targets {
-        if let Some(pose) = sequence_target(sk, sd, s, attachment, applied) {
+        if let Some(pose) = sequence_target(sk, s, attachment, applied) {
             pose.sequence_index = index;
         }
     }
 }
 
-fn sequence_target<'a>(
-    sk: &'a mut Skeleton,
-    sd: &SkeletonData,
+fn sequence_target(
+    sk: &mut Skeleton,
     slot: SlotId,
     attachment: AttachmentId,
     applied: bool,
-) -> Option<&'a mut SlotPose> {
+) -> Option<&mut SlotPose> {
     let s = &mut sk.slots[slot.index()];
     if !sk.bones[s.bone.index()].active {
         return None;
     }
     let pose = s.posed.select_mut(applied);
-    let a = pose.attachment?;
-    (sd.attachments[a.index()].timeline_attachment(a) == attachment).then_some(pose)
+    (pose.timeline_attachment == Some(attachment)).then_some(pose)
 }

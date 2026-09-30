@@ -55,12 +55,15 @@
 
 use crate::animation::{BEZIER_SIZE, compute_bezier_samples};
 use crate::data::attachment::{Attachment, Sequence, VertexData};
+use std::sync::Arc;
+
 use crate::data::{
-    Animation, AnimationEvent, AnimationId, AttachmentId, BlendMode, BoneData, BoneId,
-    ConstraintData, ConstraintId, CurveFrames, EventData, EventId, FromProperty, IkConstraintData,
-    Inherit, PathConstraintData, PhysicsConstraintData, PhysicsProperty, PositionMode, RotateMode,
-    ScaleYMode, SkeletonData, Skin, SkinId, SliderData, SliderProperty, SlotData, SlotId,
-    SpacingMode, Timeline, ToProperty, TransformConstraintData, TransformProperty,
+    Animation, AnimationEvent, AnimationId, AttachmentId, AttachmentRef, BlendMode, BoneData,
+    BoneId, ConstraintData, ConstraintId, CurveFrames, EventData, EventId, FromProperty,
+    IkConstraintData, Inherit, PathConstraintData, PhysicsConstraintData, PhysicsProperty,
+    PositionMode, RotateMode, ScaleYMode, SkeletonData, Skin, SkinId, SliderData, SliderProperty,
+    SlotData, SlotId, SpacingMode, Timeline, ToProperty, TransformConstraintData,
+    TransformProperty,
 };
 use crate::load::AttachmentLoader;
 
@@ -519,7 +522,7 @@ impl<'loader> SkeletonBinary<'loader> {
 
         if let Some(skin) = self.read_skin(&mut r, true, &mut sd, &strings, nonessential)? {
             sd.default_skin = Some(SkinId(sd.skins.len() as u16));
-            sd.skins.push(skin);
+            sd.skins.push(Arc::new(skin));
         }
 
         let num_skins = r.read_uvarint()?;
@@ -527,7 +530,7 @@ impl<'loader> SkeletonBinary<'loader> {
             let skin = self
                 .read_skin(&mut r, false, &mut sd, &strings, nonessential)?
                 .expect("named skins always return Some");
-            sd.skins.push(skin);
+            sd.skins.push(Arc::new(skin));
         }
 
         self.resolve_linked_meshes(&mut sd)?;
@@ -567,6 +570,7 @@ impl<'loader> SkeletonBinary<'loader> {
             }
         }
 
+        sd.intern_attachment_keys();
         Ok(sd)
     }
 
@@ -618,7 +622,8 @@ impl<'loader> SkeletonBinary<'loader> {
                 if let Some(attachment) = attachment {
                     let id = AttachmentId(sd.attachments.len() as u32);
                     sd.attachments.push(attachment);
-                    skin.set_attachment(SlotId(slot_idx as u16), placeholder, id);
+                    let key = sd.skin_keys.intern(SlotId(slot_idx as u16), &placeholder);
+                    skin.set(key, AttachmentRef::Data(id));
                 }
             }
         }
@@ -963,20 +968,23 @@ impl<'loader> SkeletonBinary<'loader> {
 
     fn resolve_linked_meshes(&mut self, sd: &mut SkeletonData) -> Result<(), BinaryError> {
         for lm in std::mem::take(&mut self.linked_meshes) {
-            let skin = sd
-                .skins
-                .get(lm.skin_index)
-                .ok_or(BinaryError::IndexOutOfRange {
+            if lm.skin_index >= sd.skins.len() {
+                return Err(BinaryError::IndexOutOfRange {
                     at: 0,
                     entity: "skin",
                     index: lm.skin_index,
                     len: sd.skins.len(),
-                })?;
-            let source_id = skin
-                .get_attachment(SlotId(lm.source_slot as u16), &lm.source)
+                });
+            }
+            let source_id = sd
+                .skin_attachment(
+                    SkinId(lm.skin_index as u16),
+                    SlotId(lm.source_slot as u16),
+                    &lm.source,
+                )
                 .ok_or_else(|| BinaryError::LinkedMeshParentMissing {
                     at: 0,
-                    skin: skin.name.clone(),
+                    skin: sd.skins[lm.skin_index].name.clone(),
                     slot: lm.source_slot,
                     parent: lm.source.clone(),
                 })?;
@@ -1016,6 +1024,7 @@ impl<'loader> SkeletonBinary<'loader> {
                             slot,
                             frames,
                             names,
+                            keys: Vec::new(),
                         }
                     }
                     SLOT_RGBA | SLOT_RGB | SLOT_RGBA2 | SLOT_RGB2 | SLOT_ALPHA => {
@@ -1260,14 +1269,14 @@ impl<'loader> SkeletonBinary<'loader> {
                 let att_n = r.read_uvarint()?;
                 for _ in 0..att_n {
                     let att_name = r.read_string_ref(strings)?.unwrap_or_default();
-                    let attachment = sd.skins[skin_idx].get_attachment(slot, &att_name).ok_or(
-                        BinaryError::LinkedMeshParentMissing {
+                    let attachment = sd
+                        .skin_attachment(SkinId(skin_idx as u16), slot, &att_name)
+                        .ok_or(BinaryError::LinkedMeshParentMissing {
                             at: r.position(),
                             skin: sd.skins[skin_idx].name.clone(),
                             slot: slot.index(),
                             parent: att_name.clone(),
-                        },
-                    )?;
+                        })?;
                     let ttype = r.read_byte()?;
                     let frame_count = r.read_uvarint()?;
                     match ttype {

@@ -30,7 +30,7 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use crate::data::{AttachmentId, SlotId};
+use crate::data::{AttachmentId, AttachmentRef, SlotId};
 use crate::math::Color;
 
 /// Indices into a region's 8-float quad (`offsets` / `uvs`).
@@ -124,13 +124,74 @@ impl Attachment {
         }
     }
 
-    /// The attachment whose timelines apply to this one; `id` is this
-    /// attachment's own id.
+    /// The data attachment whose timelines apply to this one, which `this`
+    /// refers to. `None` for an owned attachment not copied from data.
     #[must_use]
-    pub fn timeline_attachment(&self, id: AttachmentId) -> AttachmentId {
+    pub fn timeline_attachment(&self, this: AttachmentRef) -> Option<AttachmentId> {
         self.timeline_link()
             .and_then(|t| t.attachment)
-            .unwrap_or(id)
+            .or(match this {
+                AttachmentRef::Data(id) => Some(id),
+                AttachmentRef::Owned(_) => None,
+            })
+    }
+
+    #[must_use]
+    pub fn tag(&self) -> u32 {
+        match self {
+            Attachment::Region(a) => a.tag,
+            Attachment::Mesh(a) => a.tag,
+            Attachment::BoundingBox(a) => a.tag,
+            Attachment::Path(a) => a.tag,
+            Attachment::Point(a) => a.tag,
+            Attachment::Clipping(a) => a.tag,
+        }
+    }
+
+    pub fn set_tag(&mut self, tag: u32) {
+        match self {
+            Attachment::Region(a) => a.tag = tag,
+            Attachment::Mesh(a) => a.tag = tag,
+            Attachment::BoundingBox(a) => a.tag = tag,
+            Attachment::Path(a) => a.tag = tag,
+            Attachment::Point(a) => a.tag = tag,
+            Attachment::Clipping(a) => a.tag = tag,
+        }
+    }
+
+    /// A copy driven by the same timelines as this attachment, which `this`
+    /// refers to. Sequences get fresh ids, as in spine-cpp.
+    #[must_use]
+    pub fn copy(&self, this: AttachmentRef) -> Attachment {
+        let timeline = self.timeline_attachment(this);
+        let mut copy = self.clone();
+        match &mut copy {
+            Attachment::Region(a) => a.sequence = a.sequence.copy(),
+            Attachment::Mesh(a) => a.sequence = a.sequence.copy(),
+            _ => {}
+        }
+        if let Some(link) = copy.timeline_link_mut() {
+            link.attachment = timeline;
+        }
+        copy
+    }
+
+    /// Points every sequence frame at `region` and recomputes UVs (and
+    /// region offsets). Returns `false`, changing nothing, for attachments
+    /// without a texture.
+    pub fn set_region(&mut self, region: TextureRegionRef) -> bool {
+        match self {
+            Attachment::Region(a) => {
+                a.sequence.regions.fill(Some(region));
+                a.update_sequence();
+            }
+            Attachment::Mesh(a) => {
+                a.sequence.regions.fill(Some(region));
+                a.update_sequence();
+            }
+            _ => return false,
+        }
+        true
     }
 
     #[must_use]
@@ -292,6 +353,8 @@ impl Sequence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAttachment {
     pub name: String,
+    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    pub tag: u32,
     pub path: String,
     pub color: Color,
     pub x: f32,
@@ -310,6 +373,7 @@ impl RegionAttachment {
     pub fn new(name: impl Into<String>, sequence: Sequence) -> Self {
         Self {
             name: name.into(),
+            tag: 0,
             path: String::new(),
             color: Color::WHITE,
             x: 0.0,
@@ -502,6 +566,8 @@ fn compute_mesh_uvs(region: Option<&TextureRegionRef>, region_uvs: &[f32], uvs: 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshAttachment {
     pub name: String,
+    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    pub tag: u32,
     pub path: String,
     pub color: Color,
     pub vertex_data: VertexData,
@@ -524,6 +590,7 @@ impl MeshAttachment {
     pub fn new(name: impl Into<String>, sequence: Sequence) -> Self {
         Self {
             name: name.into(),
+            tag: 0,
             path: String::new(),
             color: Color::WHITE,
             vertex_data: VertexData::default(),
@@ -574,6 +641,8 @@ impl MeshAttachment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundingBoxAttachment {
     pub name: String,
+    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    pub tag: u32,
     pub vertex_data: VertexData,
     pub color: Color,
 }
@@ -583,6 +652,7 @@ impl BoundingBoxAttachment {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            tag: 0,
             vertex_data: VertexData::default(),
             color: Color::new(0.38, 0.94, 0.0, 1.0),
         }
@@ -592,6 +662,8 @@ impl BoundingBoxAttachment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathAttachment {
     pub name: String,
+    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    pub tag: u32,
     pub vertex_data: VertexData,
     pub color: Color,
     pub closed: bool,
@@ -604,6 +676,7 @@ impl PathAttachment {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            tag: 0,
             vertex_data: VertexData::default(),
             color: Color::new(0.0, 0.0, 0.0, 0.0),
             closed: false,
@@ -616,6 +689,8 @@ impl PathAttachment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointAttachment {
     pub name: String,
+    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    pub tag: u32,
     pub x: f32,
     pub y: f32,
     pub rotation: f32,
@@ -627,6 +702,7 @@ impl PointAttachment {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            tag: 0,
             x: 0.0,
             y: 0.0,
             rotation: 0.0,
@@ -638,6 +714,8 @@ impl PointAttachment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClippingAttachment {
     pub name: String,
+    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    pub tag: u32,
     pub vertex_data: VertexData,
     pub color: Color,
     pub end_slot: Option<SlotId>,
@@ -650,6 +728,7 @@ impl ClippingAttachment {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            tag: 0,
             vertex_data: VertexData::default(),
             color: Color::new(0.0, 0.0, 0.0, 0.0),
             end_slot: None,
@@ -680,6 +759,30 @@ pub struct TextureRegionRef {
     pub degrees: i32,
     pub page_width: f32,
     pub page_height: f32,
+}
+
+impl TextureRegionRef {
+    /// A plain region: `u..u2, v..v2` of page `page_index`, with no packing.
+    #[must_use]
+    pub fn plain(page_index: u32, u: f32, v: f32, u2: f32, v2: f32) -> Self {
+        Self {
+            page_index,
+            atlas: false,
+            u,
+            v,
+            u2,
+            v2,
+            packed_width: 0.0,
+            packed_height: 0.0,
+            original_width: 0.0,
+            original_height: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            degrees: 0,
+            page_width: 0.0,
+            page_height: 0.0,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -323,12 +323,12 @@ fn json_matches_binary_on_every_example() {
                 .iter()
                 .map(|skin| {
                     let mut entries: Vec<_> = skin
-                        .attachments()
-                        .map(|(slot, placeholder, id)| {
-                            let att = &sd.attachments[id.index()];
+                        .entries()
+                        .map(|(key, attachment)| {
+                            let att = skin.resolve(&sd.attachments, attachment);
                             (
-                                slot.0,
-                                placeholder.to_string(),
+                                sd.skin_keys.slot(key).0,
+                                sd.skin_keys.placeholder(key).to_string(),
                                 format!("{:?} {}", att.kind(), att.name()),
                             )
                         })
