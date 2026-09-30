@@ -1,61 +1,102 @@
 # dm_spine_runtime
 
-Full-native Rust port of the Spine 4.2 runtime. Two sibling crates:
+Full-native Rust port of the Spine runtime. `main` is moving from **Spine 4.2 to 4.3** per `docs/SPINE_4_3_UPGRADE.md`; the last 4.2 state is tagged `v0.1.0`. The goal is to replace spine-godot's spine-cpp in `~/deadmoney/hommlet`, where it's too slow.
 
-- **This crate** (`~/deadmoney/dm_spine_runtime/`) — core runtime. Data types, loaders, skeleton pose, animation state, constraints, clipping, bounds, render-command emission. **No GPU or windowing deps.**
-- **`~/deadmoney/dm_spine_bevy/`** — Bevy integration. Depends on this crate via `path = "../dm_spine_runtime"`. Owns the plugin, assets, systems, meshes. Use its `examples/` for visual verification.
-- **`~/deadmoney/spine-runtimes/`** — upstream reference. **Read-only.** Never edit.
+- **This crate** (`~/deadmoney/dm_spine_runtime/`) is the core runtime: data types, loaders, skeleton pose, animation state, constraints, clipping, bounds, render-command emission. **No GPU or windowing deps.**
+- **`~/deadmoney/hommlet/`** is the primary consumer, reached through a C-ABI crate under its `Native/`, the same pattern as `Native/sorting`. The engine-facing work lives there; this crate stays engine-agnostic.
+- **`~/deadmoney/dm_spine_bevy/`** is the Bevy integration and a secondary consumer. It depends on this crate via `path = "../dm_spine_runtime"` and stays on the 4.2 API until hommlet ships on 4.3; don't block runtime work on it.
+- **`~/deadmoney/spine-runtimes/`** is the upstream reference. **Read-only.** Never edit.
+
+`main` + `git log --first-parent` is truth for what landed.
+
+The crate is pre-1.0 and nothing depends on its API. Don't preserve backward compatibility for APIs or formats: no deprecated aliases, dual loaders, or version shims. Support only the current Spine version.
+
+## Attribution
+
+Do not add `Co-Authored-By: Claude` trailers to commits or "Generated with Claude Code" footers to PR bodies. Author lines and PR bodies stay clean. `scripts/git-hooks/commit-msg` strips these defensively; activate per clone with `git config core.hooksPath scripts/git-hooks`. Do not work around the hook.
 
 ## Reference material
 
-- Canonical C++ port: `~/deadmoney/spine-runtimes/spine-cpp/spine-cpp/{include,src}/spine/`
-- Cleaner-to-read TS port: `~/deadmoney/spine-runtimes/spine-ts/spine-core/src/`
-- Example skeletons/atlases: `~/deadmoney/spine-runtimes/examples/{spineboy,raptor,stretchyman,celestial-circus,…}/export/`
-- Format changes: `~/deadmoney/spine-runtimes/CHANGELOG.md`. **Target Spine 4.2** (physics, `Inherit` timeline, new mix thresholds).
+The `spine-runtimes` checkout is on a Dead Money branch (`deadmoney/4.7`, hommlet's spine-godot patches) built on an older 4.3. Port from `upstream/4.3`, not the working tree. Use a worktree:
+
+```sh
+git -C ~/deadmoney/spine-runtimes worktree add ../spine-runtimes-4.3 upstream/4.3
+```
+
+- Canonical C++ port: `spine-cpp/{include,src}/spine/` (4.2 used `spine-cpp/spine-cpp/…`).
+- Cleaner-to-read TS port: `spine-ts/spine-core/src/`.
+- Example skeletons/atlases: `examples/{spineboy,raptor,stretchyman,celestial-circus,…}/export/`. Re-exported per Spine version; fixtures, exports, and the harness's spine-cpp must match. hommlet's rigs (`hommlet/Assets/Spine/`) are the real workload.
+- Format and API changes: `CHANGELOG.md`. It lags the code; the 4.3 timeline apply signature changed after its entry was written.
 
 ## Architectural invariants
 
-Deviating from these is a design change — raise it before implementing.
+Deviating from these is a design change. Raise it before implementing.
 
-- **SoA + typed indices.** `Skeleton` owns `Vec<Bone>`, `Vec<Slot>`, `Vec<IkConstraint>`, etc. Cross-references are `BoneId(u16)` / `SlotId(u16)` / `SkinId`. **No `Rc<RefCell<…>>`** in hot paths.
+- **SoA + typed indices.** `Skeleton` owns `Vec<Bone>`, `Vec<Slot>`, and one `Vec<Constraint>` enum (4.3's unified, ordered constraint list). Cross-references are `BoneId(u16)` / `SlotId(u16)` / `ConstraintId(u16)` / `SkinId`. 4.3's pose pointers (`appliedPose`) become per-object pose fields plus a constrained flag. **No `Rc<RefCell<…>>`** in hot paths.
 - **`SkeletonData` is immutable and shared** via `Arc<SkeletonData>`. One load per asset; many `Skeleton` instances reference it.
+- **Runtime skins sit beside the data.** A `Skin` is a dense `(SlotId, placeholder)` table of `AttachmentRef::{Data(AttachmentId), Owned(u32)}`. Copied or remapped attachments live in the skin's own arena. Skeletons hold `Arc<Skin>`, so identical loadouts share one assembled skin.
 - **Timelines are a tagged enum**, not `Box<dyn Timeline>`. Closed set, cache-friendly dispatch.
-- **Unified update order.** One `Vec<UpdateCacheEntry>` (enum over `Bone(BoneId)` / `IkConstraint(IkConstraintId)` / …) built by `updateCache()`. **Port the C++ algorithm literally** — dependency logic is subtle.
+- **Unified update order.** One `Vec<UpdateCacheEntry>` (enum over `Bone(BoneId)` / `Constraint(ConstraintId)`) built by `updateCache()`. **Port the C++ algorithm literally**; the dependency logic is subtle.
 - **No render types in core.** Emit `RenderCommand` with an opaque `TextureId`; downstream maps to GPU handles.
 - **Events via out-param.** `AnimationState::apply(skeleton, events: &mut Vec<Event>)`. No listener callbacks in core.
-- **Minimal deps.** `thiserror`, `byteorder`/`bytes`, `glam` (feature-gated). `serde_json` only behind a `json` feature.
+- **Minimal deps.** `thiserror`, `glam`, `serde_json`. Anything new needs a reason.
 
 ## License obligation
 
-Every ported source file must retain the **Spine Runtimes License header block** verbatim at the top (copy from any `spine-cpp/spine-cpp/src/spine/*.cpp`). The crate `LICENSE` file must be Esoteric's `LICENSE` verbatim. Downstream users need their own Spine Editor license — call this out in README.
+Every ported source file must retain the **Spine Runtimes License header block** verbatim at the top (copy from any `spine-cpp` `src/spine/*.cpp`). The crate `LICENSE` file must be Esoteric's `LICENSE` verbatim. Downstream users need their own Spine Editor license; the README says so and must keep saying so.
 
 ## Port conventions
 
-- Match `spine-cpp` function shape and file ordering 1:1 where feasible. Rust names in `snake_case` but same layout lets a reader diff the two.
-- **Don't refactor math during the port.** Port literally first, verify against goldens, then refactor if worth it.
-- Binary reader: big-endian, zigzag varint, custom string table. Replicate `SkeletonBinary.cpp` exactly.
+- Match `spine-cpp` function shape and file ordering 1:1 where feasible. Rust names in `snake_case`, but the same layout lets a reader diff the two.
+- **Don't refactor math during a port.** Port literally first, verify against goldens, then refactor if it's worth it.
+- **spine-cpp is the behavioral reference, not the quality bar.** Math, algorithms, and order of operations are ported literally. Its containers and allocation patterns are not: its `HashMap` is a linked list with O(n) lookups. Use `Vec` indexed by typed id, real maps, and reused scratch buffers. Steady-state frames should not allocate.
+- **Performance and efficiency are the goals.** The runtime has to beat spine-cpp on hommlet's rigs. Between parity-equivalent designs, pick the cheaper one in time, memory, and per-frame work. Benchmark hot-path changes (`cargo bench`) rather than guessing.
+- Binary reader: big-endian, zigzag varint, custom string table. Replicate `SkeletonBinary.cpp` exactly. Wire-format surprises go in `docs/BINARY_FORMAT.md`.
 
-## Phase tracker
+## Comments
 
-- [x] 0 — math (`Color`, deg/rad trig helpers), triangulator (ear-clipping + convex decompose). Curves deferred to Phase 3 with timelines.
-- [x] 1 — atlas parser (1a), data-type scaffold (1b), binary `.skel` loader (1c). All 25 example skeletons load through `AtlasAttachmentLoader`. JSON loader deferred to Phase 8.
-- [x] 2 — `Skeleton` runtime pose: update-cache ordering (2c), bone world transforms with all five `Inherit` modes (2d), skin activation + setup-pose + attachment resolution (2e). All 25 example skeletons match spine-cpp bit-for-bit on setup pose via `tests/golden_pose.rs`; constraints are stubs until Phase 5.
-- [x] 3 — property timeline apply + single-track `AnimationState`: curve eval (3a), bone timelines (3b), slot + skeleton timelines (3c), constraint timelines (3d), `Animation::apply` + `AnimationState` (3e), binary-loader curves rework + animation goldens for 7 animations across 3 rigs (3f). Deform and Sequence timelines are no-op fallthroughs pending mesh-attachment plumbing. Constraint solvers still stubs (Phase 5).
-- [x] 4 — full `AnimationState`: `AnimationStateData` mix-duration table (4a), multi-track `TrackEntry` slab + queuing + `setCurrent` plumbing (4b), real `apply_mixing_from` / `update_mixing_from` crossfade (4c), `compute_hold` + `timeline_mode` per-timeline dispatch (4d), event queue + empty animations (4e). Single-track golden_animation still matches spine-cpp; multi-track smoke tests cover crossfade + queuing + empty-animation fade. Shortest-rotation rotate apply and `unkeyedState`-aware attachment apply are follow-ups (visual-quality polish, not pipeline blockers).
-- [x] 5 — constraint solvers: IK (5a, 1-bone + 2-bone), Transform (5b, four World/Local × Absolute/Relative variants + `updateAppliedTransform`), Path (5c, four SpacingModes × three RotateModes + constant-speed curve arc-length), Physics (5d, damped-spring integrator with fixed timestep). Capture harness + goldens regenerated with the full constraint pipeline. Post-phase parity pass (5f) fixed two structural bugs: constraint-data mix defaults now zero to match `spine-cpp` (they were `1.0`, silently activating setup-disabled constraints), and `Bone::update` now reads applied (`ax`, `a_rotation`, …) rather than local TRS so a second cache run on a constrained bone preserves the constraint's effect. **Parity status:** 25/25 setup-pose fixtures match at 1e-4 (was 20/25). 34/35 animation samples match at 1e-3 (was 9/35, then 30/35 after Phase 6b's Deform/Sequence fill-in). Remaining 1 is a small drift (<0.05°) in raptor-pro/roar front-bracer applied-rotation extraction. Stretchyman-pro/sneak samples all match after Phase 6b closed the Deform-timeline path. Tracked as a numerical follow-up.
-- [x] 6 — render-command emission + ancillary helpers. 6a: `RenderCommand` / `TextureId` types in `src/render/`, shared `Skeleton::compute_world_vertices` promoted out of path.rs. 6b: `DeformTimeline` + `SequenceTimeline` apply (were no-op stubs; loader fixed to pre-add setup vertices for unweighted meshes and emit bezier curves in spine-cpp's in-memory form). 6c: draw-order walker + `RegionAttachment` emission with `Sequence` region cycling. 6d: `MeshAttachment` emission + `MeshAttachment::update_region` port (all four `degrees` cases). 6e: `SkeletonClipping` port + renderer integration (Sutherland-Hodgman, convex decomposition via Phase 0 triangulator). 6f: `SkeletonBounds` port (AABB + point-in-polygon + segment-polygon hit tests). 6g: linked-list command batcher (merges adjacent same-tex/blend/color runs) + render goldens. **Parity status:** `golden_render` headers-only diff (texture, blend, num_vertices, num_indices, color, dark_color) 25/25 rigs match spine-cpp bit-for-bit. Per-vertex positions/UVs not diffed explicitly — covered transitively by golden_pose + literal updateRegion port. `render_smoke` exercises all 25 rigs end-to-end, 170 batched commands emitted with no non-finite coordinates.
-- [ ] 7 — `dm_spine_bevy` plugin + examples
+Comments serve future readers, not the author of the diff. **Default to writing no comment.** A comment earns its place by saying something the code cannot: a non-obvious why, a hidden invariant, a workaround with a citation, or a subtle correctness anchor ("sign carried by u16 wraparound, matches `SkeletonBinary.cpp`").
 
-Check the box when that phase's golden tests pass.
+- No restate-the-code, no narrated decision process, no banner dividers, no commented-out code.
+- No task or bookkeeping references: "Phase 5c", "added for the Bevy loader", "fixes #12". They rot. That belongs in the commit message.
+- Don't annotate individual items with "mirrors `spine::Foo`" or "port of `Foo.cpp:123`". The whole crate is a port. Cite upstream only when the citation anchors a non-obvious correctness point.
+- `///` doc comments state the contract (preconditions, units, error modes) in a line or two. Don't restate the signature.
+- Existing code predates this rule and is comment-heavy. Prune what you touch; don't do drive-by comment sweeps in unrelated diffs.
 
-## Golden tests
+## Testing
 
-Phases 2–5 are validated by comparison against dumps captured from spine-cpp. Build the capture harness at Phase 2 under `tools/spine_capture/` (small C++ CLI). Commit dumped JSON fixtures under `tests/fixtures/`. Tolerance ~1e-4 for transforms.
+Tests protect **parity with `spine-cpp`** and durable API contracts. The goldens are the contract; everything else is supporting.
+
+**Default to no new tests for routine changes.** Running the existing suite doesn't imply adding to it, and a small fix doesn't automatically warrant a regression test.
+
+- **Good candidates:** new golden coverage when a port adds behavior (a new constraint, timeline, or attachment path), loader regressions on real exports, crashes or non-finite output, and invariants the goldens can't see (update-cache ordering, track-entry lifecycle).
+- **Generally don't test:** internal helper shapes, exact comment or error-message wording, or anything that just freezes current layout.
+- Prefer extending an existing golden or smoke test over adding a new file. When the benefit is marginal, lean on `golden_*` and a `software_render` check instead.
+- Don't loosen golden tolerances to make a diff pass. A new mismatch is either a port bug or a documented known drift. Say which in the PR.
+
+### Goldens
+
+Goldens diff against JSON dumps captured from `spine-cpp` by `tools/spine_capture/` (small C++ CLI; `make`, then `capture_all.sh` / `capture_animations.sh` / `capture_render.sh`). Fixtures are committed under `tests/fixtures/`. Tolerance: 1e-4 for setup-pose transforms, 1e-3 for animation samples, exact for render-command headers. Fixtures, example exports, and the spine-cpp the harness links must all be the same Spine version.
+
+## Process
+
+- **Merge PRs with a merge commit, never squash or rebase.** Full commit history is the record. Separate ideas land as separate commits and stay that way on `main`. `gh pr merge --merge --delete-branch`.
+- **Use targeted verification.** `cargo check` while iterating, `cargo test --test golden_pose` (or the relevant suite) for the affected area. Run the full `cargo test` + `cargo clippy --all-targets` before opening a PR. Flag pre-existing failures by name; don't silence them.
+- **PR bodies and commit messages are terse.** A sentence or two on what changed and why. No "## Summary" / "## Test plan" / "## Changes" scaffolding, no bulleted self-recaps, no boilerplate checklists. Same discipline as comments: say what the diff can't say, then stop.
+
+## Status
+
+The 4.2 port is complete and tagged `v0.1.0`. The 4.3 upgrade phases are tracked in `docs/SPINE_4_3_UPGRADE.md`. Update this section as they land. Final 4.2 parity:
+
+- Setup pose: 25/25 rigs at 1e-4.
+- Animation samples: 34/35 at 1e-3. The outlier is a <0.05° applied-rotation drift on raptor-pro/roar front-bracer.
+- Render-command headers: 25/25 rigs exact. Per-vertex positions/UVs are covered transitively by `golden_pose` and the literal `updateRegion` port.
+
 
 ## Commands
 
-- `cargo check` — fast type-check
-- `cargo test` — unit + golden tests
-- `cargo clippy --all-targets` — lint
-- `cargo fmt` — format
-- Visual (Phase 7+): `cd ../dm_spine_bevy && cargo run --example spineboy_walk`
+- `cargo check`: fast type-check.
+- `cargo test`: unit + golden tests. Needs `../spine-runtimes/examples` (or `SPINE_EXAMPLES`) to hold the matching Spine version's exports.
+- `cargo clippy --all-targets`: lint.
+- `cargo fmt`: format.
+- Visual: `cargo run --example software_render` (CPU rasterizer to PNG). `dm_spine_bevy`'s examples work only against the 4.2 tag until it's updated.
