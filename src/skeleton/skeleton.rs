@@ -352,6 +352,35 @@ impl Skeleton {
         self.skin.as_mut().map(Arc::make_mut)
     }
 
+    /// Drops owned attachments of the worn skin that neither the skin nor
+    /// any slot uses anymore, which replacing or removing entries leaves
+    /// behind.
+    pub fn compact_skin(&mut self) {
+        let Some(skin) = self.skin.as_mut() else {
+            return;
+        };
+        let skin = Arc::make_mut(skin);
+        let mut keep = vec![false; skin.owned().len()];
+        for slot in &self.slots {
+            for pose in [&slot.posed.pose, &slot.posed.constrained] {
+                if let Some(AttachmentRef::Owned(i)) = pose.attachment {
+                    keep[i as usize] = true;
+                }
+            }
+        }
+        let remap = skin.compact(&mut keep);
+        for slot in &mut self.slots {
+            for pose in [&mut slot.posed.pose, &mut slot.posed.constrained] {
+                // Shown attachments were marked, so they always remap.
+                if let Some(AttachmentRef::Owned(i)) = &mut pose.attachment
+                    && let Some(new) = remap[*i as usize]
+                {
+                    *i = new;
+                }
+            }
+        }
+    }
+
     /// The attachment `r` refers to. Owned attachments come from the worn
     /// skin.
     ///

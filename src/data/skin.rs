@@ -315,6 +315,46 @@ impl Skin {
         }
     }
 
+    /// Drops owned attachments that no entry refers to and `keep` doesn't
+    /// mark. Returns each old owned index's new index.
+    pub(crate) fn compact(&mut self, keep: &mut [bool]) -> Vec<Option<u32>> {
+        let mark = |keep: &mut [bool], a: AttachmentRef| {
+            if let AttachmentRef::Owned(i) = a {
+                keep[i as usize] = true;
+            }
+        };
+        for a in self.entries.iter().flatten() {
+            mark(keep, *a);
+        }
+        for e in &self.extra {
+            mark(keep, e.2);
+        }
+        let mut remap = vec![None; self.owned.len()];
+        let mut next = 0;
+        let mut i = 0;
+        self.owned.retain(|_| {
+            let kept = keep[i];
+            if kept {
+                remap[i] = Some(next);
+                next += 1;
+            }
+            i += 1;
+            kept
+        });
+        let apply = |a: &mut AttachmentRef| {
+            if let AttachmentRef::Owned(i) = a {
+                *i = remap[*i as usize].expect("referenced attachments are kept");
+            }
+        };
+        for a in self.entries.iter_mut().flatten() {
+            apply(a);
+        }
+        for e in &mut self.extra {
+            apply(&mut e.2);
+        }
+        remap
+    }
+
     /// The attachment `r` refers to, reading owned ones from this skin.
     ///
     /// # Panics
