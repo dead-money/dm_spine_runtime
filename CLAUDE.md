@@ -76,7 +76,7 @@ Tests protect **parity with `spine-cpp`** and durable API contracts. The goldens
 
 ### Goldens
 
-Goldens diff against JSON dumps captured from `spine-cpp` by `tools/spine_capture/` (small C++ CLI; `make`, then `capture_all.sh` / `capture_animations.sh` / `capture_render.sh`). Fixtures are committed under `tests/fixtures/`. Tolerance: 1e-4 for setup-pose transforms, 1e-3 for animation samples, exact for render-command headers. Fixtures, example exports, and the spine-cpp the harness links must all be the same Spine version.
+Goldens diff against JSON dumps captured from `spine-cpp` by `tools/spine_capture/` (small C++ CLI; `make SPINE_RUNTIMES=<upstream/4.3 checkout at CI's pinned commit>`, then `capture_all.sh` / `capture_animations.sh` / `capture_render.sh`). The harness forces `Bone::setYDown(false)`: spine-cpp 4.3 defaults to y-down, while spine-ts, libgdx, and this crate are y-up. Fixtures are committed under `tests/fixtures/`. Tolerance: 1e-4 for setup-pose transforms, 1e-3 for animation samples, exact for render-command headers. Fixtures, example exports, and the spine-cpp the harness links must all be the same Spine version.
 
 ## Process
 
@@ -99,4 +99,6 @@ The 4.2 port is complete and tagged `v0.1.0`. The 4.3 upgrade phases are tracked
 - `cargo test`: unit + golden tests. Needs `../spine-runtimes/examples` (or `SPINE_EXAMPLES`) to hold the matching Spine version's exports.
 - `cargo clippy --all-targets`: lint.
 - `cargo fmt`: format.
+- `cargo bench --bench frame`: per-frame anim / world / render ns per rig. `HOMMLET_SPINE_ASSETS=../hommlet/Assets/Spine` adds hommlet's creature rigs.
+- `tools/spine_capture/bench_compare.sh`: the same rigs, timed on both this crate and spine-cpp, side by side. `make -C tools/spine_capture` first.
 - Visual: `cargo run --example software_render` (CPU rasterizer to PNG). `dm_spine_bevy`'s examples work only against the 4.2 tag until it's updated.

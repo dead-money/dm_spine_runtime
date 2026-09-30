@@ -34,6 +34,8 @@
 //! (Phase 6g). It catches walker-level regressions: out-of-bounds
 //! indexing, attachment-kind mismatches, stray NaN/Inf propagation.
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,7 +45,7 @@ use dm_spine_runtime::render::SkeletonRenderer;
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 fn examples_dir() -> PathBuf {
-    PathBuf::from("../spine-runtimes/examples")
+    common::examples_root()
 }
 
 fn rig_skel_paths() -> Vec<PathBuf> {
@@ -69,6 +71,7 @@ fn rig_skel_paths() -> Vec<PathBuf> {
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 5"]
 fn renders_every_example_rig_at_setup_pose() {
     let skels = rig_skel_paths();
     assert!(

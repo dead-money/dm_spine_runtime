@@ -30,7 +30,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: EsotericSoftware/spine-runtimes
-          ref: '4.2'
+          # upstream/4.3, pinned; bump with the capture harness and fixtures.
+          ref: ba17cf88b198c6531c6c51d8d4e1e4b3c3ab47dd
           path: spine-runtimes
 
       - name: Install Rust toolchain
@@ -54,3 +55,7 @@ jobs:
       - name: cargo test
         working-directory: dm_spine_runtime
         run: cargo test --all-targets
+
+      - name: Build capture harness against pinned spine-cpp
+        working-directory: dm_spine_runtime/tools/spine_capture
+        run: make -j4 SPINE_RUNTIMES="$GITHUB_WORKSPACE/spine-runtimes"

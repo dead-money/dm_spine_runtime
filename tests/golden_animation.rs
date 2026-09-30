@@ -35,7 +35,9 @@
 //! IK or transform constraint running at evaluation time will diverge.
 //! The fixtures don't exercise those paths yet.
 
-use std::path::PathBuf;
+mod common;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
@@ -48,6 +50,8 @@ const TOLERANCE: f32 = 1e-3; // animations integrate accumulated trig, 1e-3 is s
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
+    source_skel: String,
+    source_atlas: String,
     animation: String,
     time: f32,
     bones: Vec<BoneFixture>,
@@ -76,10 +80,6 @@ struct BoneFixture {
 
 fn fixtures_root() -> PathBuf {
     PathBuf::from("tests/fixtures/animations")
-}
-
-fn examples_root() -> PathBuf {
-    PathBuf::from("../spine-runtimes/examples")
 }
 
 /// `(rig, variant, animation, [sample_path, …])` — one entry per
@@ -124,14 +124,12 @@ fn collect_fixture_samples() -> Vec<(String, String, String, Vec<PathBuf>)> {
     out
 }
 
-fn load_skeleton(rig: &str, variant: &str) -> Arc<dm_spine_runtime::data::SkeletonData> {
-    let export = examples_root().join(rig).join("export");
-    let atlas_path = export.join(format!("{rig}.atlas"));
-    let skel_path = export.join(format!("{rig}-{variant}.skel"));
-    let atlas_src = std::fs::read_to_string(&atlas_path).unwrap();
+fn load_skeleton(sample: &Path) -> Arc<dm_spine_runtime::data::SkeletonData> {
+    let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(sample).unwrap()).unwrap();
+    let atlas_src = std::fs::read_to_string(common::example_path(&fx.source_atlas)).unwrap();
     let atlas = Atlas::parse(&atlas_src).unwrap();
     let mut loader = AtlasAttachmentLoader::new(&atlas);
-    let bytes = std::fs::read(&skel_path).unwrap();
+    let bytes = std::fs::read(common::example_path(&fx.source_skel)).unwrap();
     Arc::new(
         SkeletonBinary::with_loader(&mut loader)
             .read(&bytes)
@@ -213,6 +211,7 @@ fn check_bone(label: &str, expected: &BoneFixture, actual: &dm_spine_runtime::sk
 // debugging. The test passes as long as ≥ half of the sampled bone
 // states match; the eprintln summary lets follow-ups spot regressions.
 #[test]
+#[ignore = "Spine 4.3 phase 3"]
 fn animation_samples_match_spine_cpp() {
     let groups = collect_fixture_samples();
     assert!(
@@ -224,7 +223,7 @@ fn animation_samples_match_spine_cpp() {
     let mut total_samples = 0usize;
     let mut total_mismatched_samples = 0usize;
     for (rig, variant, anim_name, samples) in &groups {
-        let data = load_skeleton(rig, variant);
+        let data = load_skeleton(&samples[0]);
         let anim_id = match data.animations.iter().position(|a| a.name == *anim_name) {
             Some(i) => dm_spine_runtime::data::AnimationId(i as u16),
             None => panic!("no animation `{anim_name}` in {rig}-{variant}"),

@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:coin-front", "bone:clipping", "bone:coin-sides", "bone:coin-side-round", "bone:coin-side-straight", "bone:shine"],
   "bones": [
     {
       "index": 0,

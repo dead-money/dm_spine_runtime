@@ -25,12 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// spine_synthetic — runs hand-built skeleton configurations through spine-cpp
-// and prints each bone's computed a/b/c/d/world to stdout. Used to seed
-// Phase 2 unit-test golden values for Inherit modes that no example rig
-// exercises (notably `NoScaleOrReflection`).
-//
-// Not wired into capture_all.sh; run manually when adding a new case.
+// spine_synthetic: runs hand-built skeletons through spine-cpp and prints
+// each bone's world transform, for cases no example rig exercises (notably
+// Inherit NoScaleOrReflection). Run manually when adding a case.
 
 #include <spine/spine.h>
 
@@ -42,71 +39,51 @@ spine::SpineExtension *spine::getDefaultExtension() {
     return new DefaultSpineExtension();
 }
 
-static void dump(const char *label, const SkeletonData &sd, const Vector<Bone *> &bones) {
+static void dump(const char *label, Array<Bone *> &bones) {
     printf("=== %s ===\n", label);
     for (size_t i = 0; i < bones.size(); ++i) {
         Bone *b = bones[i];
-        printf("bone[%zu] %s inherit=%d active=%d\n", i,
-               b->getData().getName().buffer(),
-               (int) b->getData().getInherit(),
+        BonePose &p = b->getAppliedPose();
+        printf("bone[%zu] %s inherit=%d active=%d\n", i, b->getData().getName().buffer(), (int) p.getInherit(),
                (int) b->isActive());
-        printf("  a=%.9g b=%.9g c=%.9g d=%.9g world=(%.9g,%.9g)\n",
-               b->getA(), b->getB(), b->getC(), b->getD(),
-               b->getWorldX(), b->getWorldY());
+        printf("  a=%.9g b=%.9g c=%.9g d=%.9g world=(%.9g,%.9g)\n", p.getA(), p.getB(), p.getC(), p.getD(),
+               p.getWorldX(), p.getWorldY());
     }
-    (void) sd;
 }
 
-// Two bones: root (reflected on X via scale_x=-1) + child with the given
-// inherit mode, at a specific local rotation/translation. Runs the same
-// bones-only pose the capture harness dumps for real rigs.
+// Root reflected on X, plus a child with the given inherit mode.
 static void run_case(const char *label, Inherit child_inherit) {
     SkeletonData sd;
-    sd.setDefaultSkin(NULL);
 
     BoneData *root = new BoneData(0, "root", NULL);
-    root->setX(10.0f);
-    root->setY(5.0f);
-    root->setScaleX(-1.0f);
-    root->setScaleY(1.0f);
-    root->setRotation(30.0f);
+    BonePose &rp = root->getSetupPose();
+    rp.setX(10.0f);
+    rp.setY(5.0f);
+    rp.setScaleX(-1.0f);
+    rp.setScaleY(1.0f);
+    rp.setRotation(30.0f);
     sd.getBones().add(root);
 
     BoneData *child = new BoneData(1, "child", root);
-    child->setX(20.0f);
-    child->setY(0.0f);
-    child->setRotation(45.0f);
-    child->setScaleX(2.0f);
-    child->setScaleY(0.5f);
-    child->setShearX(10.0f);
-    child->setShearY(-5.0f);
-    child->setInherit(child_inherit);
+    BonePose &cp = child->getSetupPose();
+    cp.setX(20.0f);
+    cp.setY(0.0f);
+    cp.setRotation(45.0f);
+    cp.setScaleX(2.0f);
+    cp.setScaleY(0.5f);
+    cp.setShearX(10.0f);
+    cp.setShearY(-5.0f);
+    cp.setInherit(child_inherit);
     sd.getBones().add(child);
 
-    Skeleton skeleton(&sd);
-    skeleton.setToSetupPose();
-    Vector<Bone *> &bones = skeleton.getBones();
-
-    for (size_t i = 0; i < bones.size(); ++i) {
-        Bone *b = bones[i];
-        b->setAX(b->getX());
-        b->setAY(b->getY());
-        b->setAppliedRotation(b->getRotation());
-        b->setAScaleX(b->getScaleX());
-        b->setAScaleY(b->getScaleY());
-        b->setAShearX(b->getShearX());
-        b->setAShearY(b->getShearY());
-    }
-    for (size_t i = 0; i < bones.size(); ++i) {
-        if (bones[i]->isActive()) {
-            bones[i]->updateWorldTransform();
-        }
-    }
-
-    dump(label, sd, bones);
+    Skeleton skeleton(sd);
+    skeleton.setupPose();
+    skeleton.updateWorldTransform(Physics_None);
+    dump(label, skeleton.getBones());
 }
 
 int main() {
+    Bone::setYDown(false);
     run_case("NoScale", Inherit_NoScale);
     run_case("NoScaleOrReflection", Inherit_NoScaleOrReflection);
     return 0;

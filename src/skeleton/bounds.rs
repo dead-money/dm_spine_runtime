@@ -422,6 +422,7 @@ mod tests {
     /// many) updates without panicking and produces a non-empty
     /// polygon set.
     #[test]
+    #[ignore = "Spine 4.3 phase 2"]
     fn update_on_example_rig() {
         use crate::atlas::Atlas;
         use crate::load::{AtlasAttachmentLoader, SkeletonBinary};

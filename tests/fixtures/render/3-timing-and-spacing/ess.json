@@ -1,0 +1,7 @@
+{
+  "source_skel": "spine-runtimes/examples/3-timing-and-spacing/export/3-timing-and-spacing-ess.skel",
+  "source_atlas": "spine-runtimes/examples/3-timing-and-spacing/export/3-timing-and-spacing.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 8, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [260.795, 602.792], "last_pos": [460.231, 158.36], "first_uv": [0.732422, 0.84375]}
+  ]
+}

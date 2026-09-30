@@ -1,0 +1,7 @@
+{
+  "source_skel": "spine-runtimes/examples/5-squash-and-stretch/export/5-squash-and-stretch-ess.skel",
+  "source_atlas": "spine-runtimes/examples/5-squash-and-stretch/export/5-squash-and-stretch.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 52, "num_indices": 78, "color": 4294967295, "dark_color": 4278190080, "first_pos": [78.0249, 66.9086], "last_pos": [1538, 1643.17], "first_uv": [0.474121, 0.664062]}
+  ]
+}

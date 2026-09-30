@@ -31,6 +31,8 @@
 //! against the capture fixtures) — it catches panics and asserts simple
 //! invariants like "every active bone appears at least once in the cache".
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,8 +41,7 @@ use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::skeleton::{Skeleton, UpdateCacheEntry};
 
 fn examples_dir() -> PathBuf {
-    // `cargo test` runs with CWD set to the crate root.
-    PathBuf::from("../spine-runtimes/examples")
+    common::examples_root()
 }
 
 fn rig_skel_paths() -> Vec<PathBuf> {
@@ -66,6 +67,7 @@ fn rig_skel_paths() -> Vec<PathBuf> {
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 2"]
 fn update_cache_runs_on_every_example_rig() {
     let skels = rig_skel_paths();
     assert!(

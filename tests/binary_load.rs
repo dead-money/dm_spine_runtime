@@ -29,13 +29,15 @@
 //! `~/deadmoney/spine-runtimes/examples/` and assert basic structural
 //! invariants. Also spot-checks spineboy against known counts.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use dm_spine_runtime::atlas::Atlas;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 
 fn examples_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../spine-runtimes/examples")
+    common::examples_root()
 }
 
 /// Walk `examples/<name>/export/` directories and yield every .skel path
@@ -122,6 +124,7 @@ fn load(atlas_path: &Path, skel_path: &Path) -> dm_spine_runtime::data::Skeleton
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 1"]
 fn loads_every_example_skeleton() {
     let pairs = collect_skels();
     assert!(
@@ -178,6 +181,7 @@ fn loads_every_example_skeleton() {
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 1"]
 fn spineboy_pro_has_expected_structure() {
     let root = examples_root().join("spineboy/export");
     let sd = load(

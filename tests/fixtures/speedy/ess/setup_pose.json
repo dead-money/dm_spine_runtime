@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:hip", "bone:torso", "bone:torso-singleton", "bone:belt ends", "bone:head", "bone:head-singleton", "bone:hair1", "bone:hair2", "bone:hood end1", "bone:hood end2", "bone:left foot", "bone:left hand", "bone:right foot", "bone:right hand"],
   "bones": [
     {
       "index": 0,

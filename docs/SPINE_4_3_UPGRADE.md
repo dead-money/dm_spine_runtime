@@ -66,6 +66,29 @@ Phases land on `main` as PRs, merged with merge commits, after the 4.2 tag. The 
 
 Gate: harness builds against 4.3, and fixtures are committed. Rust goldens are expected to fail.
 
+**Done.**
+- The harness builds against `upstream/4.3` at `ba17cf88b`, which is the commit CI pins.
+- Fixtures cover 43 rigs: setup pose (now including update-cache order), render headers, and 45 animation samples, including `diamond-pro`.
+- Tests resolve rigs through `SPINE_EXAMPLES` and the fixtures' own `source_*` paths.
+- Tests that need unported code are `#[ignore = "Spine 4.3 phase N"]`.
+
+Notes:
+- spine-cpp 4.3 defaults `Bone::yDown` to true; 4.2 and spine-ts default to false. The harness forces y-up, and the Rust default stays y-up.
+- `synthetic.cpp` was ported but not yet extended with inverse or convex clipping cases. Those belong with Phase 5.
+- HeadlessTest and the serializer oracle move to Phase 1, where they're first needed.
+
+**spine-cpp baseline** (`-O2`, one skeleton, 60 Hz, `Physics_None`, ns/frame; `spine_capture --bench`):
+
+| rig (skin, animation) | anim | world | render | total |
+|---|---|---|---|---|
+| Human (Human01, `WR_walkCombat_F`) | 7456 | 2713 | 3033 | 13202 |
+| Goblin (Goblin01, same) | 5810 | 2822 | 3347 | 11979 |
+| Orc (Orc01, same) | 7709 | 2323 | 2834 | 12866 |
+| Ogre (Ogre01, same) | 6344 | 2922 | 2959 | 12225 |
+| Deer (Doe, `walk_F`) | 870 | 2241 | 4038 | 7149 |
+
+Animation apply dominates on the humanoid rigs. They carry 206–209 animations; the cost is per-track timeline work, which matches hommlet's own profile showing `computeHold` as the top Spine cost.
+
 ### 1. Data model and loaders
 
 Port `SkeletonBinary.cpp` / `SkeletonJson.cpp` at the tip, plus the data types they populate. No runtime behavior yet beyond what loading needs.

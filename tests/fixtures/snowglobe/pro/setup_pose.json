@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:globe-holder", "bone:globe-texture", "bone:blue-gift-scale", "bone:blue-gift-rotator", "bone:blue-present-container", "physics:blue-present/blue-present-container", "bone:blue-present-control", "bone:blue-present-inverse", "transform:blue-present/blue-present-control", "physics:blue-present/blue-present-control", "bone:hips", "physics:hips", "bone:body", "physics:body", "bone:body-top", "physics:body-top", "bone:head-base", "physics:head-base", "bone:nose", "physics:nose", "bone:head-inverse", "transform:inverse-head", "bone:face-holder", "transform:face-holder", "bone:slower-face-holder", "transform:slower-face-holder", "bone:leg-up-r", "physics:leg-up-r", "bone:leg-knee-r", "physics:leg-knee-r", "bone:shoe-r", "physics:shoe-r", "bone:shoe-r-rotator", "physics:shoe-r-rotator", "bone:shoe-r-tip", "physics:shoe-r-tip", "bone:leg-up-l", "physics:leg-up-l", "bone:leg-knee-l", "physics:leg-knee-l", "bone:shoe-l", "physics:shoe-l", "bone:shoe-l-rotator", "physics:shoe-l-rotator", "bone:shoe-l-tip", "physics:shoe-l-tip", "bone:arm-up-r", "bone:arm-up-r2", "physics:arm-up-r2", "bone:arm-r-elbow", "physics:arm-r-elbow", "bone:glove-r", "physics:glove-r", "bone:arm-up-l", "bone:arm-up-l2", "physics:arm-up-l2", "bone:arm-l-elbow", "physics:arm-l-elbow", "bone:glove-l", "physics:glove-l", "bone:scarf-ribbon-top-r", "physics:scarf/scarf-ribbon-top-r", "bone:scarf-end-r", "physics:scarf/scarf-end-r", "bone:scarf-ribbon-top-l", "physics:scarf/scarf-ribbon-top-l", "bone:scarf-end-l", "physics:scarf/scarf-end-l", "bone:red-gift-scale", "bone:red-gift-rotator", "bone:green-present-container", "physics:green-present/green-present-container", "bone:green-present-control", "physics:green-present/green-present-control", "bone:red-present-container", "physics:red-present/red-present-container", "bone:red-present-control", "physics:red-present/red-present-control", "bone:snowball-perspective", "physics:snowball-perspective", "bone:hat", "physics:hat", "bone:hat2", "physics:hat2", "bone:hat3", "physics:hat3", "bone:hair-r", "physics:hair-r", "bone:hair-l", "physics:hair-l", "bone:shoelace", "physics:shoelaces/shoelace", "bone:shoelace2", "bone:shoelace3", "physics:shoelaces/shoelace3", "bone:shoelace6", "physics:shoelaces/shoelace6", "bone:shoelace4", "bone:shoelace5", "physics:shoelaces/shoelace5", "physics:shoelaces/shoelace4", "physics:shoelaces/shoelace2", "bone:shoelace7", "physics:shoelaces/shoelace7", "bone:shoelace9", "physics:shoelaces/shoelace9", "bone:shoelace10", "physics:shoelaces/shoelace10", "bone:shoelace8", "physics:shoelaces/shoelace8", "bone:eyellid-r-up", "bone:eyellid-r-down", "bone:eyellid-l-up", "bone:eyellid-l-down", "bone:pupil-r", "bone:pupil-l", "bone:mouth", "bone:snow-scale", "bone:snow-rotator", "bone:snow-holder", "bone:snow-holder2", "bone:snow-holder3", "bone:snow-holder4", "bone:snow-holder5", "bone:snow-scale2", "bone:snow-rotator2", "bone:snow-holder6", "bone:snow-holder7", "bone:snow-holder8", "bone:snow-holder9", "bone:snow-holder10", "bone:snow-holder11", "bone:snow-holder12", "bone:snow-holder13", "bone:snow-holder14", "bone:snow-holder15", "bone:shoelace3", "bone:shoelace5"],
   "bones": [
     {
       "index": 0,
@@ -525,7 +526,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447783e-06
+      "a_shear_y": 0
     },
     {
       "index": 26,
@@ -845,7 +846,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447829e-06
+      "a_shear_y": 0
     },
     {
       "index": 42,
@@ -945,7 +946,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447829e-06
+      "a_shear_y": 0
     },
     {
       "index": 47,
@@ -985,7 +986,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447829e-06
+      "a_shear_y": 0
     },
     {
       "index": 49,
