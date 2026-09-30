@@ -51,7 +51,8 @@ Phase 0 landed on `main` as its own PR. Phases 1–6 landed together as one PR f
 ## Progress
 
 - **0–6 done.** Setup pose 43/43, animation samples 45/45, `AnimationState` scenarios 8/8, render commands (including positions and UVs) 43/43. Steady-state frames don't allocate. On hommlet's rigs a full frame takes 0.51–0.63× spine-cpp's time (Human: 7.8 µs against 13.0 µs). World transform on humanoids is still 1.1× spine-cpp; that's the next performance target once hommlet profiles it in place.
-- **7–9 open.**
+- **7 done.** Skins are flat tables over interned `(slot, placeholder)` keys, worn as `Arc<Skin>`, with owned attachment copies (`copy`, `set_region`, `tag`), `add_skin`, `copy_skin`, in-place edits through `Skeleton::skin_mut`, and `compact_skin`. Placeholders the data never mentions are kept per skin and reached only by name. Changing skins clears slots left showing an owned attachment of the old skin, where spine-cpp would keep a dangling pointer. `RenderOptions` adds per-vertex slot and tag streams and merging across colors. `RegionGeometry` maps region points for weapon trails. Track save and restore needs no new API; a test covers hommlet's round trip. `get_slot_attachment_indices` was dropped: it only fed slot colors that `creature.gdshader` never reads, and the per-vertex streams replace it.
+- **8–9 open.**
 
 ## Phases
 

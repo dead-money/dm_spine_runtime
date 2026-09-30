@@ -86,7 +86,7 @@ Goldens diff against JSON dumps captured from `spine-cpp` by `tools/spine_captur
 
 ## Status
 
-The 4.2 port is tagged `v0.1.0`. The 4.3 port has reached parity and passed its performance gate (upgrade phases 0–6); phases 7–9 (hommlet runtime surface, hommlet adoption, release) remain. Update this section as they land. 4.3 parity:
+The 4.2 port is tagged `v0.1.0`. The 4.3 port has reached parity, passed its performance gate, and has hommlet's runtime surface (upgrade phases 0–7); phases 8–9 (hommlet adoption, release) remain. Update this section as they land. 4.3 parity:
 
 - Setup pose: 43/43 rigs at 1e-4.
 - Animation samples: 45/45 at 1e-3, with raptor-pro/roar front-bracer `a_rotation` in `KNOWN_DRIFT` (IK softness `acos` amplifies rounding).
