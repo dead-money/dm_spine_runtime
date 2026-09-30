@@ -139,3 +139,102 @@ fn all_animations_apply_without_panic() {
         "exercised only {animations_exercised} animations"
     );
 }
+
+/// What a save file keeps per queued entry on a track.
+struct SavedEntry {
+    animation: Option<String>,
+    looping: bool,
+    track_time: f32,
+    time_scale: f32,
+    mix_duration: f32,
+    delay: f32,
+}
+
+/// A track's queue saved while no crossfade is in progress and restored
+/// into a fresh state plays on exactly as the original does.
+#[test]
+fn saved_track_queue_restores_playback() {
+    let dir = examples_dir().join("spineboy/export");
+    let atlas =
+        Atlas::parse(&std::fs::read_to_string(dir.join("spineboy.atlas")).unwrap()).unwrap();
+    let mut loader = AtlasAttachmentLoader::new(&atlas);
+    let data = Arc::new(
+        SkeletonBinary::with_loader(&mut loader)
+            .read(&std::fs::read(dir.join("spineboy-pro.skel")).unwrap())
+            .unwrap(),
+    );
+    let mut state_data = AnimationStateData::new(Arc::clone(&data));
+    state_data.set_default_mix(0.2);
+    let state_data = Arc::new(state_data);
+
+    let mut skeleton = Skeleton::new(Arc::clone(&data));
+    let mut state = AnimationState::new(Arc::clone(&state_data));
+    let walk = state.set_animation_by_name(0, "walk", true).unwrap();
+    state.entry_mut(walk).unwrap().time_scale = 1.5;
+    state.add_animation_by_name(0, "run", true, 1.2).unwrap();
+    state.add_empty_animation(0, 0.3, 0.8);
+    let mut events = Vec::new();
+    let step = |state: &mut AnimationState, skeleton: &mut Skeleton, events: &mut Vec<_>| {
+        state.update(1.0 / 30.0);
+        state.apply(skeleton, events);
+        skeleton.update_world_transform(Physics::Update);
+    };
+    for _ in 0..12 {
+        step(&mut state, &mut skeleton, &mut events);
+    }
+
+    let mut saved = Vec::new();
+    let mut next = state.track(0);
+    while let Some(id) = next {
+        let e = state.entry(id).unwrap();
+        assert!(e.mixing_from.is_none());
+        saved.push(SavedEntry {
+            animation: (!e.is_empty_animation())
+                .then(|| data.animations[e.animation.index()].name.clone()),
+            looping: e.looping,
+            track_time: e.track_time,
+            time_scale: e.time_scale,
+            mix_duration: e.mix_duration,
+            delay: e.delay,
+        });
+        next = e.next;
+    }
+    assert_eq!(saved.len(), 3);
+
+    let mut restored = AnimationState::new(Arc::clone(&state_data));
+    for (i, s) in saved.iter().enumerate() {
+        let id = match (&s.animation, i) {
+            (Some(name), 0) => restored.set_animation_by_name(0, name, s.looping).unwrap(),
+            (None, 0) => restored.set_empty_animation(0, s.mix_duration),
+            (Some(name), _) => restored
+                .add_animation_by_name(0, name, s.looping, s.delay)
+                .unwrap(),
+            (None, _) => restored.add_empty_animation(0, s.mix_duration, s.delay),
+        };
+        let e = restored.entry_mut(id).unwrap();
+        if i == 0 {
+            e.track_time = s.track_time;
+            let time = e.animation_time();
+            e.set_animation_last(time);
+        }
+        e.time_scale = s.time_scale;
+        e.mix_duration = s.mix_duration;
+    }
+
+    let mut restored_skeleton = skeleton.clone();
+    for frame in 0..90 {
+        step(&mut state, &mut skeleton, &mut events);
+        step(&mut restored, &mut restored_skeleton, &mut events);
+        for (a, b) in skeleton.bones.iter().zip(&restored_skeleton.bones) {
+            let (a, b) = (a.applied(), b.applied());
+            assert_eq!(
+                (a.world_x, a.world_y, a.a, a.b, a.c, a.d),
+                (b.world_x, b.world_y, b.a, b.b, b.c, b.d),
+                "frame {frame}"
+            );
+        }
+        for (a, b) in skeleton.slots.iter().zip(&restored_skeleton.slots) {
+            assert_eq!(a.applied(), b.applied(), "frame {frame}");
+        }
+    }
+}

@@ -40,9 +40,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dm_spine_runtime::atlas::Atlas;
+use dm_spine_runtime::data::SlotId;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use dm_spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton};
 
 fn examples_dir() -> PathBuf {
     common::examples_root()
@@ -111,6 +112,22 @@ fn renders_every_example_rig_at_setup_pose() {
 
         sk.setup_pose();
         sk.update_world_transform(Physics::None);
+
+        // Each vertex's own region coordinate maps back onto it.
+        let mut geometry = RegionGeometry::new();
+        for slot in 0..sk.slots.len() {
+            if !geometry.update(&sk, SlotId(slot as u16)) {
+                continue;
+            }
+            let (world, uvs) = (geometry.world_vertices(), geometry.region_uvs());
+            for k in 0..world.len() / 2 {
+                let (x, y) = geometry.map(uvs[k * 2], uvs[k * 2 + 1]).unwrap();
+                assert!(
+                    (x - world[k * 2]).abs() < 1e-2 && (y - world[k * 2 + 1]).abs() < 1e-2,
+                    "{rig}: slot {slot} vertex {k} maps to ({x}, {y})"
+                );
+            }
+        }
 
         let mut renderer = SkeletonRenderer::new();
         // Render unbatched so degenerate-command regressions surface per-slot

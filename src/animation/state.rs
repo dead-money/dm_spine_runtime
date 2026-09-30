@@ -318,6 +318,11 @@ struct Queued {
     event: Option<Event>,
 }
 
+/// Plays animations on tracks and poses a skeleton from them.
+///
+/// For a skeleton that isn't drawn, [`Self::update`] and [`Self::apply`]
+/// alone keep its tracks and events going; skip the world transform and
+/// rendering until it's visible again.
 pub struct AnimationState {
     data: Arc<AnimationStateData>,
     skeleton_data: Arc<SkeletonData>,

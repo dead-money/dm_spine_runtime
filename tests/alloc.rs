@@ -39,9 +39,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::atlas::Atlas;
+use dm_spine_runtime::data::SlotId;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::render::{RenderOptions, SkeletonRenderer};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use dm_spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton, SkeletonBounds};
 
 struct Counting;
 
@@ -83,6 +84,8 @@ fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> 
         vertex_ids: true,
         merge_colors: true,
     });
+    let mut bounds = SkeletonBounds::new();
+    let mut geometry = RegionGeometry::new();
     let mut events = Vec::with_capacity(64);
     let mut state_events = Vec::with_capacity(64);
     let duration = data
@@ -101,6 +104,12 @@ fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> 
             skeleton.update_world_transform(physics);
             renderer.render(&skeleton);
             merged_renderer.render(&skeleton);
+            bounds.update(&skeleton, true);
+            for slot in 0..skeleton.slots.len() {
+                if geometry.update(&skeleton, SlotId(slot as u16)) {
+                    let _ = geometry.map(0.5, 0.5);
+                }
+            }
             state_events.clear();
             state.drain_events_into(&mut state_events);
         }

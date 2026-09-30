@@ -393,6 +393,15 @@ impl Skeleton {
         resolve(&self.data.attachments, self.skin.as_deref(), r)
     }
 
+    /// The attachment a slot shows in its applied pose.
+    #[must_use]
+    pub fn slot_attachment(&self, slot: SlotId) -> Option<&Attachment> {
+        self.slots[slot.index()]
+            .applied()
+            .attachment
+            .map(|r| self.attachment(r))
+    }
+
     /// The data attachment whose timelines drive `r`.
     #[must_use]
     pub fn timeline_attachment(&self, r: Option<AttachmentRef>) -> Option<AttachmentId> {
