@@ -47,6 +47,7 @@ const TOLERANCE: f32 = 1e-4;
 struct Fixture {
     source_skel: String,
     source_atlas: String,
+    update_cache: Vec<String>,
     bones: Vec<BoneFixture>,
 }
 
@@ -105,11 +106,38 @@ fn load_skeleton(atlas_path: &Path, skel_path: &Path) -> Skeleton {
     Skeleton::new(Arc::new(data))
 }
 
+/// Update cache as the capture prints it: `bone:<name>`, `ik:<name>`, ...
+fn update_cache_names(sk: &Skeleton) -> Vec<String> {
+    use dm_spine_runtime::data::ConstraintData;
+    use dm_spine_runtime::skeleton::UpdateCacheEntry;
+    let data = sk.data();
+    sk.update_cache_entries()
+        .iter()
+        .map(|e| match e {
+            UpdateCacheEntry::Bone(b) => format!("bone:{}", data.bones[b.index()].name),
+            UpdateCacheEntry::Constraint(c) => {
+                let kind = match &data.constraints[c.index()] {
+                    ConstraintData::Ik(_) => "ik",
+                    ConstraintData::Transform(_) => "transform",
+                    ConstraintData::Path(_) => "path",
+                    ConstraintData::Physics(_) => "physics",
+                    ConstraintData::Slider(_) => "slider",
+                };
+                format!("{kind}:{}", data.constraints[c.index()].name())
+            }
+        })
+        .collect()
+}
+
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() <= TOLERANCE || (a - b).abs() <= TOLERANCE * a.abs().max(b.abs())
 }
 
-fn check_bone(rig_label: &str, expected: &BoneFixture, actual: &dm_spine_runtime::skeleton::Bone) {
+fn check_bone(
+    rig_label: &str,
+    expected: &BoneFixture,
+    actual: &dm_spine_runtime::skeleton::BonePose,
+) {
     let fields: [(&str, f32, f32); 13] = [
         ("a", expected.a, actual.a),
         ("b", expected.b, actual.b),
@@ -117,13 +145,13 @@ fn check_bone(rig_label: &str, expected: &BoneFixture, actual: &dm_spine_runtime
         ("d", expected.d, actual.d),
         ("world_x", expected.world_x, actual.world_x),
         ("world_y", expected.world_y, actual.world_y),
-        ("ax", expected.ax, actual.ax),
-        ("ay", expected.ay, actual.ay),
-        ("a_rotation", expected.a_rotation, actual.a_rotation),
-        ("a_scale_x", expected.a_scale_x, actual.a_scale_x),
-        ("a_scale_y", expected.a_scale_y, actual.a_scale_y),
-        ("a_shear_x", expected.a_shear_x, actual.a_shear_x),
-        ("a_shear_y", expected.a_shear_y, actual.a_shear_y),
+        ("ax", expected.ax, actual.x),
+        ("ay", expected.ay, actual.y),
+        ("a_rotation", expected.a_rotation, actual.rotation),
+        ("a_scale_x", expected.a_scale_x, actual.scale_x),
+        ("a_scale_y", expected.a_scale_y, actual.scale_y),
+        ("a_shear_x", expected.a_shear_x, actual.shear_x),
+        ("a_shear_y", expected.a_shear_y, actual.shear_y),
     ];
     for (label, want, got) in fields {
         assert!(
@@ -140,7 +168,7 @@ fn check_bone(rig_label: &str, expected: &BoneFixture, actual: &dm_spine_runtime
 fn first_bone_mismatch(
     rig_label: &str,
     expected: &BoneFixture,
-    actual: &dm_spine_runtime::skeleton::Bone,
+    actual: &dm_spine_runtime::skeleton::BonePose,
 ) -> Option<String> {
     let fields: [(&str, f32, f32); 13] = [
         ("a", expected.a, actual.a),
@@ -149,13 +177,13 @@ fn first_bone_mismatch(
         ("d", expected.d, actual.d),
         ("world_x", expected.world_x, actual.world_x),
         ("world_y", expected.world_y, actual.world_y),
-        ("ax", expected.ax, actual.ax),
-        ("ay", expected.ay, actual.ay),
-        ("a_rotation", expected.a_rotation, actual.a_rotation),
-        ("a_scale_x", expected.a_scale_x, actual.a_scale_x),
-        ("a_scale_y", expected.a_scale_y, actual.a_scale_y),
-        ("a_shear_x", expected.a_shear_x, actual.a_shear_x),
-        ("a_shear_y", expected.a_shear_y, actual.a_shear_y),
+        ("ax", expected.ax, actual.x),
+        ("ay", expected.ay, actual.y),
+        ("a_rotation", expected.a_rotation, actual.rotation),
+        ("a_scale_x", expected.a_scale_x, actual.scale_x),
+        ("a_scale_y", expected.a_scale_y, actual.scale_y),
+        ("a_shear_x", expected.a_shear_x, actual.shear_x),
+        ("a_shear_y", expected.a_shear_y, actual.shear_y),
     ];
     for (label, want, got) in fields {
         if !close(want, got) {
@@ -174,7 +202,6 @@ fn first_bone_mismatch(
 // Phase 5e: fixtures regenerated with the full constraint pipeline
 // enabled via Skeleton::updateWorldTransform.
 #[test]
-#[ignore = "Spine 4.3 phase 2"]
 fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
     let fixtures = collect_fixtures();
     assert!(
@@ -192,20 +219,20 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
         let atlas_path = common::example_path(&fx.source_atlas);
         let skel_path = common::example_path(&fx.source_skel);
         let mut sk = load_skeleton(&atlas_path, &skel_path);
-        // Exercise the full Phase 2 public sequence, not just the bone pose
-        // shortcut that Skeleton::new already seeds. `set_to_setup_pose` is a
-        // no-op for freshly-loaded skeletons but must stay idempotent here.
-        sk.set_to_setup_pose();
-        sk.update_cache();
+        sk.setup_pose();
         sk.update_world_transform(Physics::None);
 
+        let cache = update_cache_names(&sk);
+        assert_eq!(cache, fx.update_cache, "[{rig_label}] update cache order");
         assert_eq!(
             sk.bones.len(),
             fx.bones.len(),
-            "[{rig_label}] bone count mismatch: runtime {} vs fixture {}",
-            sk.bones.len(),
-            fx.bones.len(),
+            "[{rig_label}] bone count mismatch"
         );
+        // The capture validates local transforms constraints left stale.
+        for i in 0..sk.bones.len() {
+            sk.validate_local_transform(dm_spine_runtime::data::BoneId(i as u16));
+        }
 
         let mut mismatches = 0usize;
         let mut first_miss: Option<String> = None;
@@ -214,7 +241,7 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
                 expected.index as usize, i,
                 "[{rig_label}] fixture bone order broken at index {i}"
             );
-            if let Some(msg) = first_bone_mismatch(rig_label, expected, &sk.bones[i]) {
+            if let Some(msg) = first_bone_mismatch(rig_label, expected, sk.bones[i].applied()) {
                 mismatches += 1;
                 if first_miss.is_none() {
                     first_miss = Some(msg);
@@ -238,12 +265,5 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
         fixtures.len() - checked
     );
 
-    // Phase 5 acceptance: most rigs pass at 1e-4 on setup pose. Known
-    // divergences (specific constraint edge cases in solver ports) are
-    // tracked via the per-rig eprintln summary above.
-    assert!(
-        checked * 2 >= fixtures.len(),
-        "only {checked} of {} fixtures match — more than half diverge",
-        fixtures.len()
-    );
+    assert_eq!(checked, fixtures.len(), "every captured rig must match");
 }

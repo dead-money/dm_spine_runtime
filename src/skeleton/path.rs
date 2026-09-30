@@ -25,383 +25,505 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Path constraint solver. Port of `spine-cpp/src/spine/PathConstraint.cpp`.
-//!
-//! Positions one or more constrained bones along a cubic-bezier path
-//! carried by the target slot's [`PathAttachment`]. Supports Fixed /
-//! Percent / Length / Proportional spacing modes and Tangent / Chain /
-//! `ChainScale` rotate modes.
-//!
-//! [`PathAttachment`]: crate::data::attachment::PathAttachment
+//! Path constraint (`PathConstraint.cpp`): positions bones along the cubic
+//! bezier path attachment on a slot.
 
-#![allow(
-    clippy::many_single_char_names,
-    // Spine's path solver uses index math pervasively; iterators would
-    // obscure the spine-cpp diff.
-    clippy::needless_range_loop
-)]
+#![allow(clippy::many_single_char_names, clippy::needless_range_loop)]
 
-use crate::data::{Attachment, BoneId, PositionMode, RotateMode, SpacingMode};
-use crate::skeleton::Skeleton;
+use crate::data::{
+    Attachment, AttachmentId, ConstraintId, PathAttachment, PathConstraintData, PositionMode,
+    RotateMode, SkeletonData, SlotId, SpacingMode,
+};
+use crate::math::util::{DEG_RAD, EPSILON, PI, PI_2};
+use crate::skeleton::bone::{self};
+use crate::skeleton::constraint::{Constraint, PathConstraint};
+use crate::skeleton::{Skeleton, UpdateCacheEntry};
 
-const EPSILON: f32 = 0.00001;
 const NONE: i32 = -1;
 const BEFORE: i32 = -2;
 const AFTER: i32 = -3;
 
-/// Run the Path constraint at `constraint_idx`. Early-outs when the
-/// target slot's attachment isn't a `PathAttachment` or all mix values
-/// are zero. Matches `spine::PathConstraint::update`.
-#[allow(clippy::too_many_lines)]
-pub(crate) fn solve_path_constraint(skeleton: &mut Skeleton, constraint_idx: usize) {
-    let (active, mix_rotate, mix_x, mix_y, target, bones, data_idx, position, spacing) = {
-        let c = &skeleton.path_constraints[constraint_idx];
-        (
-            c.active,
-            c.mix_rotate,
-            c.mix_x,
-            c.mix_y,
-            c.target,
-            c.bones.clone(),
-            c.data_index,
-            c.position,
-            c.spacing,
-        )
-    };
-    if !active || (mix_rotate == 0.0 && mix_x == 0.0 && mix_y == 0.0) {
-        return;
-    }
-
-    // Resolve the attachment through the slot.
-    let attachment_id = skeleton.slots[target.index()].attachment;
-    let Some(att_id) = attachment_id else { return };
-    let is_path = matches!(
-        &skeleton.data.attachments[att_id.index()],
-        Attachment::Path(_)
-    );
-    if !is_path {
-        return;
-    }
-
-    let (position_mode, spacing_mode, rotate_mode, offset_rotation) = {
-        let d = &skeleton.data.path_constraints[data_idx.index()];
-        (
-            d.position_mode,
-            d.spacing_mode,
-            d.rotate_mode,
-            d.offset_rotation,
-        )
-    };
-
-    let tangents = rotate_mode == RotateMode::Tangent;
-    let scale_mode = rotate_mode == RotateMode::ChainScale;
-    let bone_count = bones.len();
-    let spaces_count = if tangents { bone_count } else { bone_count + 1 };
-
-    // --- Build spaces[] + (optionally) lengths[] per spacing mode ----
-    let mut spaces = vec![0.0_f32; spaces_count];
-    let mut lengths = if scale_mode {
-        vec![0.0_f32; bone_count]
-    } else {
-        Vec::new()
-    };
-    compute_spaces(
-        skeleton,
-        &bones,
-        spacing,
-        spacing_mode,
-        scale_mode,
-        &mut spaces,
-        &mut lengths,
-    );
-
-    // --- Compute world positions along the path ----------------------
-    let positions = compute_world_positions(
-        skeleton,
-        att_id,
-        target,
-        position,
-        position_mode,
-        spacing_mode,
-        spaces_count,
-        tangents,
-        &spaces,
-    );
-
-    // --- Apply to each constrained bone ------------------------------
-    let (tip, offset_rotation_rad);
-    if offset_rotation == 0.0 {
-        tip = rotate_mode == RotateMode::Chain;
-        offset_rotation_rad = 0.0;
-    } else {
-        tip = false;
-        let (ta, tb, tc, td) = {
-            let slot_bone = skeleton.data.slots[target.index()].bone;
-            let p = &skeleton.bones[slot_bone.index()];
-            (p.a, p.b, p.c, p.d)
-        };
-        let deg_rad = std::f32::consts::PI / 180.0;
-        offset_rotation_rad = offset_rotation
-            * if ta * td - tb * tc > 0.0 {
-                deg_rad
-            } else {
-                -deg_rad
-            };
-    }
-
-    let mut bone_x = positions[0];
-    let mut bone_y = positions[1];
-    let mut p = 3_usize;
-    for (i, bone_id) in bones.iter().copied().enumerate() {
-        // Translate: blend the bone's world position toward the path sample.
+impl Skeleton {
+    pub(crate) fn sort_path(
+        &mut self,
+        id: ConstraintId,
+        data: &PathConstraintData,
+        sd: &SkeletonData,
+    ) {
+        let slot_index = data.slot;
+        let slot_bone = self.slots[slot_index.index()].bone;
+        if let Some(skin) = self.skin {
+            self.sort_path_slot(&sd.skins[skin.index()], slot_index, slot_bone, sd);
+        }
+        if let Some(default) = sd.default_skin
+            && Some(default) != self.skin
         {
-            let bone = &mut skeleton.bones[bone_id.index()];
+            self.sort_path_slot(&sd.skins[default.index()], slot_index, slot_bone, sd);
+        }
+        let attachment = self.slots[slot_index.index()].posed.pose.attachment;
+        self.sort_path_attachment(attachment, slot_bone, sd);
+        for &b in &data.bones {
+            self.sort_bone(b);
+            self.constrain_bone(b);
+        }
+        self.update_cache.push(UpdateCacheEntry::Constraint(id));
+        for &b in &data.bones {
+            self.sort_reset(b);
+        }
+        for &b in &data.bones {
+            self.bones[b.index()].sorted = true;
+        }
+    }
+
+    fn sort_path_slot(
+        &mut self,
+        skin: &crate::data::Skin,
+        slot: SlotId,
+        slot_bone: crate::data::BoneId,
+        sd: &SkeletonData,
+    ) {
+        for (_, attachment) in skin.slot_attachments(slot) {
+            self.sort_path_attachment(Some(attachment), slot_bone, sd);
+        }
+    }
+
+    fn sort_path_attachment(
+        &mut self,
+        attachment: Option<AttachmentId>,
+        slot_bone: crate::data::BoneId,
+        sd: &SkeletonData,
+    ) {
+        let Some(Attachment::Path(path)) = attachment.map(|a| &sd.attachments[a.index()]) else {
+            return;
+        };
+        let bones = &path.vertex_data.bones;
+        if bones.is_empty() {
+            self.sort_bone(slot_bone);
+        } else {
+            let mut i = 0;
+            while i < bones.len() {
+                let n = bones[i] as usize;
+                i += 1;
+                let end = i + n;
+                while i < end {
+                    self.sort_bone(crate::data::BoneId(bones[i] as u16));
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn update_path(
+        &mut self,
+        id: ConstraintId,
+        data: &PathConstraintData,
+        sd: &SkeletonData,
+    ) {
+        let slot = &self.slots[data.slot.index()];
+        let Some(attachment_id) = slot.applied().attachment else {
+            return;
+        };
+        let Attachment::Path(path) = &sd.attachments[attachment_id.index()] else {
+            return;
+        };
+        let Constraint::Path(c) = &mut self.constraints[id.index()] else {
+            unreachable!()
+        };
+        let p = *c.posed.applied();
+        let (mix_rotate, mix_x, mix_y) = (p.mix_rotate, p.mix_x, p.mix_y);
+        if mix_rotate == 0.0 && mix_x == 0.0 && mix_y == 0.0 {
+            return;
+        }
+        let mut scratch = std::mem::take(c);
+        let f = self.frame();
+
+        let tangents = data.rotate_mode == RotateMode::Tangent;
+        let scale = data.rotate_mode == RotateMode::ChainScale;
+        let bone_count = data.bones.len();
+        let spaces_count = if tangents { bone_count } else { bone_count + 1 };
+        scratch.spaces.clear();
+        scratch.spaces.resize(spaces_count, 0.0);
+        if scale {
+            scratch.lengths.clear();
+            scratch.lengths.resize(bone_count, 0.0);
+        }
+        let spacing = p.spacing;
+        let spaces = &mut scratch.spaces;
+        let lengths = &mut scratch.lengths;
+        match data.spacing_mode {
+            SpacingMode::Percent => {
+                if scale {
+                    for i in 0..spaces_count - 1 {
+                        let b = data.bones[i];
+                        let setup_length = sd.bones[b.index()].length;
+                        let bp = self.bones[b.index()].applied();
+                        let x = setup_length * bp.a;
+                        let y = setup_length * bp.c;
+                        lengths[i] = (x * x + y * y).sqrt();
+                    }
+                }
+                for s in spaces.iter_mut().skip(1) {
+                    *s = spacing;
+                }
+            }
+            SpacingMode::Proportional => {
+                let mut sum = 0.0;
+                let n = spaces_count - 1;
+                let mut i = 0;
+                while i < n {
+                    let b = data.bones[i];
+                    let setup_length = sd.bones[b.index()].length;
+                    if setup_length < EPSILON {
+                        if scale {
+                            lengths[i] = 0.0;
+                        }
+                        i += 1;
+                        spaces[i] = spacing;
+                    } else {
+                        let bp = self.bones[b.index()].applied();
+                        let x = setup_length * bp.a;
+                        let y = setup_length * bp.c;
+                        let length = (x * x + y * y).sqrt();
+                        if scale {
+                            lengths[i] = length;
+                        }
+                        i += 1;
+                        spaces[i] = length;
+                        sum += length;
+                    }
+                }
+                if sum > 0.0 {
+                    sum = spaces_count as f32 / sum * spacing;
+                    for s in spaces.iter_mut().skip(1) {
+                        *s *= sum;
+                    }
+                }
+            }
+            SpacingMode::Length | SpacingMode::Fixed => {
+                let length_spacing = data.spacing_mode == SpacingMode::Length;
+                let n = spaces_count - 1;
+                let mut i = 0;
+                while i < n {
+                    let b = data.bones[i];
+                    let setup_length = sd.bones[b.index()].length;
+                    if setup_length < EPSILON {
+                        if scale {
+                            lengths[i] = 0.0;
+                        }
+                        i += 1;
+                        spaces[i] = spacing;
+                    } else {
+                        let bp = self.bones[b.index()].applied();
+                        let x = setup_length * bp.a;
+                        let y = setup_length * bp.c;
+                        let length = (x * x + y * y).sqrt();
+                        if scale {
+                            lengths[i] = length;
+                        }
+                        i += 1;
+                        spaces[i] = (if length_spacing {
+                            (setup_length + spacing).max(0.0)
+                        } else {
+                            spacing
+                        }) * length
+                            / setup_length;
+                    }
+                }
+            }
+        }
+
+        self.compute_path_positions(
+            &mut scratch,
+            path,
+            data,
+            data.slot,
+            p.position,
+            spaces_count,
+            tangents,
+        );
+        let positions = &scratch.positions;
+        let mut bone_x = positions[0];
+        let mut bone_y = positions[1];
+        let mut offset_rotation = data.offset_rotation;
+        let tip;
+        if offset_rotation == 0.0 {
+            tip = data.rotate_mode == RotateMode::Chain;
+        } else {
+            tip = false;
+            let slot_bone = self.slots[data.slot.index()].bone;
+            let bp = self.bones[slot_bone.index()].applied();
+            offset_rotation *= if bp.a * bp.d - bp.b * bp.c > 0.0 {
+                DEG_RAD
+            } else {
+                -DEG_RAD
+            };
+        }
+        let mut ip = 3;
+        for i in 0..bone_count {
+            let bi = data.bones[i].index();
+            bone::modify_world(&mut self.bones, bi, &f);
+            let length_setup = sd.bones[bi].length;
+            let bone = self.bones[bi].applied_mut();
             bone.world_x += (bone_x - bone.world_x) * mix_x;
             bone.world_y += (bone_y - bone.world_y) * mix_y;
-        }
-        let x = positions[p];
-        let y = positions[p + 1];
-        let dx = x - bone_x;
-        let dy = y - bone_y;
-
-        if scale_mode {
-            let length = lengths[i];
-            if length >= EPSILON {
-                let s = ((dx * dx + dy * dy).sqrt() / length - 1.0) * mix_rotate + 1.0;
-                let bone = &mut skeleton.bones[bone_id.index()];
-                bone.a *= s;
-                bone.c *= s;
-            }
-        }
-        bone_x = x;
-        bone_y = y;
-
-        if mix_rotate > 0.0 {
-            let (a, c) = {
-                let bone = &skeleton.bones[bone_id.index()];
-                (bone.a, bone.c)
-            };
-            let mut r = if tangents {
-                positions[p - 1]
-            } else if spaces[i + 1] < EPSILON {
-                positions[p + 2]
-            } else {
-                dy.atan2(dx)
-            };
-            r -= c.atan2(a);
-
-            if tip {
-                let cos = r.cos();
-                let sin = r.sin();
-                let bone_length = skeleton.data.bones[bone_id.index()].length;
-                bone_x += (bone_length * (cos * a - sin * c) - dx) * mix_rotate;
-                bone_y += (bone_length * (sin * a + cos * c) - dy) * mix_rotate;
-            } else {
-                r += offset_rotation_rad;
-            }
-
-            if r > std::f32::consts::PI {
-                r -= std::f32::consts::TAU;
-            } else if r < -std::f32::consts::PI {
-                r += std::f32::consts::TAU;
-            }
-            r *= mix_rotate;
-            let cos = r.cos();
-            let sin = r.sin();
-            let bone = &mut skeleton.bones[bone_id.index()];
-            let (ba, bb, bc, bd) = (bone.a, bone.b, bone.c, bone.d);
-            bone.a = cos * ba - sin * bc;
-            bone.b = cos * bb - sin * bd;
-            bone.c = sin * ba + cos * bc;
-            bone.d = sin * bb + cos * bd;
-        }
-
-        skeleton.update_applied_transform(bone_id);
-        p += 3;
-    }
-}
-
-/// Fill `spaces` (and `lengths` when `scale_mode` is true) per the
-/// configured [`SpacingMode`]. Ports the switch statement in
-/// `PathConstraint::update` that precedes the world-position compute.
-fn compute_spaces(
-    skeleton: &Skeleton,
-    bones: &[BoneId],
-    spacing: f32,
-    spacing_mode: SpacingMode,
-    scale_mode: bool,
-    spaces: &mut [f32],
-    lengths: &mut [f32],
-) {
-    let spaces_count = spaces.len();
-    match spacing_mode {
-        SpacingMode::Percent => {
-            if scale_mode {
-                for i in 0..spaces_count.saturating_sub(1) {
-                    let bone_id = bones[i];
-                    let setup_length = skeleton.data.bones[bone_id.index()].length;
-                    let bone = &skeleton.bones[bone_id.index()];
-                    let x = setup_length * bone.a;
-                    let y = setup_length * bone.c;
-                    lengths[i] = (x * x + y * y).sqrt();
+            let x = positions[ip];
+            let y = positions[ip + 1];
+            let dx = x - bone_x;
+            let dy = y - bone_y;
+            if scale {
+                let length = scratch.lengths[i];
+                if length >= EPSILON {
+                    let s = ((dx * dx + dy * dy).sqrt() / length - 1.0) * mix_rotate + 1.0;
+                    bone.a *= s;
+                    bone.c *= s;
                 }
             }
-            for space in spaces.iter_mut().skip(1) {
-                *space = spacing;
-            }
-        }
-        SpacingMode::Proportional => {
-            let mut sum = 0.0_f32;
-            let mut i = 0_usize;
-            let n = spaces_count.saturating_sub(1);
-            while i < n {
-                let bone_id = bones[i];
-                let setup_length = skeleton.data.bones[bone_id.index()].length;
-                if setup_length < EPSILON {
-                    if scale_mode {
-                        lengths[i] = 0.0;
-                    }
-                    i += 1;
-                    spaces[i] = spacing;
+            bone_x = x;
+            bone_y = y;
+            if mix_rotate > 0.0 {
+                let (a, b, c, d) = (bone.a, bone.b, bone.c, bone.d);
+                let mut r = if tangents {
+                    positions[ip - 1]
+                } else if scratch.spaces[i + 1] < EPSILON {
+                    positions[ip + 2]
                 } else {
-                    let bone = &skeleton.bones[bone_id.index()];
-                    let x = setup_length * bone.a;
-                    let y = setup_length * bone.c;
-                    let length = (x * x + y * y).sqrt();
-                    if scale_mode {
-                        lengths[i] = length;
-                    }
-                    i += 1;
-                    spaces[i] = length;
-                    sum += length;
-                }
-            }
-            if sum > 0.0 {
-                let mul = spaces_count as f32 / sum * spacing;
-                for space in spaces.iter_mut().skip(1) {
-                    *space *= mul;
-                }
-            }
-        }
-        SpacingMode::Length | SpacingMode::Fixed => {
-            let length_spacing = spacing_mode == SpacingMode::Length;
-            let mut i = 0_usize;
-            let n = spaces_count.saturating_sub(1);
-            while i < n {
-                let bone_id = bones[i];
-                let setup_length = skeleton.data.bones[bone_id.index()].length;
-                if setup_length < EPSILON {
-                    if scale_mode {
-                        lengths[i] = 0.0;
-                    }
-                    i += 1;
-                    spaces[i] = spacing;
+                    dy.atan2(dx)
+                };
+                r -= c.atan2(a);
+                if tip {
+                    let (cos, sin) = (r.cos(), r.sin());
+                    bone_x += (length_setup * (cos * a - sin * c) - dx) * mix_rotate;
+                    bone_y += (length_setup * (sin * a + cos * c) - dy) * mix_rotate;
                 } else {
-                    let bone = &skeleton.bones[bone_id.index()];
-                    let x = setup_length * bone.a;
-                    let y = setup_length * bone.c;
-                    let length = (x * x + y * y).sqrt();
-                    if scale_mode {
-                        lengths[i] = length;
-                    }
-                    i += 1;
-                    spaces[i] = (if length_spacing {
-                        setup_length + spacing
-                    } else {
-                        spacing
-                    }) * length
-                        / setup_length;
+                    r += offset_rotation;
                 }
+                if r > PI {
+                    r -= PI_2;
+                } else if r < -PI {
+                    r += PI_2;
+                }
+                r *= mix_rotate;
+                let (cos, sin) = (r.cos(), r.sin());
+                bone.a = cos * a - sin * c;
+                bone.b = cos * b - sin * d;
+                bone.c = sin * a + cos * c;
+                bone.d = sin * b + cos * d;
             }
+            ip += 3;
         }
-    }
-}
 
-/// `spine::PathConstraint::computeWorldPositions` — walks the path
-/// attachment's cubic-bezier curves and samples world positions at each
-/// of the `spaces_count` step offsets accumulated from `position`.
-/// Output layout: `[x0, y0, r0, x1, y1, r1, ...]` (3 floats per step,
-/// plus a preamble of `[x0, y0]`; matches spine-cpp's spacing).
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-fn compute_world_positions(
-    skeleton: &Skeleton,
-    path_attachment: crate::data::AttachmentId,
-    slot: crate::data::SlotId,
-    initial_position: f32,
-    position_mode: PositionMode,
-    spacing_mode: SpacingMode,
-    spaces_count: usize,
-    tangents: bool,
-    spaces: &[f32],
-) -> Vec<f32> {
-    let mut positions = vec![0.0_f32; spaces_count * 3 + 2];
-    let mut prev_curve: i32 = NONE;
-
-    let (closed, constant_speed, lengths) =
-        match &skeleton.data.attachments[path_attachment.index()] {
-            Attachment::Path(p) => (p.closed, p.constant_speed, p.lengths.clone()),
-            _ => return positions,
+        let Constraint::Path(c) = &mut self.constraints[id.index()] else {
+            unreachable!()
         };
-    let vertices_length = match &skeleton.data.attachments[path_attachment.index()] {
-        Attachment::Path(p) => p.vertex_data.world_vertices_length as usize,
-        _ => 0,
-    };
-    let mut curve_count = (vertices_length / 6) as i32;
-    let position = initial_position;
+        *c = scratch;
+    }
 
-    if !constant_speed {
-        curve_count -= if closed { 1 } else { 2 };
-        let path_length = lengths[curve_count as usize];
-        let mut position_local = position;
-        if position_mode == PositionMode::Percent {
-            position_local *= path_length;
+    /// `computeWorldPositions`: samples `spaces_count` positions along the
+    /// path into `scratch.positions` as `[x, y, rotation]` triples.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn compute_path_positions(
+        &self,
+        scratch: &mut PathConstraint,
+        path: &PathAttachment,
+        data: &PathConstraintData,
+        slot: SlotId,
+        mut position: f32,
+        spaces_count: usize,
+        tangents: bool,
+    ) {
+        let out = &mut scratch.positions;
+        out.clear();
+        out.resize(spaces_count * 3 + 2, 0.0);
+        let world = &mut scratch.world;
+        let spaces = &scratch.spaces;
+        let closed = path.closed;
+        let mut vertices_length = path.vertex_data.world_vertices_length as usize;
+        let mut curve_count = (vertices_length / 6) as i32;
+        let mut prev_curve = NONE;
+        let cwv = |start: usize, count: usize, world: &mut [f32], offset: usize| {
+            self.compute_world_vertices(&path.vertex_data, slot, start, count, world, offset, 2);
+        };
+
+        if !path.constant_speed {
+            let lengths = &path.lengths;
+            curve_count -= if closed { 1 } else { 2 };
+            let path_length = lengths[curve_count as usize];
+            if data.position_mode == PositionMode::Percent {
+                position *= path_length;
+            }
+            let multiplier = match data.spacing_mode {
+                SpacingMode::Percent => path_length,
+                SpacingMode::Proportional => path_length / spaces_count as f32,
+                _ => 1.0,
+            };
+            world.clear();
+            world.resize(8, 0.0);
+            let mut curve = 0i32;
+            let mut o = 0;
+            for i in 0..spaces_count {
+                let space = spaces[i] * multiplier;
+                position += space;
+                let mut p = position;
+                if closed {
+                    p %= path_length;
+                    if p < 0.0 {
+                        p += path_length;
+                    }
+                    curve = 0;
+                } else if p < 0.0 {
+                    if prev_curve != BEFORE {
+                        prev_curve = BEFORE;
+                        cwv(2, 4, world, 0);
+                    }
+                    add_before_position(p, world, 0, out, o);
+                    o += 3;
+                    continue;
+                } else if p > path_length {
+                    if prev_curve != AFTER {
+                        prev_curve = AFTER;
+                        cwv(vertices_length - 6, 4, world, 0);
+                    }
+                    add_after_position(p - path_length, world, 0, out, o);
+                    o += 3;
+                    continue;
+                }
+                loop {
+                    let length = lengths[curve as usize];
+                    if p > length {
+                        curve += 1;
+                        continue;
+                    }
+                    if curve == 0 {
+                        p /= length;
+                    } else {
+                        let prev = lengths[(curve - 1) as usize];
+                        p = (p - prev) / (length - prev);
+                    }
+                    break;
+                }
+                if curve != prev_curve {
+                    prev_curve = curve;
+                    if closed && curve == curve_count {
+                        cwv(vertices_length - 4, 4, world, 0);
+                        cwv(0, 4, world, 4);
+                    } else {
+                        cwv((curve * 6 + 2) as usize, 8, world, 0);
+                    }
+                }
+                add_curve_position(
+                    p,
+                    world[0],
+                    world[1],
+                    world[2],
+                    world[3],
+                    world[4],
+                    world[5],
+                    world[6],
+                    world[7],
+                    out,
+                    o,
+                    tangents || (i > 0 && space < EPSILON),
+                );
+                o += 3;
+            }
+            return;
         }
-        let multiplier = match spacing_mode {
+
+        // Constant speed.
+        if closed {
+            vertices_length += 2;
+            world.clear();
+            world.resize(vertices_length, 0.0);
+            cwv(2, vertices_length - 4, world, 0);
+            cwv(0, 2, world, vertices_length - 4);
+            world[vertices_length - 2] = world[0];
+            world[vertices_length - 1] = world[1];
+        } else {
+            curve_count -= 1;
+            vertices_length -= 4;
+            world.clear();
+            world.resize(vertices_length, 0.0);
+            cwv(2, vertices_length, world, 0);
+        }
+
+        let curves = &mut scratch.curves;
+        curves.clear();
+        curves.resize(curve_count.max(0) as usize, 0.0);
+        let mut path_length = 0.0;
+        let mut x1 = world[0];
+        let mut y1 = world[1];
+        let (mut cx1, mut cy1, mut cx2, mut cy2, mut x2, mut y2) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let mut w = 2;
+        for i in 0..curve_count.max(0) as usize {
+            cx1 = world[w];
+            cy1 = world[w + 1];
+            cx2 = world[w + 2];
+            cy2 = world[w + 3];
+            x2 = world[w + 4];
+            y2 = world[w + 5];
+            let tmpx = (x1 - cx1 * 2.0 + cx2) * 0.1875;
+            let tmpy = (y1 - cy1 * 2.0 + cy2) * 0.1875;
+            let dddfx = ((cx1 - cx2) * 3.0 - x1 + x2) * 0.093_75;
+            let dddfy = ((cy1 - cy2) * 3.0 - y1 + y2) * 0.093_75;
+            let mut ddfx = tmpx * 2.0 + dddfx;
+            let mut ddfy = tmpy * 2.0 + dddfy;
+            let mut dfx = (cx1 - x1) * 0.75 + tmpx + dddfx * 0.166_666_67;
+            let mut dfy = (cy1 - y1) * 0.75 + tmpy + dddfy * 0.166_666_67;
+            path_length += (dfx * dfx + dfy * dfy).sqrt();
+            dfx += ddfx;
+            dfy += ddfy;
+            ddfx += dddfx;
+            ddfy += dddfy;
+            path_length += (dfx * dfx + dfy * dfy).sqrt();
+            dfx += ddfx;
+            dfy += ddfy;
+            path_length += (dfx * dfx + dfy * dfy).sqrt();
+            dfx += ddfx + dddfx;
+            dfy += ddfy + dddfy;
+            path_length += (dfx * dfx + dfy * dfy).sqrt();
+            curves[i] = path_length;
+            x1 = x2;
+            y1 = y2;
+            w += 6;
+        }
+
+        if data.position_mode == PositionMode::Percent {
+            position *= path_length;
+        }
+        let multiplier = match data.spacing_mode {
             SpacingMode::Percent => path_length,
             SpacingMode::Proportional => path_length / spaces_count as f32,
             _ => 1.0,
         };
-        let mut world = vec![0.0_f32; 8];
-        let mut curve = 0_i32;
-        let mut o = 0_usize;
+
+        let segments = &mut scratch.segments;
+        let mut curve_length = 0.0;
+        let mut curve = 0i32;
+        let mut segment = 0usize;
+        let mut o = 0;
         for i in 0..spaces_count {
             let space = spaces[i] * multiplier;
-            position_local += space;
-            let mut p = position_local;
+            position += space;
+            let mut p = position;
             if closed {
                 p %= path_length;
                 if p < 0.0 {
                     p += path_length;
                 }
                 curve = 0;
+                segment = 0;
             } else if p < 0.0 {
-                if prev_curve != BEFORE {
-                    prev_curve = BEFORE;
-                    compute_world_vertices(skeleton, path_attachment, slot, 2, 4, &mut world, 0);
-                }
-                add_before_position(p, &world, 0, &mut positions, o);
+                add_before_position(p, world, 0, out, o);
                 o += 3;
                 continue;
             } else if p > path_length {
-                if prev_curve != AFTER {
-                    prev_curve = AFTER;
-                    compute_world_vertices(
-                        skeleton,
-                        path_attachment,
-                        slot,
-                        vertices_length - 6,
-                        4,
-                        &mut world,
-                        0,
-                    );
-                }
-                add_after_position(p - path_length, &world, 0, &mut positions, o);
+                add_after_position(p - path_length, world, vertices_length - 4, out, o);
                 o += 3;
                 continue;
             }
-
             loop {
-                let length = lengths[curve as usize];
+                let length = curves[curve as usize];
                 if p > length {
                     curve += 1;
                     continue;
@@ -409,316 +531,82 @@ fn compute_world_positions(
                 if curve == 0 {
                     p /= length;
                 } else {
-                    let prev = lengths[(curve - 1) as usize];
+                    let prev = curves[(curve - 1) as usize];
                     p = (p - prev) / (length - prev);
                 }
                 break;
             }
-
             if curve != prev_curve {
                 prev_curve = curve;
-                if closed && curve == curve_count {
-                    compute_world_vertices(
-                        skeleton,
-                        path_attachment,
-                        slot,
-                        vertices_length - 4,
-                        4,
-                        &mut world,
-                        0,
-                    );
-                    compute_world_vertices(skeleton, path_attachment, slot, 0, 4, &mut world, 4);
-                } else {
-                    compute_world_vertices(
-                        skeleton,
-                        path_attachment,
-                        slot,
-                        (curve * 6 + 2) as usize,
-                        8,
-                        &mut world,
-                        0,
-                    );
+                let ii = (curve * 6) as usize;
+                x1 = world[ii];
+                y1 = world[ii + 1];
+                cx1 = world[ii + 2];
+                cy1 = world[ii + 3];
+                cx2 = world[ii + 4];
+                cy2 = world[ii + 5];
+                x2 = world[ii + 6];
+                y2 = world[ii + 7];
+                let tmpx = (x1 - cx1 * 2.0 + cx2) * 0.03;
+                let tmpy = (y1 - cy1 * 2.0 + cy2) * 0.03;
+                let dddfx = ((cx1 - cx2) * 3.0 - x1 + x2) * 0.006;
+                let dddfy = ((cy1 - cy2) * 3.0 - y1 + y2) * 0.006;
+                let mut ddfx = tmpx * 2.0 + dddfx;
+                let mut ddfy = tmpy * 2.0 + dddfy;
+                let mut dfx = (cx1 - x1) * 0.3 + tmpx + dddfx * 0.166_666_67;
+                let mut dfy = (cy1 - y1) * 0.3 + tmpy + dddfy * 0.166_666_67;
+                curve_length = (dfx * dfx + dfy * dfy).sqrt();
+                segments[0] = curve_length;
+                for s in segments.iter_mut().take(8).skip(1) {
+                    dfx += ddfx;
+                    dfy += ddfy;
+                    ddfx += dddfx;
+                    ddfy += dddfy;
+                    curve_length += (dfx * dfx + dfy * dfy).sqrt();
+                    *s = curve_length;
                 }
+                dfx += ddfx;
+                dfy += ddfy;
+                curve_length += (dfx * dfx + dfy * dfy).sqrt();
+                segments[8] = curve_length;
+                dfx += ddfx + dddfx;
+                dfy += ddfy + dddfy;
+                curve_length += (dfx * dfx + dfy * dfy).sqrt();
+                segments[9] = curve_length;
+                segment = 0;
             }
-
+            p *= curve_length;
+            loop {
+                let length = segments[segment];
+                if p > length {
+                    segment += 1;
+                    continue;
+                }
+                if segment == 0 {
+                    p /= length;
+                } else {
+                    let prev = segments[segment - 1];
+                    p = segment as f32 + (p - prev) / (length - prev);
+                }
+                break;
+            }
             add_curve_position(
-                p,
-                world[0],
-                world[1],
-                world[2],
-                world[3],
-                world[4],
-                world[5],
-                world[6],
-                world[7],
-                &mut positions,
+                p * 0.1,
+                x1,
+                y1,
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                x2,
+                y2,
+                out,
                 o,
                 tangents || (i > 0 && space < EPSILON),
             );
             o += 3;
         }
-        return positions;
     }
-
-    // Constant-speed branch: precompute per-curve arc length first.
-    let (world, curve_lengths, path_length) = precompute_curves(
-        skeleton,
-        path_attachment,
-        slot,
-        closed,
-        vertices_length,
-        curve_count,
-    );
-    let mut position_local = position;
-    if position_mode == PositionMode::Percent {
-        position_local *= path_length;
-    }
-    let multiplier = match spacing_mode {
-        SpacingMode::Percent => path_length,
-        SpacingMode::Proportional => path_length / spaces_count as f32,
-        _ => 1.0,
-    };
-
-    let mut segments = [0.0_f32; 10];
-    let mut curve = 0_i32;
-    let mut segment = 0_usize;
-    let mut curve_length = 0.0_f32;
-    let mut x1 = 0.0_f32;
-    let mut y1 = 0.0_f32;
-    let mut cx1 = 0.0_f32;
-    let mut cy1 = 0.0_f32;
-    let mut cx2 = 0.0_f32;
-    let mut cy2 = 0.0_f32;
-    let mut x2 = 0.0_f32;
-    let mut y2 = 0.0_f32;
-    let mut o = 0_usize;
-    let verts_total = world.len();
-    for i in 0..spaces_count {
-        let space = spaces[i] * multiplier;
-        position_local += space;
-        let mut p = position_local;
-
-        if closed {
-            p %= path_length;
-            if p < 0.0 {
-                p += path_length;
-            }
-            curve = 0;
-        } else if p < 0.0 {
-            add_before_position(p, &world, 0, &mut positions, o);
-            o += 3;
-            continue;
-        } else if p > path_length {
-            add_after_position(p - path_length, &world, verts_total - 4, &mut positions, o);
-            o += 3;
-            continue;
-        }
-
-        loop {
-            let length = curve_lengths[curve as usize];
-            if p > length {
-                curve += 1;
-                continue;
-            }
-            if curve == 0 {
-                p /= length;
-            } else {
-                let prev = curve_lengths[(curve - 1) as usize];
-                p = (p - prev) / (length - prev);
-            }
-            break;
-        }
-
-        if curve != prev_curve {
-            prev_curve = curve;
-            let ii = (curve * 6) as usize;
-            x1 = world[ii];
-            y1 = world[ii + 1];
-            cx1 = world[ii + 2];
-            cy1 = world[ii + 3];
-            cx2 = world[ii + 4];
-            cy2 = world[ii + 5];
-            x2 = world[ii + 6];
-            y2 = world[ii + 7];
-            let tmpx = (x1 - cx1 * 2.0 + cx2) * 0.03;
-            let tmpy = (y1 - cy1 * 2.0 + cy2) * 0.03;
-            let dddfx = ((cx1 - cx2) * 3.0 - x1 + x2) * 0.006;
-            let dddfy = ((cy1 - cy2) * 3.0 - y1 + y2) * 0.006;
-            let mut ddfx = tmpx * 2.0 + dddfx;
-            let mut ddfy = tmpy * 2.0 + dddfy;
-            let mut dfx = (cx1 - x1) * 0.3 + tmpx + dddfx * 0.166_666_67;
-            let mut dfy = (cy1 - y1) * 0.3 + tmpy + dddfy * 0.166_666_67;
-            curve_length = (dfx * dfx + dfy * dfy).sqrt();
-            segments[0] = curve_length;
-            for ii_i in 1..8_usize {
-                dfx += ddfx;
-                dfy += ddfy;
-                ddfx += dddfx;
-                ddfy += dddfy;
-                curve_length += (dfx * dfx + dfy * dfy).sqrt();
-                segments[ii_i] = curve_length;
-            }
-            dfx += ddfx;
-            dfy += ddfy;
-            curve_length += (dfx * dfx + dfy * dfy).sqrt();
-            segments[8] = curve_length;
-            dfx += ddfx + dddfx;
-            dfy += ddfy + dddfy;
-            curve_length += (dfx * dfx + dfy * dfy).sqrt();
-            segments[9] = curve_length;
-            segment = 0;
-        }
-
-        // Weight by segment length.
-        p *= curve_length;
-        loop {
-            let length = segments[segment];
-            if p > length {
-                segment += 1;
-                continue;
-            }
-            if segment == 0 {
-                p /= length;
-            } else {
-                let prev = segments[segment - 1];
-                p = segment as f32 + (p - prev) / (length - prev);
-            }
-            break;
-        }
-        add_curve_position(
-            p * 0.1,
-            x1,
-            y1,
-            cx1,
-            cy1,
-            cx2,
-            cy2,
-            x2,
-            y2,
-            &mut positions,
-            o,
-            tangents || (i > 0 && space < EPSILON),
-        );
-        o += 3;
-    }
-    positions
-}
-
-/// Precompute world vertex positions + per-curve arc lengths for the
-/// constant-speed branch. Returns `(world, curve_lengths, path_length)`.
-fn precompute_curves(
-    skeleton: &Skeleton,
-    path_attachment: crate::data::AttachmentId,
-    slot: crate::data::SlotId,
-    closed: bool,
-    vertices_length: usize,
-    mut curve_count: i32,
-) -> (Vec<f32>, Vec<f32>, f32) {
-    let mut world;
-    let effective_length;
-    if closed {
-        effective_length = vertices_length + 2;
-        world = vec![0.0_f32; effective_length];
-        compute_world_vertices(
-            skeleton,
-            path_attachment,
-            slot,
-            2,
-            effective_length - 4,
-            &mut world,
-            0,
-        );
-        compute_world_vertices(
-            skeleton,
-            path_attachment,
-            slot,
-            0,
-            2,
-            &mut world,
-            effective_length - 4,
-        );
-        world[effective_length - 2] = world[0];
-        world[effective_length - 1] = world[1];
-    } else {
-        curve_count -= 1;
-        effective_length = vertices_length - 4;
-        world = vec![0.0_f32; effective_length];
-        compute_world_vertices(
-            skeleton,
-            path_attachment,
-            slot,
-            2,
-            effective_length,
-            &mut world,
-            0,
-        );
-    }
-
-    let mut curve_lengths = vec![0.0_f32; curve_count.max(0) as usize];
-    let mut path_length = 0.0_f32;
-    let mut x1 = world[0];
-    let mut y1 = world[1];
-    let mut w = 2;
-    for i in 0..curve_count as usize {
-        let cx1 = world[w];
-        let cy1 = world[w + 1];
-        let cx2 = world[w + 2];
-        let cy2 = world[w + 3];
-        let x2 = world[w + 4];
-        let y2 = world[w + 5];
-        let tmpx = (x1 - cx1 * 2.0 + cx2) * 0.1875;
-        let tmpy = (y1 - cy1 * 2.0 + cy2) * 0.1875;
-        let dddfx = ((cx1 - cx2) * 3.0 - x1 + x2) * 0.093_75;
-        let dddfy = ((cy1 - cy2) * 3.0 - y1 + y2) * 0.093_75;
-        let mut ddfx = tmpx * 2.0 + dddfx;
-        let mut ddfy = tmpy * 2.0 + dddfy;
-        let mut dfx = (cx1 - x1) * 0.75 + tmpx + dddfx * 0.166_666_67;
-        let mut dfy = (cy1 - y1) * 0.75 + tmpy + dddfy * 0.166_666_67;
-        path_length += (dfx * dfx + dfy * dfy).sqrt();
-        dfx += ddfx;
-        dfy += ddfy;
-        ddfx += dddfx;
-        ddfy += dddfy;
-        path_length += (dfx * dfx + dfy * dfy).sqrt();
-        dfx += ddfx;
-        dfy += ddfy;
-        path_length += (dfx * dfx + dfy * dfy).sqrt();
-        dfx += ddfx + dddfx;
-        dfy += ddfy + dddfy;
-        path_length += (dfx * dfx + dfy * dfy).sqrt();
-        curve_lengths[i] = path_length;
-        x1 = x2;
-        y1 = y2;
-        w += 6;
-    }
-    (world, curve_lengths, path_length)
-}
-
-/// Thin wrapper that pulls the path attachment's `VertexData` out of
-/// `skeleton.data.attachments[…]` and delegates to the shared
-/// `Skeleton::compute_world_vertices` helper (Phase 6a). Path solvers
-/// always want stride = 2.
-fn compute_world_vertices(
-    skeleton: &Skeleton,
-    path_attachment: crate::data::AttachmentId,
-    slot_id: crate::data::SlotId,
-    start: usize,
-    count: usize,
-    world_vertices: &mut [f32],
-    offset: usize,
-) {
-    let Attachment::Path(p) = &skeleton.data.attachments[path_attachment.index()] else {
-        return;
-    };
-    skeleton.compute_world_vertices(
-        &p.vertex_data,
-        slot_id,
-        start,
-        count,
-        world_vertices,
-        offset,
-        2,
-    );
 }
 
 fn add_before_position(p: f32, temp: &[f32], i: usize, output: &mut [f32], o: usize) {

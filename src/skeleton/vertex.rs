@@ -62,12 +62,12 @@ impl Skeleton {
         let end = offset + (count >> 1) * stride;
         let bones = &vertex_data.bones;
         let vertices = &vertex_data.vertices;
-        let deform = &self.slots[slot_id.index()].deform;
+        let deform = &self.slots[slot_id.index()].applied().deform;
 
         if bones.is_empty() {
             let verts: &[f32] = if deform.is_empty() { vertices } else { deform };
             let slot_bone = self.data.slots[slot_id.index()].bone;
-            let b = &self.bones[slot_bone.index()];
+            let b = self.bones[slot_bone.index()].applied();
             let (x, y, a, bb, c, d) = (b.world_x, b.world_y, b.a, b.b, b.c, b.d);
             let mut vv = start;
             let mut w = offset;
@@ -105,7 +105,7 @@ impl Skeleton {
                 let n_end = v + n_here;
                 while v < n_end {
                     let bone_index = bones[v] as usize;
-                    let bone = &self.bones[bone_index];
+                    let bone = self.bones[bone_index].applied();
                     let vx = vertices[b_idx];
                     let vy = vertices[b_idx + 1];
                     let weight = vertices[b_idx + 2];
@@ -130,7 +130,7 @@ impl Skeleton {
                 let n_end = v + n_here;
                 while v < n_end {
                     let bone_index = bones[v] as usize;
-                    let bone = &self.bones[bone_index];
+                    let bone = self.bones[bone_index].applied();
                     let vx = vertices[b_idx] + deform[f];
                     let vy = vertices[b_idx + 1] + deform[f + 1];
                     let weight = vertices[b_idx + 2];

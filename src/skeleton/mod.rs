@@ -32,26 +32,29 @@
 //! state every `Skeleton` needs to animate and be rendered.
 
 pub mod bone;
+#[cfg(any())] // 4.3-port-gate
 pub mod bounds;
 pub mod constraint;
 pub mod ik;
 pub mod path;
 pub mod physics;
-// 1:1 port parity with `spine-cpp/src/spine/Skeleton.cpp`. The inner module
-// name matches the file it came from; the inception is intentional.
+pub mod pose;
 #[allow(clippy::module_inception)]
 pub mod skeleton;
+pub mod slider;
 pub mod slot;
 pub mod transform;
 pub mod update_cache;
 pub mod vertex;
 
-pub use bone::Bone;
-pub use bounds::{BoundsPolygon, SkeletonBounds};
-pub use constraint::{IkConstraint, PathConstraint, PhysicsConstraint, TransformConstraint};
+pub use bone::{Bone, BonePose};
+pub use constraint::{
+    Constraint, IkConstraint, PathConstraint, PhysicsConstraint, Slider, TransformConstraint,
+};
+pub use pose::{Pose, Posed};
 pub use skeleton::{Skeleton, SkinNotFound};
-pub use slot::Slot;
-pub use update_cache::UpdateCacheEntry;
+pub use slot::{DrawOrder, Slot, SlotPose};
+pub use update_cache::{ResetEntry, UpdateCacheEntry};
 
 /// Controls how physics constraints behave on this `update_world_transform`
 /// pass. Ported verbatim from `spine-cpp/include/spine/Physics.h`.

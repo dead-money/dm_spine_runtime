@@ -25,28 +25,22 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Unified update order for `Skeleton::update_world_transform`.
-//!
-//! `spine-cpp` stores update-cache entries as a `Vector<Updatable *>` where
-//! `Updatable` is a polymorphic base class. Our tagged-enum equivalent keeps
-//! dispatch cache-friendly and matches the "no `Box<dyn ...>` in hot paths"
-//! invariant from `CLAUDE.md`.
+//! Update and reset cache entries built by `Skeleton::update_cache`.
 
-use crate::data::{
-    BoneId, IkConstraintId, PathConstraintId, PhysicsConstraintId, TransformConstraintId,
-};
+use crate::data::{BoneId, ConstraintId, SlotId};
 
-/// One entry in the per-skeleton update order.
-///
-/// Built by `Skeleton::update_cache` and consumed by
-/// `Skeleton::update_world_transform`. Ordering reflects the
-/// constraint dependency graph: a bone appears after every constraint it
-/// depends on and before every constraint that reads it.
+/// One step of `Skeleton::update_world_transform`, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateCacheEntry {
+    /// Compute the bone's applied world transform.
     Bone(BoneId),
-    IkConstraint(IkConstraintId),
-    TransformConstraint(TransformConstraintId),
-    PathConstraint(PathConstraintId),
-    PhysicsConstraint(PhysicsConstraintId),
+    Constraint(ConstraintId),
+}
+
+/// An object whose constrained pose is copied from its pose each frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetEntry {
+    Bone(BoneId),
+    Slot(SlotId),
+    Constraint(ConstraintId),
 }

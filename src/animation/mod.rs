@@ -55,6 +55,18 @@ pub use state_data::{AnimationStateData, MixAnimationNotFound};
 
 use crate::data::EventId;
 
+/// Applies a slider's animation to the applied pose.
+// 4.3-port-gate: replaced by the timeline port.
+pub(crate) fn apply_slider_animation(
+    _skeleton: &mut crate::skeleton::Skeleton,
+    _animation: crate::data::AnimationId,
+    _time: f32,
+    _looping: bool,
+    _mix: f32,
+    _additive: bool,
+) {
+}
+
 /// Runtime event firing — one per animation frame that tripped since the
 /// previous `apply` call. Carries a copy of the frame's int/float/string
 /// values so downstream consumers can read them without chasing back to

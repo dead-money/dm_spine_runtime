@@ -25,339 +25,294 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Physics constraint simulator. Port of
-//! `spine-cpp/src/spine/PhysicsConstraint.cpp`.
-//!
-//! Damped-spring simulator with fixed-timestep integration. Per
-//! constrained bone, drives a spring between the bone's anchor world
-//! position and the "rest" target carried by the constraint's
-//! offsets/velocities. Wind/gravity/inertia constants are encoded in
-//! the data; `physics` (the Physics enum passed through apply)
-//! selects whether the sim steps, resets, or just applies the current
-//! pose.
+//! Physics constraint (`PhysicsConstraint.cpp`): a damped spring on a
+//! fixed timestep, applied to one bone's world transform.
 
-#![allow(clippy::many_single_char_names)]
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
-use crate::skeleton::{Physics, Skeleton};
+use crate::data::{ConstraintId, PhysicsConstraintData, ScaleYMode};
+use crate::math::util::{INV_PI_2, PI_2};
+use crate::skeleton::bone;
+use crate::skeleton::constraint::Constraint;
+use crate::skeleton::{Physics, Skeleton, UpdateCacheEntry};
 
-/// Run the Physics constraint at `constraint_idx`. Ports
-/// `spine::PhysicsConstraint::update`. No-op if the constraint is
-/// inactive or has zero mix.
-#[allow(clippy::too_many_lines)]
-pub(crate) fn solve_physics_constraint(
-    skeleton: &mut Skeleton,
-    constraint_idx: usize,
-    physics: Physics,
-) {
-    let (mix, data_idx, bone_id, active) = {
-        let c = &skeleton.physics_constraints[constraint_idx];
-        (c.mix, c.data_index, c.bone, c.active)
-    };
-    if !active || mix == 0.0 {
-        return;
+impl Skeleton {
+    pub(crate) fn sort_physics(&mut self, id: ConstraintId, data: &PhysicsConstraintData) {
+        let b = data.bone;
+        self.sort_bone(b);
+        self.update_cache.push(UpdateCacheEntry::Constraint(id));
+        self.sort_reset(b);
+        self.constrain_bone(b);
     }
 
-    let (d_x, d_y, d_rotate, d_shear_x, d_scale_x, d_limit, d_step, _d_strength) = {
-        let d = &skeleton.data.physics_constraints[data_idx.index()];
-        (
-            d.x, d.y, d.rotate, d.shear_x, d.scale_x, d.limit, d.step, d.strength,
-        )
-    };
-
-    let x_active = d_x > 0.0;
-    let y_active = d_y > 0.0;
-    let rotate_or_shear_x = d_rotate > 0.0 || d_shear_x > 0.0;
-    let scale_x_active = d_scale_x > 0.0;
-
-    let bone_length = skeleton.data.bones[bone_id.index()].length;
-    let reference_scale = skeleton.data.reference_scale;
-    let sk_time = skeleton.time;
-    let sk_scale_x = skeleton.scale_x;
-    let sk_scale_y = skeleton.scale_y;
-
-    let mut remaining = skeleton.physics_constraints[constraint_idx].remaining;
-    let mut last_time = skeleton.physics_constraints[constraint_idx].last_time;
-
-    match physics {
-        Physics::None => return,
-        Physics::Pose => {
-            let c = &mut skeleton.physics_constraints[constraint_idx];
-            let bone = &mut skeleton.bones[bone_id.index()];
-            if x_active {
-                bone.world_x += c.x_offset * mix * d_x;
-            }
-            if y_active {
-                bone.world_y += c.y_offset * mix * d_y;
-            }
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn update_physics(
+        &mut self,
+        id: ConstraintId,
+        data: &PhysicsConstraintData,
+        physics: Physics,
+    ) {
+        let bi = data.bone.index();
+        let l = self.data.bones[bi].length;
+        let reference_scale = self.data.reference_scale;
+        let f = self.frame();
+        let (time, wind_x, wind_y, gravity_x, gravity_y) = (
+            self.time,
+            self.wind_x,
+            self.wind_y,
+            self.gravity_x,
+            self.gravity_y,
+        );
+        let Constraint::Physics(c) = &mut self.constraints[id.index()] else {
+            unreachable!()
+        };
+        let p = *c.posed.applied();
+        let mix = p.mix;
+        if mix == 0.0 {
+            return;
         }
-        Physics::Reset | Physics::Update => {
-            // Reset branch: zero the sim then fall through to Update.
-            if physics == Physics::Reset {
-                let c = &mut skeleton.physics_constraints[constraint_idx];
-                c.remaining = 0.0;
-                c.last_time = sk_time;
-                c.reset = true;
-                c.x_offset = 0.0;
-                c.x_velocity = 0.0;
-                c.y_offset = 0.0;
-                c.y_velocity = 0.0;
-                c.rotate_offset = 0.0;
-                c.rotate_velocity = 0.0;
-                c.scale_offset = 0.0;
-                c.scale_velocity = 0.0;
-                remaining = 0.0;
-                last_time = sk_time;
-            }
-            let delta = (sk_time - last_time).max(0.0);
-            remaining += delta;
-            {
-                let c = &mut skeleton.physics_constraints[constraint_idx];
-                c.last_time = sk_time;
-                c.remaining = remaining;
-            }
+        let x = data.x > 0.0;
+        let y = data.y > 0.0;
+        let rotate_or_shear_x = data.rotate > 0.0 || data.shear_x > 0.0;
+        let scale_x = data.scale_x > 0.0;
+        let t = data.step;
+        let mut z = 0.0;
+        if physics == Physics::None {
+            return;
+        }
+        bone::modify_world(&mut self.bones, bi, &f);
+        let bone = self.bones[bi].applied_mut();
 
-            let (bx, by) = {
-                let b = &skeleton.bones[bone_id.index()];
-                (b.world_x, b.world_y)
-            };
-
-            let need_reset = skeleton.physics_constraints[constraint_idx].reset;
-            if need_reset {
-                let c = &mut skeleton.physics_constraints[constraint_idx];
-                c.reset = false;
-                c.ux = bx;
-                c.uy = by;
-            } else {
-                let mut a = remaining;
-                let i_inertia = skeleton.physics_constraints[constraint_idx].inertia;
-                let t_step = d_step;
-                let f = reference_scale;
-                let qx = d_limit * delta;
-                let qy = qx * sk_scale_y.abs();
-                let qx_effective = qx * sk_scale_x.abs();
-
-                // Translation integration.
-                if x_active || y_active {
-                    if x_active {
-                        let c = &mut skeleton.physics_constraints[constraint_idx];
-                        let u = (c.ux - bx) * i_inertia;
-                        let clamped = if u > qx_effective {
-                            qx_effective
-                        } else if u < -qx_effective {
-                            -qx_effective
-                        } else {
-                            u
-                        };
-                        c.x_offset += clamped;
-                        c.ux = bx;
-                    }
-                    if y_active {
-                        let c = &mut skeleton.physics_constraints[constraint_idx];
-                        let u = (c.uy - by) * i_inertia;
-                        let clamped = if u > qy {
-                            qy
-                        } else if u < -qy {
-                            -qy
-                        } else {
-                            u
-                        };
-                        c.y_offset += clamped;
-                        c.uy = by;
-                    }
-                    if a >= t_step {
-                        let c_snap = &skeleton.physics_constraints[constraint_idx];
-                        let damping_base = c_snap.damping;
-                        let mass = c_snap.mass_inverse;
-                        let strength = c_snap.strength;
-                        let wind = c_snap.wind;
-                        let gravity = c_snap.gravity;
-                        let d_pow = damping_base.powf(60.0 * t_step);
-                        let m = mass * t_step;
-                        let e = strength;
-                        let w = wind * f * sk_scale_x;
-                        let g = gravity * f * sk_scale_y;
-                        while a >= t_step {
-                            let c = &mut skeleton.physics_constraints[constraint_idx];
-                            if x_active {
-                                c.x_velocity += (w - c.x_offset * e) * m;
-                                c.x_offset += c.x_velocity * t_step;
-                                c.x_velocity *= d_pow;
-                            }
-                            if y_active {
-                                c.y_velocity -= (g + c.y_offset * e) * m;
-                                c.y_offset += c.y_velocity * t_step;
-                                c.y_velocity *= d_pow;
-                            }
-                            a -= t_step;
-                        }
-                    }
-                    if x_active {
-                        let x_off = skeleton.physics_constraints[constraint_idx].x_offset;
-                        skeleton.bones[bone_id.index()].world_x += x_off * mix * d_x;
-                    }
-                    if y_active {
-                        let y_off = skeleton.physics_constraints[constraint_idx].y_offset;
-                        skeleton.bones[bone_id.index()].world_y += y_off * mix * d_y;
-                    }
+        match physics {
+            Physics::Reset | Physics::Update => {
+                if physics == Physics::Reset {
+                    c.reset(time);
                 }
-
-                // Rotation/shear/scale integration.
-                if rotate_or_shear_x || scale_x_active {
-                    let (ba, bc) = {
-                        let b = &skeleton.bones[bone_id.index()];
-                        (b.a, b.c)
-                    };
-                    let ca = bc.atan2(ba);
-                    let (cx, cy, tx, ty) = {
-                        let c = &skeleton.physics_constraints[constraint_idx];
-                        (c.cx, c.cy, c.tx, c.ty)
-                    };
-                    let bx_now = skeleton.bones[bone_id.index()].world_x;
-                    let by_now = skeleton.bones[bone_id.index()].world_y;
-                    let mut dx = cx - bx_now;
-                    let mut dy = cy - by_now;
-                    if dx > qx_effective {
-                        dx = qx_effective;
-                    } else if dx < -qx_effective {
-                        dx = -qx_effective;
-                    }
-                    if dy > qy {
-                        dy = qy;
-                    } else if dy < -qy {
-                        dy = -qy;
-                    }
-
-                    let mut cos;
-                    let mut sin;
-                    let mut mr = 0.0_f32;
-                    if rotate_or_shear_x {
-                        mr = (d_rotate + d_shear_x) * mix;
-                        let c = &mut skeleton.physics_constraints[constraint_idx];
-                        let mut r = (dy + ty).atan2(dx + tx) - ca - c.rotate_offset * mr;
-                        let two_pi = std::f32::consts::TAU;
-                        let inv_2pi = 1.0 / two_pi;
-                        // spine-cpp: `r - ceil(r * InvPi_2 - 0.5) * Pi_2`.
-                        c.rotate_offset += (r - (r * inv_2pi - 0.5).ceil() * two_pi) * i_inertia;
-                        r = c.rotate_offset * mr + ca;
-                        cos = r.cos();
-                        sin = r.sin();
-                        if scale_x_active {
-                            let world_scale_x = (ba * ba + bc * bc).sqrt();
-                            let r_scale = bone_length * world_scale_x;
-                            if r_scale > 0.0 {
-                                c.scale_offset += (dx * cos + dy * sin) * i_inertia / r_scale;
-                            }
+                let delta = (time - c.last_time).max(0.0);
+                let aa = c.remaining;
+                c.remaining += delta;
+                c.last_time = time;
+                let (bx, by) = (bone.world_x, bone.world_y);
+                if c.reset {
+                    c.reset = false;
+                    c.ux = bx;
+                    c.uy = by;
+                } else {
+                    let mut a = c.remaining;
+                    let i = p.inertia;
+                    let fs = reference_scale;
+                    let mut d = -1.0;
+                    let mut m = 0.0;
+                    let mut e = 0.0;
+                    let mut qx = data.limit * delta;
+                    let qy = qx * f.scale_y.abs();
+                    qx *= f.scale_x.abs();
+                    if x || y {
+                        if x {
+                            let u = (c.ux - bx) * i;
+                            c.x_offset += if u > qx {
+                                qx
+                            } else if u < -qx {
+                                -qx
+                            } else {
+                                u
+                            };
+                            c.ux = bx;
                         }
-                    } else {
-                        cos = ca.cos();
-                        sin = ca.sin();
-                        let world_scale_x = (ba * ba + bc * bc).sqrt();
-                        let r_scale = bone_length * world_scale_x;
-                        if r_scale > 0.0 {
-                            let c = &mut skeleton.physics_constraints[constraint_idx];
-                            c.scale_offset += (dx * cos + dy * sin) * i_inertia / r_scale;
+                        if y {
+                            let u = (c.uy - by) * i;
+                            c.y_offset += if u > qy {
+                                qy
+                            } else if u < -qy {
+                                -qy
+                            } else {
+                                u
+                            };
+                            c.uy = by;
                         }
-                    }
-
-                    a = remaining;
-                    if a >= t_step {
-                        let c_snap = &skeleton.physics_constraints[constraint_idx];
-                        let m = c_snap.mass_inverse * t_step;
-                        let e = c_snap.strength;
-                        let w = c_snap.wind;
-                        let g_base = c_snap.gravity;
-                        let damping_base = c_snap.damping;
-                        // spine-cpp applies a y_down sign flip to gravity here
-                        // (`Bone::yDown ? -1 : 1`); we default to y-up (false).
-                        let g = g_base;
-                        let h = if f == 0.0 { 0.0 } else { bone_length / f };
-                        let d_pow = damping_base.powf(60.0 * t_step);
-                        loop {
-                            a -= t_step;
-                            if scale_x_active {
-                                let c = &mut skeleton.physics_constraints[constraint_idx];
-                                c.scale_velocity += (w * cos - g * sin - c.scale_offset * e) * m;
-                                c.scale_offset += c.scale_velocity * t_step;
-                                c.scale_velocity *= d_pow;
-                            }
-                            if rotate_or_shear_x {
-                                let c = &mut skeleton.physics_constraints[constraint_idx];
-                                c.rotate_velocity -=
-                                    ((w * sin + g * cos) * h + c.rotate_offset * e) * m;
-                                c.rotate_offset += c.rotate_velocity * t_step;
-                                c.rotate_velocity *= d_pow;
-                                if a < t_step {
+                        if a >= t {
+                            let (xs, ys) = (c.x_offset, c.y_offset);
+                            d = p.damping.powf(60.0 * t);
+                            m = t * p.mass_inverse;
+                            e = p.strength;
+                            let w = fs * p.wind;
+                            let g = fs * p.gravity;
+                            let ax = (w * wind_x + g * gravity_x) * f.scale_x;
+                            let ay = (w * wind_y + g * gravity_y) * f.scale_y;
+                            loop {
+                                if x {
+                                    c.x_velocity += (ax - c.x_offset * e) * m;
+                                    c.x_offset += c.x_velocity * t;
+                                    c.x_velocity *= d;
+                                }
+                                if y {
+                                    c.y_velocity -= (ay + c.y_offset * e) * m;
+                                    c.y_offset += c.y_velocity * t;
+                                    c.y_velocity *= d;
+                                }
+                                a -= t;
+                                if a < t {
                                     break;
                                 }
-                                let r = c.rotate_offset * mr + ca;
-                                cos = r.cos();
-                                sin = r.sin();
-                            } else if a < t_step {
-                                break;
                             }
+                            c.x_lag = c.x_offset - xs;
+                            c.y_lag = c.y_offset - ys;
+                        }
+                        z = (1.0 - a / t).max(0.0);
+                        if x {
+                            bone.world_x += (c.x_offset - c.x_lag * z) * mix * data.x;
+                        }
+                        if y {
+                            bone.world_y += (c.y_offset - c.y_lag * z) * mix * data.y;
                         }
                     }
-                    skeleton.physics_constraints[constraint_idx].remaining = a;
+                    if rotate_or_shear_x || scale_x {
+                        let ca = bone.c.atan2(bone.a);
+                        let (mut cc, mut s);
+                        let mut mr = 0.0;
+                        let mut dx = c.cx - bone.world_x;
+                        let mut dy = c.cy - bone.world_y;
+                        if dx > qx {
+                            dx = qx;
+                        } else if dx < -qx {
+                            dx = -qx;
+                        }
+                        if dy > qy {
+                            dy = qy;
+                        } else if dy < -qy {
+                            dy = -qy;
+                        }
+                        if rotate_or_shear_x {
+                            mr = (data.rotate + data.shear_x) * mix;
+                            z = c.rotate_lag * (1.0 - aa / t).max(0.0);
+                            let mut r =
+                                (dy + c.ty).atan2(dx + c.tx) - ca - (c.rotate_offset - z) * mr;
+                            c.rotate_offset += (r - (r * INV_PI_2 - 0.5).ceil() * PI_2) * i;
+                            r = (c.rotate_offset - z) * mr + ca;
+                            cc = r.cos();
+                            s = r.sin();
+                            if scale_x {
+                                r = l * bone.world_scale_x();
+                                if r > 0.0 {
+                                    c.scale_offset += (dx * cc + dy * s) * i / r;
+                                }
+                            }
+                        } else {
+                            cc = ca.cos();
+                            s = ca.sin();
+                            let r =
+                                l * bone.world_scale_x() - c.scale_lag * (1.0 - aa / t).max(0.0);
+                            if r > 0.0 {
+                                c.scale_offset += (dx * cc + dy * s) * i / r;
+                            }
+                        }
+                        a = c.remaining;
+                        if a >= t {
+                            if d == -1.0 {
+                                d = p.damping.powf(60.0 * t);
+                                m = t * p.mass_inverse;
+                                e = p.strength;
+                            }
+                            let ax = p.wind * wind_x + p.gravity * gravity_x;
+                            let ay = p.wind * wind_y + p.gravity * gravity_y;
+                            let rs = c.rotate_offset;
+                            let ss = c.scale_offset;
+                            let h = l / fs;
+                            loop {
+                                a -= t;
+                                if scale_x {
+                                    c.scale_velocity += (ax * cc - ay * s - c.scale_offset * e) * m;
+                                    c.scale_offset += c.scale_velocity * t;
+                                    c.scale_velocity *= d;
+                                }
+                                if rotate_or_shear_x {
+                                    c.rotate_velocity -=
+                                        ((ax * s + ay * cc) * h + c.rotate_offset * e) * m;
+                                    c.rotate_offset += c.rotate_velocity * t;
+                                    c.rotate_velocity *= d;
+                                    if a < t {
+                                        break;
+                                    }
+                                    let r = c.rotate_offset * mr + ca;
+                                    cc = r.cos();
+                                    s = r.sin();
+                                } else if a < t {
+                                    break;
+                                }
+                            }
+                            c.rotate_lag = c.rotate_offset - rs;
+                            c.scale_lag = c.scale_offset - ss;
+                        }
+                        z = (1.0 - a / t).max(0.0);
+                    }
+                    c.remaining = a;
+                }
+                c.cx = bone.world_x;
+                c.cy = bone.world_y;
+            }
+            Physics::Pose => {
+                z = (1.0 - c.remaining / t).max(0.0);
+                if x {
+                    bone.world_x += (c.x_offset - c.x_lag * z) * mix * data.x;
+                }
+                if y {
+                    bone.world_y += (c.y_offset - c.y_lag * z) * mix * data.y;
                 }
             }
-
-            // Cache the bone's position after the sim step so the next
-            // frame's rotate/shear/scale branch can compute deltas.
-            let c = &mut skeleton.physics_constraints[constraint_idx];
-            let b = &skeleton.bones[bone_id.index()];
-            c.cx = b.world_x;
-            c.cy = b.world_y;
+            Physics::None => unreachable!(),
         }
-    }
-
-    // Apply rotate/shear to the world matrix.
-    if rotate_or_shear_x {
-        let c = &skeleton.physics_constraints[constraint_idx];
-        let o = c.rotate_offset * mix;
-        let bone = &mut skeleton.bones[bone_id.index()];
-        if d_shear_x > 0.0 {
-            let mut r = 0.0_f32;
-            if d_rotate > 0.0 {
-                r = o * d_rotate;
-                let sin_r = r.sin();
-                let cos_r = r.cos();
+        if rotate_or_shear_x {
+            let mut o = (c.rotate_offset - c.rotate_lag * z) * mix;
+            if data.shear_x > 0.0 {
+                let mut r = 0.0;
+                if data.rotate > 0.0 {
+                    r = o * data.rotate;
+                    let (s, cc) = (r.sin(), r.cos());
+                    let a = bone.b;
+                    bone.b = cc * a - s * bone.d;
+                    bone.d = s * a + cc * bone.d;
+                }
+                r += o * data.shear_x;
+                let (s, cc) = (r.sin(), r.cos());
+                let a = bone.a;
+                bone.a = cc * a - s * bone.c;
+                bone.c = s * a + cc * bone.c;
+            } else {
+                o *= data.rotate;
+                let (s, cc) = (o.sin(), o.cos());
+                let a = bone.a;
+                bone.a = cc * a - s * bone.c;
+                bone.c = s * a + cc * bone.c;
                 let a = bone.b;
-                bone.b = cos_r * a - sin_r * bone.d;
-                bone.d = sin_r * a + cos_r * bone.d;
+                bone.b = cc * a - s * bone.d;
+                bone.d = s * a + cc * bone.d;
             }
-            r += o * d_shear_x;
-            let sin_r = r.sin();
-            let cos_r = r.cos();
-            let a = bone.a;
-            bone.a = cos_r * a - sin_r * bone.c;
-            bone.c = sin_r * a + cos_r * bone.c;
-        } else {
-            let o_r = o * d_rotate;
-            let sin_r = o_r.sin();
-            let cos_r = o_r.cos();
-            let a = bone.a;
-            bone.a = cos_r * a - sin_r * bone.c;
-            bone.c = sin_r * a + cos_r * bone.c;
-            let a = bone.b;
-            bone.b = cos_r * a - sin_r * bone.d;
-            bone.d = sin_r * a + cos_r * bone.d;
+        }
+        if scale_x {
+            let mut s = 1.0 + (c.scale_offset - c.scale_lag * z) * mix * data.scale_x;
+            bone.a *= s;
+            bone.c *= s;
+            match data.scale_y_mode {
+                ScaleYMode::Uniform => {
+                    bone.b *= s;
+                    bone.d *= s;
+                }
+                ScaleYMode::Volume => {
+                    s = s.abs();
+                    s = if s >= 0.7 {
+                        1.0 / s
+                    } else {
+                        4.0 - 3.673_47 * s
+                    };
+                    bone.b *= s;
+                    bone.d *= s;
+                }
+                ScaleYMode::None => {}
+            }
+        }
+        if physics != Physics::Pose {
+            c.tx = l * bone.a;
+            c.ty = l * bone.c;
         }
     }
-    if scale_x_active {
-        let c = &skeleton.physics_constraints[constraint_idx];
-        let s = 1.0 + c.scale_offset * mix * d_scale_x;
-        let bone = &mut skeleton.bones[bone_id.index()];
-        bone.a *= s;
-        bone.c *= s;
-    }
-    if physics != Physics::Pose {
-        let (ba, bc) = {
-            let b = &skeleton.bones[bone_id.index()];
-            (b.a, b.c)
-        };
-        let c = &mut skeleton.physics_constraints[constraint_idx];
-        c.tx = bone_length * ba;
-        c.ty = bone_length * bc;
-    }
-    skeleton.update_applied_transform(bone_id);
 }
