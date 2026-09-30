@@ -297,19 +297,25 @@ impl<'loader> SkeletonBinary<'loader> {
                     data.clamp = flags & 16 != 0;
                     for _ in 0..(flags >> 5) {
                         let from_type = r.read_sbyte()?;
-                        let Some(from) = TransformProperty::from_index(i32::from(from_type)) else {
-                            continue;
-                        };
+                        let from = TransformProperty::from_index(i32::from(from_type)).ok_or(
+                            BinaryError::UnknownDiscriminant {
+                                at: r.position(),
+                                entity: "transform from property",
+                                value: from_type as u32,
+                            },
+                        )?;
                         let from_scale = property_scale(from, scale);
                         let offset = r.read_float()? * from_scale;
                         let to_count = r.read_sbyte()?;
                         let mut to = Vec::with_capacity(to_count.max(0) as usize);
                         for _ in 0..to_count {
                             let to_type = r.read_sbyte()?;
-                            let Some(property) = TransformProperty::from_index(i32::from(to_type))
-                            else {
-                                continue;
-                            };
+                            let property = TransformProperty::from_index(i32::from(to_type))
+                                .ok_or(BinaryError::UnknownDiscriminant {
+                                    at: r.position(),
+                                    entity: "transform to property",
+                                    value: to_type as u32,
+                                })?;
                             let to_scale = property_scale(property, scale);
                             to.push(ToProperty {
                                 property,
@@ -487,15 +493,16 @@ impl<'loader> SkeletonBinary<'loader> {
                         data.bone = Some(read_bone(&mut r, &sd)?);
                         let offset = r.read_float()?;
                         let kind = r.read_sbyte()?;
-                        if let Some(property) = TransformProperty::from_index(i32::from(kind)) {
-                            let property_scale = property_scale(property, scale);
-                            data.property = Some(SliderProperty {
-                                property,
-                                offset: offset * property_scale,
-                            });
-                            data.offset = r.read_float()?;
-                            data.scale = r.read_float()? / property_scale;
-                        }
+                        // Like spine-cpp, an unknown property still carries its
+                        // offset and scale.
+                        let property = TransformProperty::from_index(i32::from(kind));
+                        let property_scale = property.map_or(1.0, |p| property_scale(p, scale));
+                        data.property = property.map(|property| SliderProperty {
+                            property,
+                            offset: offset * property_scale,
+                        });
+                        data.offset = r.read_float()?;
+                        data.scale = r.read_float()? / property_scale;
                     }
                     ConstraintData::Slider(data)
                 }
@@ -1799,11 +1806,12 @@ fn read_ik_timeline(
         } else if flags & 128 != 0 {
             let first_channel_abs = frame_count + bezier_seg_idx * BEZIER_SIZE;
             curves[frame] = (i32::from(CURVE_BEZIER) + first_channel_abs as i32) as f32;
-            for (k, (value1, value2)) in [(mix, mix2), (softness, softness2)].iter().enumerate() {
+            let channels = [(mix, mix2, 1.0), (softness, softness2, scale)];
+            for (k, (value1, value2, value_scale)) in channels.iter().enumerate() {
                 let cx1 = r.read_float()?;
-                let cy1 = r.read_float()?;
+                let cy1 = r.read_float()? * value_scale;
                 let cx2 = r.read_float()?;
-                let cy2 = r.read_float()?;
+                let cy2 = r.read_float()? * value_scale;
                 let samples =
                     compute_bezier_samples(time, *value1, cx1, cy1, cx2, cy2, time2, *value2);
                 let dst = frame_count + (bezier_seg_idx + k) * BEZIER_SIZE;
