@@ -73,12 +73,8 @@ struct CommandFixture {
     num_indices: i32,
     color: u32,
     dark_color: u32,
-    // Captured but not currently diffed — see module docs.
-    #[allow(dead_code)]
     first_pos: [f32; 2],
-    #[allow(dead_code)]
     last_pos: [f32; 2],
-    #[allow(dead_code)]
     first_uv: [f32; 2],
 }
 
@@ -118,8 +114,8 @@ fn render_rig(atlas: &PathBuf, skel: &PathBuf) -> Vec<CommandFixture> {
             .unwrap(),
     );
     let mut sk = Skeleton::new(Arc::clone(&data));
-    sk.update_cache();
-    sk.set_to_setup_pose();
+
+    sk.setup_pose();
     sk.update_world_transform(Physics::None);
 
     let mut renderer = SkeletonRenderer::new();
@@ -153,13 +149,9 @@ fn render_rig(atlas: &PathBuf, skel: &PathBuf) -> Vec<CommandFixture> {
 }
 
 #[test]
-#[ignore = "Spine 4.3 phase 5"]
 fn setup_pose_render_commands_match_spine_cpp() {
     let samples = render_samples();
-    if samples.is_empty() {
-        eprintln!("golden_render: no fixtures found at {:?}", fixtures_root());
-        return;
-    }
+    assert!(!samples.is_empty(), "no fixtures at {:?}", fixtures_root());
 
     let mut rigs_checked = 0;
     let mut rigs_matched = 0;
@@ -208,6 +200,23 @@ fn setup_pose_render_commands_match_spine_cpp() {
                 matched = false;
                 break;
             }
+            // The capture prints 6 significant digits.
+            let near = |a: [f32; 2], b: [f32; 2]| {
+                a.iter()
+                    .zip(&b)
+                    .all(|(x, y)| (x - y).abs() <= 1e-3 * x.abs().max(1.0))
+            };
+            if !near(w.first_pos, g.first_pos)
+                || !near(w.last_pos, g.last_pos)
+                || !near(w.first_uv, g.first_uv)
+            {
+                eprintln!(
+                    "  {label}: cmd[{i}] geometry mismatch — want pos {:?}..{:?} uv {:?}, got pos {:?}..{:?} uv {:?}",
+                    w.first_pos, w.last_pos, w.first_uv, g.first_pos, g.last_pos, g.first_uv
+                );
+                matched = false;
+                break;
+            }
         }
         if matched {
             rigs_matched += 1;
@@ -215,4 +224,6 @@ fn setup_pose_render_commands_match_spine_cpp() {
     }
 
     eprintln!("golden_render: {rigs_matched} of {rigs_checked} rigs match");
+    assert!(rigs_checked > 0, "no render fixtures");
+    assert_eq!(rigs_matched, rigs_checked, "every rig must match");
 }

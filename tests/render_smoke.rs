@@ -71,7 +71,6 @@ fn rig_skel_paths() -> Vec<PathBuf> {
 }
 
 #[test]
-#[ignore = "Spine 4.3 phase 5"]
 fn renders_every_example_rig_at_setup_pose() {
     let skels = rig_skel_paths();
     assert!(
@@ -109,15 +108,15 @@ fn renders_every_example_rig_at_setup_pose() {
         let data = Arc::new(data);
 
         let mut sk = Skeleton::new(Arc::clone(&data));
-        sk.update_cache();
-        sk.set_to_setup_pose();
+
+        sk.setup_pose();
         sk.update_world_transform(Physics::None);
 
         let mut renderer = SkeletonRenderer::new();
         // Render unbatched so degenerate-command regressions surface per-slot
         // — the batcher would otherwise merge a zero-area slot into an
         // adjacent real command and hide the problem.
-        let cmds = renderer.render_unbatched(&sk);
+        let cmds = renderer.render(&sk);
 
         for (i, cmd) in cmds.iter().enumerate() {
             assert_eq!(

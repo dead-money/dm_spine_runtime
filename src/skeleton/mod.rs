@@ -32,7 +32,6 @@
 //! state every `Skeleton` needs to animate and be rendered.
 
 pub mod bone;
-#[cfg(any())] // 4.3-port-gate
 pub mod bounds;
 pub mod constraint;
 pub mod ik;
@@ -48,6 +47,7 @@ pub mod update_cache;
 pub mod vertex;
 
 pub use bone::{Bone, BonePose};
+pub use bounds::{BoundsPolygon, SkeletonBounds};
 pub use constraint::{
     Constraint, IkConstraint, PathConstraint, PhysicsConstraint, Slider, TransformConstraint,
 };

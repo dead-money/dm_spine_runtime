@@ -45,22 +45,21 @@ fn main() {
     let data = Arc::new(data);
 
     let mut sk = Skeleton::new(Arc::clone(&data));
-    sk.update_cache();
-    sk.set_to_setup_pose();
+    sk.setup_pose();
     sk.update_world_transform(Physics::None);
 
     // Build a parallel list of (drawable slot name, attachment kind) to
     // label the render commands.
     let mut labels: Vec<(String, &'static str, String)> = Vec::new();
-    for &slot_id in &sk.draw_order {
+    for &slot_id in sk.draw_order.applied() {
         let slot = &sk.slots[slot_id.index()];
         let slot_data = &data.slots[slot_id.index()];
         let _bone_data: &BoneData = &data.bones[slot_data.bone.index()];
         let bone_active = sk.bones[slot_data.bone.index()].active;
-        let Some(att_id) = slot.attachment else {
+        let Some(att_id) = slot.applied().attachment else {
             continue;
         };
-        if slot.color.a == 0.0 || !bone_active {
+        if slot.applied().color.a == 0.0 || !bone_active {
             continue;
         }
         let att = &data.attachments[att_id.index()];

@@ -25,52 +25,21 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Ear-clipping triangulation plus convex-polygon decomposition, ported from
-//! `spine-cpp/src/spine/Triangulator.cpp`.
-//!
-//! Input polygons are interleaved `[x0, y0, x1, y1, …]` flat `f32` slices. The
-//! output triangle indices are vertex indices into that polygon (0-based,
-//! unshifted — callers compute `idx * 2` to look up xy pairs). The struct holds
-//! its scratch buffers so repeated calls can reuse allocations.
-//!
-//! # Winding convention
-//!
-//! Spine's `positiveArea` returns `true` when a triangle is **clockwise in
-//! standard math coordinates** (y-up), equivalent to **counter-clockwise in
-//! y-down screen coordinates**. Skeletons exported from the Spine editor are
-//! y-up and polygons are authored CCW in that frame, which becomes CW when
-//! rendered with the y-down convention Spine uses internally.
-//!
-//! Practically, callers should feed polygons in the same winding that Spine
-//! itself uses — i.e. the native order of vertices read from a
-//! `ClippingAttachment` or mesh. Reversing the winding will cause the
-//! triangulator to misclassify convex and concave vertices.
+//! Ear-clipping triangulation and convex decomposition (`Triangulator`,
+//! 4.3), used to split concave clipping polygons.
 
-// The ported algorithms use short math-style names (`p1x`, `p2y`, `x3`, `y3`,
-// `winding0`) that match the spine-cpp source line-for-line. Breaking them up
-// or renaming them would make side-by-side code review with the C++ much
-// harder for a fidelity win of zero, so the relevant pedantic lints are
-// silenced for this module.
-#![allow(
-    clippy::many_single_char_names,
-    clippy::needless_range_loop,
-    clippy::too_many_lines
-)]
+#![allow(clippy::many_single_char_names)]
 
-/// Stateful polygon triangulator with buffer reuse.
-///
-/// Call [`Self::triangulate`] to reduce a simple polygon to triangles, then
-/// optionally [`Self::decompose`] to merge those triangles back into the
-/// smallest set of convex polygons — used by `SkeletonClipping` to minimise
-/// fragmentation when clipping against skeleton polygons.
-#[derive(Default, Debug)]
+/// Reusable scratch for triangulating and decomposing polygons.
+#[derive(Debug, Default, Clone)]
 pub struct Triangulator {
-    // Scratch state, reused across calls to avoid reallocation.
-    triangles: Vec<u16>,
-    indices: Vec<u16>,
+    indices: Vec<i32>,
     is_concave: Vec<bool>,
+    triangles: Vec<u16>,
     convex_polygons: Vec<Vec<f32>>,
-    convex_polygons_indices: Vec<Vec<u16>>,
+    convex_polygon_indices: Vec<Vec<u16>>,
+    polygon_pool: Vec<Vec<f32>>,
+    indices_pool: Vec<Vec<u16>>,
 }
 
 impl Triangulator {
@@ -79,307 +48,193 @@ impl Triangulator {
         Self::default()
     }
 
-    /// Triangulate a simple (non-self-intersecting) polygon by ear clipping.
-    ///
-    /// `vertices` is an interleaved flat array of length `2 * n` where `n` is
-    /// the vertex count. The returned slice contains `3 * (n - 2)` triangle
-    /// vertex indices in the range `[0, n)`.
-    ///
-    /// See the [module docs](self) for the expected winding convention.
-    ///
-    /// # Panics
-    /// Panics if `vertices.len()` is odd or if the vertex count exceeds
-    /// `u16::MAX`.
+    /// Triangulates a simple polygon of `x, y` pairs. Returns vertex indices.
     pub fn triangulate(&mut self, vertices: &[f32]) -> &[u16] {
-        assert!(
-            vertices.len().is_multiple_of(2),
-            "vertices must have even length"
-        );
-        let mut vertex_count = vertices.len() / 2;
-        assert!(
-            u16::try_from(vertex_count).is_ok(),
-            "vertex count exceeds u16::MAX"
-        );
-
+        let mut vertex_count = (vertices.len() >> 1) as i32;
         let indices = &mut self.indices;
         indices.clear();
-        indices.reserve(vertex_count);
-        for i in 0..vertex_count {
-            indices.push(i as u16);
-        }
-
+        indices.extend(0..vertex_count);
         let is_concave = &mut self.is_concave;
         is_concave.clear();
-        is_concave.resize(vertex_count, false);
         for i in 0..vertex_count {
-            is_concave[i] = is_concave_at(i, vertex_count, vertices, indices);
+            is_concave.push(concave(i, vertex_count, vertices, indices));
         }
-
         let triangles = &mut self.triangles;
         triangles.clear();
-        triangles.reserve(vertex_count.saturating_sub(2) * 3);
+        triangles.reserve((vertex_count - 2).max(0) as usize * 3);
 
         while vertex_count > 3 {
-            // Find an ear tip.
-            let mut previous: usize = vertex_count - 1;
-            let mut i: usize = 0;
-            let mut next: usize = 1;
-
-            'outer: loop {
-                if !is_concave[i] {
-                    // Candidate ear at `i`. Check that no concave vertex
-                    // lies inside triangle (previous, i, next).
-                    let p1 = indices[previous] as usize * 2;
-                    let p2 = indices[i] as usize * 2;
-                    let p3 = indices[next] as usize * 2;
-                    let p1x = vertices[p1];
-                    let p1y = vertices[p1 + 1];
-                    let p2x = vertices[p2];
-                    let p2y = vertices[p2 + 1];
-                    let p3x = vertices[p3];
-                    let p3y = vertices[p3 + 1];
-
-                    let mut ear_blocked = false;
-                    let mut ii = (next + 1) % vertex_count;
+            let mut previous = vertex_count - 1;
+            let mut i = 0;
+            let mut next = 1;
+            loop {
+                if !is_concave[i as usize] {
+                    let p1 = (indices[previous as usize] << 1) as usize;
+                    let p2 = (indices[i as usize] << 1) as usize;
+                    let p3 = (indices[next as usize] << 1) as usize;
+                    let (p1x, p1y) = (vertices[p1], vertices[p1 + 1]);
+                    let (p2x, p2y) = (vertices[p2], vertices[p2 + 1]);
+                    let (p3x, p3y) = (vertices[p3], vertices[p3 + 1]);
+                    let mut ear = true;
+                    let mut ii = if next + 1 < vertex_count { next + 1 } else { 0 };
                     while ii != previous {
-                        if is_concave[ii] {
-                            let v = indices[ii] as usize * 2;
-                            let vx = vertices[v];
-                            let vy = vertices[v + 1];
+                        if is_concave[ii as usize] {
+                            let v = (indices[ii as usize] << 1) as usize;
+                            let (vx, vy) = (vertices[v], vertices[v + 1]);
                             if positive_area(p3x, p3y, p1x, p1y, vx, vy)
                                 && positive_area(p1x, p1y, p2x, p2y, vx, vy)
                                 && positive_area(p2x, p2y, p3x, p3y, vx, vy)
                             {
-                                ear_blocked = true;
+                                ear = false;
                                 break;
                             }
                         }
-                        ii = (ii + 1) % vertex_count;
+                        ii += 1;
+                        if ii == vertex_count {
+                            ii = 0;
+                        }
                     }
-
-                    if !ear_blocked {
-                        break 'outer;
+                    if ear {
+                        break;
                     }
                 }
-
-                // Either vertex was concave or candidate ear was blocked.
-                // Advance. If we've wrapped back to the start, walk `i` down
-                // to find a non-concave vertex and bail out — this matches
-                // the spine-cpp fallback path for degenerate geometry.
                 if next == 0 {
                     loop {
-                        if !is_concave[i] {
-                            break;
-                        }
-                        if i == 0 {
+                        if !is_concave[i as usize] {
                             break;
                         }
                         i -= 1;
+                        if i <= 0 {
+                            break;
+                        }
                     }
-                    break 'outer;
+                    previous = if i > 0 { i - 1 } else { vertex_count - 1 };
+                    next = if i + 1 < vertex_count { i + 1 } else { 0 };
+                    break;
                 }
-
                 previous = i;
                 i = next;
-                next = (next + 1) % vertex_count;
+                next += 1;
+                if next == vertex_count {
+                    next = 0;
+                }
             }
 
-            // Cut ear tip at `i`.
-            let prev_idx = indices[(vertex_count + i - 1) % vertex_count];
-            let i_idx = indices[i];
-            let next_idx = indices[(i + 1) % vertex_count];
-            triangles.push(prev_idx);
-            triangles.push(i_idx);
-            triangles.push(next_idx);
-            indices.remove(i);
-            is_concave.remove(i);
+            triangles.push(indices[previous as usize] as u16);
+            triangles.push(indices[i as usize] as u16);
+            triangles.push(indices[next as usize] as u16);
+            indices.remove(i as usize);
+            is_concave.remove(i as usize);
             vertex_count -= 1;
 
-            // Neighbours of the removed vertex may have flipped convexity.
-            let previous_index = (vertex_count + i - 1) % vertex_count;
-            let next_index = if i == vertex_count { 0 } else { i };
-            is_concave[previous_index] =
-                is_concave_at(previous_index, vertex_count, vertices, indices);
-            is_concave[next_index] = is_concave_at(next_index, vertex_count, vertices, indices);
+            let previous_index = if i > 0 { i - 1 } else { vertex_count - 1 };
+            let next_index = if i < vertex_count { i } else { 0 };
+            is_concave[previous_index as usize] =
+                concave(previous_index, vertex_count, vertices, indices);
+            is_concave[next_index as usize] = concave(next_index, vertex_count, vertices, indices);
         }
-
         if vertex_count == 3 {
-            // Note: spine-cpp emits the final triangle as (indices[2], indices[0], indices[1]).
-            triangles.push(indices[2]);
-            triangles.push(indices[0]);
-            triangles.push(indices[1]);
+            triangles.push(indices[2] as u16);
+            triangles.push(indices[0] as u16);
+            triangles.push(indices[1] as u16);
         }
-
         triangles
     }
 
-    /// Merge adjacent triangles sharing an edge and winding into convex
-    /// polygons. Returns a slice of convex polygons, each in flat `[x, y, …]`
-    /// form. Use [`Self::convex_polygon_indices`] for the corresponding vertex
-    /// indices.
-    ///
-    /// `vertices` is the same flat `[x, y, …]` array passed to `triangulate`;
-    /// `triangles` is the output of `triangulate` (or any compatible triangle
-    /// list with indices into `vertices`).
+    /// Merges triangles into convex polygons, each closed by repeating its
+    /// first point.
     pub fn decompose(&mut self, vertices: &[f32], triangles: &[u16]) -> &[Vec<f32>] {
-        self.decompose_both(vertices, triangles);
-        &self.convex_polygons
-    }
+        self.polygon_pool.append(&mut self.convex_polygons);
+        self.indices_pool.append(&mut self.convex_polygon_indices);
+        let mut polygon = self.polygon_pool.pop().unwrap_or_default();
+        polygon.clear();
+        let mut polygon_indices = self.indices_pool.pop().unwrap_or_default();
+        polygon_indices.clear();
 
-    /// Vertex indices corresponding to the polygons returned by the most recent
-    /// call to [`Self::decompose`]. Each inner `Vec<u16>` has the same length
-    /// as the corresponding polygon's vertex count (half the flat f32 length).
-    ///
-    /// **Note:** Unlike the spine-cpp field of the same name, these are plain
-    /// vertex indices — not left-shifted by one. Callers that need the
-    /// byte-pair offset should multiply by 2.
-    #[must_use]
-    pub fn convex_polygon_indices(&self) -> &[Vec<u16>] {
-        &self.convex_polygons_indices
-    }
+        let mut fan_base_index: i32 = -1;
+        let mut last_winding = 0;
+        for tri in triangles.chunks_exact(3) {
+            let (t1, t2, t3) = (tri[0] << 1, tri[1] << 1, tri[2] << 1);
+            let (x1, y1) = (vertices[t1 as usize], vertices[t1 as usize + 1]);
+            let (x2, y2) = (vertices[t2 as usize], vertices[t2 as usize + 1]);
+            let (x3, y3) = (vertices[t3 as usize], vertices[t3 as usize + 1]);
 
-    fn decompose_both(&mut self, vertices: &[f32], triangles: &[u16]) {
-        self.convex_polygons.clear();
-        self.convex_polygons_indices.clear();
-
-        let mut polygon: Vec<f32> = Vec::new();
-        let mut polygon_indices: Vec<u16> = Vec::new();
-
-        // `fan_base_index` stores the base vertex index of the fan currently
-        // being built. `None` means no fan yet — equivalent to the `-1`
-        // sentinel in spine-cpp.
-        let mut fan_base_index: Option<u16> = None;
-        let mut last_winding_sign: i32 = 0;
-
-        let mut i = 0;
-        while i + 2 < triangles.len() {
-            let t1_vi = triangles[i];
-            let t2_vi = triangles[i + 1];
-            let t3_vi = triangles[i + 2];
-            let t1 = t1_vi as usize * 2;
-            let t2 = t2_vi as usize * 2;
-            let t3 = t3_vi as usize * 2;
-
-            let x1 = vertices[t1];
-            let y1 = vertices[t1 + 1];
-            let x2 = vertices[t2];
-            let y2 = vertices[t2 + 1];
-            let x3 = vertices[t3];
-            let y3 = vertices[t3 + 1];
-
-            // If this triangle shares its base (first vertex) with the current
-            // fan, test whether extending the fan keeps it convex.
-            let mut merged = false;
-            if fan_base_index == Some(t1_vi) && polygon.len() >= 4 {
+            if fan_base_index == i32::from(t1) {
                 let o = polygon.len() - 4;
-                let w1 = winding_sign(
-                    polygon[o],
-                    polygon[o + 1],
-                    polygon[o + 2],
-                    polygon[o + 3],
-                    x3,
-                    y3,
-                );
-                let w2 = winding_sign(x3, y3, polygon[0], polygon[1], polygon[2], polygon[3]);
-                if w1 == last_winding_sign && w2 == last_winding_sign {
+                let p = &polygon;
+                if winding(p[o], p[o + 1], p[o + 2], p[o + 3], x3, y3) == last_winding
+                    && winding(x3, y3, p[0], p[1], p[2], p[3]) == last_winding
+                {
                     polygon.push(x3);
                     polygon.push(y3);
-                    polygon_indices.push(t3_vi);
-                    merged = true;
+                    polygon_indices.push(t3);
+                    continue;
                 }
             }
-
-            if !merged {
-                // Flush the current fan and start a new one with this triangle.
-                if !polygon.is_empty() {
-                    self.convex_polygons.push(std::mem::take(&mut polygon));
-                    self.convex_polygons_indices
-                        .push(std::mem::take(&mut polygon_indices));
-                }
-                polygon.extend_from_slice(&[x1, y1, x2, y2, x3, y3]);
-                polygon_indices.extend_from_slice(&[t1_vi, t2_vi, t3_vi]);
-                last_winding_sign = winding_sign(x1, y1, x2, y2, x3, y3);
-                fan_base_index = Some(t1_vi);
+            if !polygon.is_empty() {
+                self.convex_polygons.push(polygon);
+                self.convex_polygon_indices.push(polygon_indices);
+                polygon = self.polygon_pool.pop().unwrap_or_default();
+                polygon_indices = self.indices_pool.pop().unwrap_or_default();
             }
-
-            i += 3;
+            polygon.clear();
+            polygon.extend_from_slice(&[x1, y1, x2, y2, x3, y3]);
+            polygon_indices.clear();
+            polygon_indices.extend_from_slice(&[t1, t2, t3]);
+            last_winding = winding(x1, y1, x2, y2, x3, y3);
+            fan_base_index = i32::from(t1);
         }
-
-        if !polygon.is_empty() {
+        if polygon.is_empty() {
+            self.polygon_pool.push(polygon);
+            self.indices_pool.push(polygon_indices);
+        } else {
             self.convex_polygons.push(polygon);
-            self.convex_polygons_indices.push(polygon_indices);
+            self.convex_polygon_indices.push(polygon_indices);
         }
 
-        // Second pass: try to merge any remaining stand-alone triangles with
-        // existing fans.
-        let mut i = 0;
-        while i < self.convex_polygons.len() {
-            if self.convex_polygons_indices[i].is_empty() {
-                i += 1;
+        // Merge remaining triangles into the fans they extend.
+        let n = self.convex_polygons.len();
+        for i in 0..n {
+            if self.convex_polygon_indices[i].is_empty() {
                 continue;
             }
-
-            let first_index = self.convex_polygons_indices[i][0];
-            let last_index = *self.convex_polygons_indices[i].last().unwrap();
-
-            let (
-                mut prev_prev_x,
-                mut prev_prev_y,
-                mut prev_x,
-                mut prev_y,
-                first_x,
-                first_y,
-                second_x,
-                second_y,
-            );
-            {
-                let p = &self.convex_polygons[i];
-                let o = p.len() - 4;
-                prev_prev_x = p[o];
-                prev_prev_y = p[o + 1];
-                prev_x = p[o + 2];
-                prev_y = p[o + 3];
-                first_x = p[0];
-                first_y = p[1];
-                second_x = p[2];
-                second_y = p[3];
-            }
-            let winding0 = winding_sign(prev_prev_x, prev_prev_y, prev_x, prev_y, first_x, first_y);
+            let first_index = self.convex_polygon_indices[i][0];
+            let mut last_index = *self.convex_polygon_indices[i].last().expect("non-empty");
+            let p = &self.convex_polygons[i];
+            let o = p.len() - 4;
+            let (mut prev_prev_x, mut prev_prev_y) = (p[o], p[o + 1]);
+            let (mut prev_x, mut prev_y) = (p[o + 2], p[o + 3]);
+            let (first_x, first_y) = (p[0], p[1]);
+            let (second_x, second_y) = (p[2], p[3]);
+            let polygon_winding =
+                winding(prev_prev_x, prev_prev_y, prev_x, prev_y, first_x, first_y);
 
             let mut ii = 0;
-            while ii < self.convex_polygons.len() {
+            while ii < n {
                 if ii == i {
                     ii += 1;
                     continue;
                 }
-                if self.convex_polygons_indices[ii].len() != 3 {
+                let other = &self.convex_polygon_indices[ii];
+                if other.len() != 3 || other[0] != first_index || other[1] != last_index {
                     ii += 1;
                     continue;
                 }
-
-                let other_first = self.convex_polygons_indices[ii][0];
-                let other_second = self.convex_polygons_indices[ii][1];
-                let other_last = self.convex_polygons_indices[ii][2];
-
-                if other_first != first_index || other_second != last_index {
-                    ii += 1;
-                    continue;
-                }
-
-                let (x3, y3) = {
-                    let op = &self.convex_polygons[ii];
-                    (op[op.len() - 2], op[op.len() - 1])
-                };
-
-                let w1 = winding_sign(prev_prev_x, prev_prev_y, prev_x, prev_y, x3, y3);
-                let w2 = winding_sign(x3, y3, first_x, first_y, second_x, second_y);
-
-                if w1 == winding0 && w2 == winding0 {
+                let other_last_index = other[2];
+                let other_poly = &self.convex_polygons[ii];
+                let (x3, y3) = (
+                    other_poly[other_poly.len() - 2],
+                    other_poly[other_poly.len() - 1],
+                );
+                if winding(prev_prev_x, prev_prev_y, prev_x, prev_y, x3, y3) == polygon_winding
+                    && winding(x3, y3, first_x, first_y, second_x, second_y) == polygon_winding
+                {
                     self.convex_polygons[ii].clear();
-                    self.convex_polygons_indices[ii].clear();
+                    self.convex_polygon_indices[ii].clear();
                     self.convex_polygons[i].push(x3);
                     self.convex_polygons[i].push(y3);
-                    self.convex_polygons_indices[i].push(other_last);
+                    self.convex_polygon_indices[i].push(other_last_index);
+                    last_index = other_last_index;
                     prev_prev_x = prev_x;
                     prev_prev_y = prev_y;
                     prev_x = x3;
@@ -387,32 +242,49 @@ impl Triangulator {
                     ii = 0;
                     continue;
                 }
-
                 ii += 1;
             }
-
-            i += 1;
         }
 
-        // Remove any polygons cleared by merging above.
         let mut i = self.convex_polygons.len();
         while i > 0 {
             i -= 1;
             if self.convex_polygons[i].is_empty() {
-                self.convex_polygons.remove(i);
-                self.convex_polygons_indices.remove(i);
+                self.polygon_pool.push(self.convex_polygons.remove(i));
+                self.indices_pool
+                    .push(self.convex_polygon_indices.remove(i));
+            } else {
+                let p = &mut self.convex_polygons[i];
+                let (x, y) = (p[0], p[1]);
+                p.push(x);
+                p.push(y);
             }
         }
+        &self.convex_polygons
+    }
+
+    /// Triangle vertex offsets (index × 2) per polygon from the last
+    /// [`Self::decompose`].
+    #[must_use]
+    pub fn convex_polygon_indices(&self) -> &[Vec<u16>] {
+        &self.convex_polygon_indices
     }
 }
 
-/// True iff the vertex at `index` in the current `indices` ring is concave —
-/// i.e. the signed area of (prev, current, next) is negative.
-fn is_concave_at(index: usize, vertex_count: usize, vertices: &[f32], indices: &[u16]) -> bool {
-    let previous = indices[(vertex_count + index - 1) % vertex_count] as usize * 2;
-    let current = indices[index] as usize * 2;
-    let next = indices[(index + 1) % vertex_count] as usize * 2;
-
+fn concave(index: i32, vertex_count: i32, vertices: &[f32], indices: &[i32]) -> bool {
+    let previous = (indices[if index > 0 {
+        index - 1
+    } else {
+        vertex_count - 1
+    } as usize]
+        << 1) as usize;
+    let current = (indices[index as usize] << 1) as usize;
+    let next = (indices[if index + 1 < vertex_count {
+        index + 1
+    } else {
+        0
+    } as usize]
+        << 1) as usize;
     !positive_area(
         vertices[previous],
         vertices[previous + 1],
@@ -423,18 +295,14 @@ fn is_concave_at(index: usize, vertex_count: usize, vertices: &[f32], indices: &
     )
 }
 
-/// `2 * signed_area(p1, p2, p3) >= 0` — true when (p1, p2, p3) is CCW or
-/// colinear.
-fn positive_area(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32) -> bool {
+#[inline]
+pub(crate) fn positive_area(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32) -> bool {
     p1x * (p3y - p2y) + p2x * (p1y - p3y) + p3x * (p2y - p1y) >= 0.0
 }
 
-/// Sign (+1 / -1) of the cross product of p1->p2 and p1->p3 — gives the
-/// winding direction of triangle (p1, p2, p3).
-fn winding_sign(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32) -> i32 {
-    let px = p2x - p1x;
-    let py = p2y - p1y;
-    if p3x * py - p3y * px + px * p1y - p1x * py >= 0.0 {
+#[inline]
+fn winding(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32) -> i32 {
+    if p1x * (p3y - p2y) + p2x * (p1y - p3y) + p3x * (p2y - p1y) >= 0.0 {
         1
     } else {
         -1
@@ -555,9 +423,9 @@ mod tests {
         let verts = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0];
         let tris = t.triangulate(&verts).to_vec();
         let polygons = t.decompose(&verts, &tris);
-        // The two triangles form a single convex quad.
+        // One convex quad, closed by repeating its first point.
         assert_eq!(polygons.len(), 1);
-        assert_eq!(polygons[0].len(), 8);
+        assert_eq!(polygons[0].len(), 10);
     }
 
     #[test]

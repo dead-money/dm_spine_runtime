@@ -106,8 +106,7 @@ fn main() {
     let data = Arc::new(data);
 
     let mut skeleton = Skeleton::new(Arc::clone(&data));
-    skeleton.update_cache();
-    skeleton.set_to_setup_pose();
+    skeleton.setup_pose();
     skeleton.update_world_transform(Physics::None);
 
     let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));

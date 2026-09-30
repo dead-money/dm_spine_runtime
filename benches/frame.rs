@@ -122,8 +122,7 @@ fn bench_rig(rig: &Rig, frames: u32) -> Result<(), String> {
     if let Some(skin) = &rig.skin {
         skeleton.set_skin_by_name(skin).map_err(|e| e.to_string())?;
     }
-    skeleton.update_cache();
-    skeleton.set_to_setup_pose();
+    skeleton.setup_pose();
     let mut state = AnimationState::new(Arc::new(AnimationStateData::new(Arc::clone(&data))));
     state
         .set_animation_by_name(0, rig.anim, true)
