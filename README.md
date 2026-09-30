@@ -1,33 +1,21 @@
 # dm_spine_runtime
 
-A native Rust port of the [Spine](https://esotericsoftware.com/) 4.2 runtime. Renderer-agnostic — loads `.skel` / `.json` + `.atlas` files, poses skeletons, plays animations, solves constraints, and emits draw commands that any graphics backend can consume.
+[![CI](https://github.com/dead-money/dm_spine_runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/dead-money/dm_spine_runtime/actions/workflows/ci.yml)
 
-For Bevy 0.18 integration, see the sibling crate [`dm_spine_bevy`](https://github.com/dead-money/dm_spine_bevy).
+A native Rust port of the [Spine](https://esotericsoftware.com/) 4.2 runtime. You load `.skel` or `.json` skeletons with their `.atlas`, pose them, play and mix animations, solve constraints, and get back draw commands your own renderer can consume.
 
-> **About this project.** This crate is built for Dead Money's internal game projects and was primarily authored by AI agents (Claude Code) driving a literal port of the upstream [spine-cpp](https://github.com/EsotericSoftware/spine-runtimes) reference runtime, with a human engineer directing scope, reviewing output, and steering architecture. It's published for transparency and for use inside Dead Money, not as a polished third-party library. Interfaces will shift, not everything is battle-tested, and documentation leans toward "what would a maintainer need?" rather than "what would a brand-new user expect?". If you adopt it anyway, expect to file issues and read source occasionally.
+The crate is renderer-agnostic. It's built for Dead Money's own game projects and was mostly written by AI agents under human direction, as a literal port of Esoteric Software's [spine-cpp](https://github.com/EsotericSoftware/spine-runtimes) reference runtime. For Bevy 0.18, see the sibling crate [`dm_spine_bevy`](https://github.com/dead-money/dm_spine_bevy).
 
-## You need a Spine Editor license to use this
+## You need a Spine Editor license
 
-This is a derivative work of Esoteric Software's `spine-cpp` reference runtime, translated to Rust while preserving source structure and copyright notices. Distribution is governed by Section 2 of the [Spine Editor License Agreement](https://esotericsoftware.com/spine-editor-license) and the [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license). In practical terms:
+This crate is a derivative of `spine-cpp`, translated to Rust with its source structure and copyright notices kept. Distribution is governed by Section 2 of the [Spine Editor License Agreement](https://esotericsoftware.com/spine-editor-license) and by the [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license). That's the same obligation every official Spine runtime carries:
 
-- **Every end user of software built with this crate must hold their own [Spine Editor license](https://esotericsoftware.com/spine-purchase).** Same obligation as every official Spine runtime.
-- **Copyright and license notices must be preserved.** Every ported source file carries the Esoteric Software copyright block; the `LICENSE` file reproduces the Spine Runtimes License verbatim and must travel with any redistribution.
-- **The Spine editor is separately licensed.** This runtime processes data exported by the Spine editor but is not a substitute for it.
+- **Every end user of software built with this crate needs their own [Spine Editor license](https://esotericsoftware.com/spine-purchase).**
+- **Keep the notices.** Every ported source file carries Esoteric Software's copyright block, and `LICENSE` reproduces the Spine Runtimes License verbatim. Both travel with any redistribution.
 
-If your use case is in doubt, consult the [Spine licensing page](https://esotericsoftware.com/spine-purchase) or contact Esoteric Software directly.
+The Spine editor is licensed separately. This runtime reads what the editor exports; it doesn't replace it. If your use case is in doubt, check the [Spine licensing page](https://esotericsoftware.com/spine-purchase) or ask Esoteric Software.
 
-## What's in the box
-
-- **Loaders** — binary `.skel` reader, JSON `.json` reader, and `.atlas` parser. All 25 rigs that ship under `spine-runtimes/examples/` load cleanly through `AtlasAttachmentLoader` in either format.
-- **Skeleton + animation state** — full pose pipeline, multi-track `AnimationState` with crossfade mixing, event queue, empty animations, and all five `Inherit` modes.
-- **Constraint solvers** — IK (1-bone + 2-bone with bend/softness/stretch), Transform (absolute/relative × world/local), Path (all spacing + rotate modes), and Physics (damped spring, fixed timestep).
-- **Clipping + bounds** — `SkeletonClipping` (Sutherland-Hodgman + convex decomposition) and `SkeletonBounds` (AABB, point-in-polygon, segment-polygon hit tests).
-- **Render-command emission** — `SkeletonRenderer::render` walks the draw order, handles `RegionAttachment` / `MeshAttachment`, runs the clipper, and merges adjacent same-(texture, blend, color) runs into one batched command.
-
-## What's explicitly out of scope
-
-- **GPU work.** The core crate has no GPU, windowing, or shader dependency. Draw commands carry plain `Vec<f32>` / `Vec<u16>` buffers and a `TextureId(u32)` (atlas page index); integration crates map that onto their backend.
-- **Spine versions before 4.2.** Both the binary and JSON formats introduced new fields and physics constraints in 4.2. Older exports won't parse.
+This release targets **Spine 4.2** exports, binary or JSON. Older exports won't parse, since 4.2 added fields and physics constraints to both formats. Spine 4.3 exports won't parse either; the upgrade is planned in [`docs/SPINE_4_3_UPGRADE.md`](docs/SPINE_4_3_UPGRADE.md).
 
 ## Quick start
 
@@ -35,6 +23,8 @@ If your use case is in doubt, consult the [Spine licensing page](https://esoteri
 [dependencies]
 dm_spine_runtime = { git = "https://github.com/dead-money/dm_spine_runtime" }
 ```
+
+The crate isn't on crates.io yet.
 
 ```rust
 use std::sync::Arc;
@@ -44,19 +34,17 @@ use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 use dm_spine_runtime::render::SkeletonRenderer;
 
-// 1. Parse the atlas (text) and skeleton. Both loaders produce identical
-//    `SkeletonData`; pick whichever format your pipeline exports.
-let atlas_src = std::fs::read_to_string("spineboy.atlas")?;
-let atlas = Atlas::parse(&atlas_src)?;
+// Parse the atlas and skeleton. Both loaders produce the same SkeletonData.
+let atlas = Atlas::parse(&std::fs::read_to_string("spineboy.atlas")?)?;
 let mut attachment_loader = AtlasAttachmentLoader::new(&atlas);
 
 let bytes = std::fs::read("spineboy-pro.skel")?;
 let data = Arc::new(SkeletonBinary::with_loader(&mut attachment_loader).read(&bytes)?);
-// Or for JSON:
+// Or JSON:
 // let json = std::fs::read("spineboy-pro.json")?;
 // let data = Arc::new(SkeletonJson::with_loader(&mut attachment_loader).read_slice(&json)?);
 
-// 2. Build a skeleton + animation state sharing the immutable data.
+// Skeletons and animation state share the immutable data.
 let mut skeleton = Skeleton::new(Arc::clone(&data));
 skeleton.update_cache();
 skeleton.set_to_setup_pose();
@@ -66,60 +54,77 @@ let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
 let mut animation = AnimationState::new(state_data);
 animation.set_animation_by_name(0, "walk", true)?;
 
-// 3. Tick + render every frame.
+// Drive it from your frame loop.
 let mut renderer = SkeletonRenderer::new();
-for dt in frame_deltas { // your game loop
+let mut events = Vec::new();
+for dt in frame_deltas {
     animation.update(dt);
-    let mut events = Vec::new();
+    events.clear();
     animation.apply(&mut skeleton, &mut events);
     skeleton.update_world_transform(Physics::Update);
     let commands = renderer.render(&skeleton);
-    // Upload commands to your renderer. See dm_spine_bevy for one way.
+    // Upload `commands` to your renderer. dm_spine_bevy shows one way.
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Design notes
+## What it does
 
-- **Struct-of-arrays with typed indices.** `Skeleton` owns `Vec<Bone>`, `Vec<Slot>`, `Vec<IkConstraint>`, etc., and cross-references are `BoneId(u16)` / `SlotId(u16)` / `AnimationId(u16)`. No `Rc<RefCell<…>>` in hot paths.
-- **Immutable shared data.** `SkeletonData` is `Arc`-shared across `Skeleton` instances — one load per asset, many instances cloning the `Arc` cheaply.
-- **Tagged-enum timelines.** Timelines dispatch through a closed `enum Timeline` rather than `Box<dyn Timeline>`, keeping the inner-loop apply code cache-friendly.
-- **No renderer types in the core.** `SkeletonRenderer::render` emits a `&[RenderCommand]`, each carrying plain vertex/uv/color/index buffers and a `TextureId(u32)`. Downstream code resolves the texture id to whatever GPU handle it owns.
-- **Events via out-parameter.** `AnimationState::apply(&mut skeleton, &mut events: Vec<Event>)` — no listener callbacks, no allocation per event.
+- **Loaders.** Binary `.skel`, JSON `.json`, and the `.atlas` text format. All 25 example rigs in `spine-runtimes/examples/` load in either format.
+- **Skeleton and animation state.** The full pose pipeline with all five `Inherit` modes, and a multi-track `AnimationState` with crossfade mixing, queuing, empty animations, and events.
+- **Constraints.** IK (one- and two-bone, with bend, softness, and stretch), Transform (world/local × absolute/relative), Path (every spacing and rotate mode), and Physics (damped spring on a fixed timestep).
+- **Clipping and bounds.** `SkeletonClipping` (Sutherland-Hodgman plus convex decomposition) and `SkeletonBounds` (AABB, point-in-polygon, segment-polygon hit tests).
+- **Render commands.** `SkeletonRenderer::render` walks the draw order, emits region and mesh attachments through the clipper, and merges adjacent runs that share texture, blend mode, and color into one command.
 
-## Examples
+## How it works
 
-Run any of these from the crate root. They expect the upstream [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes) repo to live as a sibling directory (`../spine-runtimes`) so they can load the canonical example rigs.
+- **A literal port.** Files, functions, and update order follow `spine-cpp` closely enough to diff the two side by side. Math wasn't refactored on the way over; correctness is checked against dumps from `spine-cpp` itself (see [Testing](#testing)).
+- **Struct-of-arrays with typed indices.** `Skeleton` owns flat `Vec<Bone>`, `Vec<Slot>`, `Vec<IkConstraint>`, and so on. Cross-references are `BoneId(u16)`, `SlotId(u16)`, and friends, not `Rc<RefCell<…>>`. The update cache is one `Vec` of an enum over bones and constraints, built with `spine-cpp`'s own sort.
+- **Immutable shared data.** `SkeletonData` sits behind an `Arc`. Load an asset once and share it across every instance.
+- **Tagged-enum timelines.** Timelines are a closed `enum`, not `Box<dyn Timeline>`, so the apply loop dispatches without a vtable.
+- **No renderer types.** Each `RenderCommand` carries plain vertex, UV, color, and index buffers plus a `TextureId(u32)` (the atlas page index). Mapping that to a GPU handle is your side's job.
+- **Events through an out-parameter.** `AnimationState::apply` pushes into a `&mut Vec<Event>` you own. There are no listener callbacks.
 
-- `cargo run --example software_render` — pure-CPU rasterizer. Consumes the runtime's `RenderCommand` stream and writes a PNG. Useful as a reference implementation, and as a diagnostic when something visual goes wrong and you want to bisect runtime vs. renderer. Configurable via `SPINE_RIG`, `SPINE_ANIM`, `SPINE_TIME`, `SPINE_OUT` environment variables (see the file header).
-- `cargo run --example dump_slots` — walks a rig's draw order and prints each drawable slot's attachment kind and world-space bounds. Handy when investigating per-slot regressions.
+The crate has no GPU, windowing, or shader dependency, and it doesn't plan to grow one.
+
+## Building
+
+The tests and examples load the canonical rigs from a sibling clone of [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes). Those exports have to be 4.2; upstream's default branch now ships 4.3 exports, so check out the `4.2` branch:
+
+```sh
+git clone -b 4.2 https://github.com/EsotericSoftware/spine-runtimes ../spine-runtimes
+cargo test
+```
+
+Two examples ship with the crate:
+
+- `cargo run --example software_render` rasterizes the `RenderCommand` stream on the CPU and writes a PNG. It's a reference consumer, and a quick way to tell whether a visual bug is in the runtime or in your renderer. Set `SPINE_RIG`, `SPINE_ANIM`, `SPINE_TIME`, and `SPINE_OUT` to pick what it draws (see the file header).
+- `cargo run --example dump_slots` prints each drawable slot's attachment kind and world-space bounds.
 
 ## Testing
 
 ```sh
-cargo test          # unit + integration + goldens
+cargo test
 cargo clippy --all-targets
-cargo fmt
+cargo fmt --check
 ```
 
-Goldens diff against dumps captured from `spine-cpp` via the small C++ harness under [`tools/spine_capture/`](tools/spine_capture/). Tolerances:
+The golden tests diff against JSON captured from `spine-cpp` by the small C++ harness in [`tools/spine_capture/`](tools/spine_capture/). Current parity on the 4.2 example rigs:
 
-- Setup-pose bone transforms: 1e-4 (25/25 rigs).
-- Animation samples: 1e-3 (34/35 samples match; one sub-0.05° applied-rotation drift on raptor-pro is a known numerical follow-up).
-- Render-command headers (texture, blend, vertex count, color): exact (25/25 rigs).
+- Setup-pose bone transforms match at 1e-4 on 25/25 rigs.
+- Animation samples match at 1e-3 on 34/35 samples. The outlier is a sub-0.05° applied-rotation drift on raptor-pro.
+- Render-command headers (texture, blend, vertex count, color) match exactly on 25/25 rigs.
 
-If you regenerate fixtures, rebuild the capture harness with `make` inside its directory.
+To regenerate fixtures, run `make` in the harness directory, then its `capture_*.sh` scripts. The harness, the fixtures, and the example exports have to be the same Spine version.
 
-## Further reading
+For the binary `.skel` wire format, including the tricks that aren't obvious from the reader (draw-order sign by u16 wraparound, the dual `Inherit` encoding, mesh triangle-count units, sequence path resolution), see [`docs/BINARY_FORMAT.md`](docs/BINARY_FORMAT.md).
 
-- [`docs/BINARY_FORMAT.md`](docs/BINARY_FORMAT.md) — reference for the Spine 4.2 binary `.skel` wire format, including the non-obvious encoding tricks (DrawOrder sign-via-wraparound, dual `Inherit` encoding, mesh triangle-count unit mixing, sequence path resolution). Written during the port to save the next implementer a debugging round trip.
-
-## License
+## Licensing
 
 Distributed under the [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license). See [`LICENSE`](./LICENSE) for the full text.
 
-Copyright © 2013-2025 Esoteric Software LLC. Rust port © Dead Money, published under the same license.
+Copyright © 2013-2025 Esoteric Software LLC. Rust port © Dead Money LLC, published under the same license.
 
 ## Acknowledgements
 
-Built by porting [Esoteric Software](https://esotericsoftware.com/)'s C++ reference runtime. The upstream repository at [EsotericSoftware/spine-runtimes](https://github.com/EsotericSoftware/spine-runtimes) remains the source of truth — protocol or behaviour bugs in the underlying runtime should be reported there; port bugs should be filed here.
+Built by porting [Esoteric Software](https://esotericsoftware.com/)'s C++ reference runtime. The upstream [spine-runtimes](https://github.com/EsotericSoftware/spine-runtimes) repository is the source of truth for runtime behavior. Report bugs in the runtime itself there; report bugs in this port here.
