@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:hip", "bone:torso", "bone:neck", "bone:head", "bone:left-shoulder", "bone:left-arm", "bone:left-upper-leg", "bone:left-lower-leg", "bone:left-foot", "bone:left-hand", "bone:pelvis", "bone:right-shoulder", "bone:right-arm", "bone:right-upper-leg", "bone:right-lower-leg", "bone:right-foot", "bone:right-hand", "bone:spear1", "bone:spear2", "bone:spear3"],
   "bones": [
     {
       "index": 0,

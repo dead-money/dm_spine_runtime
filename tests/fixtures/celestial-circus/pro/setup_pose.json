@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:cloud", "bone:swing-top", "physics:swing-top", "bone:swing-bottom", "physics:swing-bottom", "bone:bench-front", "physics:bench-front", "bone:body-bottom", "bone:body-down", "physics:girl/body-down", "bone:body-up", "physics:girl/body-up", "bone:arm-front-up-holder", "physics:girl/arm-front-up-holder", "bone:arm-back-up-holder", "transform:girl/shoulders-perspective", "bone:neck", "bone:face", "bone:face-control", "physics:girl/face-control", "bone:face-inverse", "transform:girl/head-control", "bone:face-holder", "transform:girl/face-control", "bone:hat-front", "bone:feathers-front", "physics:girl/feathers-front", "bone:chest-control", "physics:girl/chest-control", "bone:jabot", "physics:girl/jabot", "bone:feathers-front-top", "physics:girl/feathers-front-top", "bone:wing-front", "physics:girl/wings/wing-front", "bone:wing-front-tip", "physics:girl/wings/wing-front-tip", "bone:wing-back", "physics:girl/wings/wing-back", "bone:wing-back-tip", "physics:girl/wings/wing-back-tip", "bone:leg-front", "bone:leg-front-down", "physics:girl/legs/leg-front-down", "bone:sock-bow", "physics:girl/legs/sock-bow", "bone:foot-front", "physics:girl/legs/foot-front", "bone:leg-back", "bone:leg-back-down", "physics:girl/legs/leg-back-down", "bone:foot-back", "physics:girl/legs/foot-back", "bone:hair-back", "physics:girl/hair/hair-back", "bone:hair-back-down", "physics:girl/hair/hair-back-down", "bone:fringe-side-front", "physics:girl/hair/fringe-side-front", "bone:fringe-side-back", "physics:girl/hair/fringe-side-back", "bone:skirt-back", "physics:girl/skirt/skirt-back", "bone:underskirt-back", "physics:girl/skirt/underskirt-back", "bone:bench-back", "bone:skirt-front", "physics:girl/skirt/skirt-front", "bone:underskirt-front", "physics:girl/skirt/underskirt-front", "physics:bench-back", "bone:cloud-perspective", "physics:cloud-perspective", "bone:rope-front", "bone:rope-back", "bone:arm-front-up", "bone:arm-back-up", "bone:skirt-front", "bone:underskirt-front", "bone:mouth", "bone:eye-white-front", "bone:pupil-front", "bone:eyelashes-top-front", "bone:eyelashes-down-front", "bone:eye-white-back", "bone:pupil-back", "bone:eyelashes-top-back", "bone:eyelashes-down-back", "bone:star1", "bone:star2", "bone:star3", "bone:star4", "bone:star5", "bone:star6"],
   "bones": [
     {
       "index": 0,
@@ -465,7 +466,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447829e-06
+      "a_shear_y": 0
     },
     {
       "index": 23,
@@ -585,7 +586,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447829e-06
+      "a_shear_y": 0
     },
     {
       "index": 29,
@@ -685,7 +686,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": 2.50447829e-06
+      "a_shear_y": 0
     },
     {
       "index": 34,

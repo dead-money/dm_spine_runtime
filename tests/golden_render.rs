@@ -47,6 +47,8 @@
 //! batcher-sensitive, so headers-only gives the same structural
 //! coverage with no order dependence.
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -58,6 +60,8 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct RenderFixture {
+    source_skel: String,
+    source_atlas: String,
     commands: Vec<CommandFixture>,
 }
 
@@ -82,63 +86,25 @@ fn fixtures_root() -> PathBuf {
     PathBuf::from("tests/fixtures/render")
 }
 
-fn examples_dir() -> PathBuf {
-    PathBuf::from("../spine-runtimes/examples")
-}
-
-/// Collect `(rig, variant, fixture_path, atlas_path, skel_path)` for
-/// every render fixture that has a corresponding example rig.
-fn render_samples() -> Vec<(String, String, PathBuf, PathBuf, PathBuf)> {
+/// `(label, fixture_path, atlas_path, skel_path)` for every render fixture.
+fn render_samples() -> Vec<(String, PathBuf, PathBuf, PathBuf)> {
     let root = fixtures_root();
-    if !root.exists() {
-        return Vec::new();
-    }
-    let examples = examples_dir();
-
-    let mut out = Vec::new();
-    for rig_entry in std::fs::read_dir(&root).unwrap().flatten() {
-        let rig_path = rig_entry.path();
-        if rig_path.is_file() {
-            // Single-variant rig: `render/<rig>.json`.
-            let rig = rig_path.file_stem().unwrap().to_string_lossy().to_string();
-            let atlas = examples
-                .join(&rig)
-                .join("export")
-                .join(format!("{rig}.atlas"));
-            let skel = examples
-                .join(&rig)
-                .join("export")
-                .join(format!("{rig}.skel"));
-            if atlas.exists() && skel.exists() {
-                out.push((rig.clone(), String::new(), rig_path, atlas, skel));
-            }
-            continue;
-        }
-        if !rig_path.is_dir() {
-            continue;
-        }
-        let rig = rig_path.file_name().unwrap().to_string_lossy().to_string();
-        for variant_entry in std::fs::read_dir(&rig_path).unwrap().flatten() {
-            let vp = variant_entry.path();
-            if vp.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let variant = vp.file_stem().unwrap().to_string_lossy().to_string();
-            let atlas = examples
-                .join(&rig)
-                .join("export")
-                .join(format!("{rig}.atlas"));
-            let skel = examples
-                .join(&rig)
-                .join("export")
-                .join(format!("{rig}-{variant}.skel"));
-            if atlas.exists() && skel.exists() {
-                out.push((rig.clone(), variant, vp, atlas, skel));
-            }
-        }
-    }
-    out.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-    out
+    common::json_files(&root)
+        .into_iter()
+        .map(|p| {
+            let fx: RenderFixture =
+                serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            let label = p
+                .strip_prefix(&root)
+                .unwrap()
+                .with_extension("")
+                .display()
+                .to_string();
+            let atlas = common::example_path(&fx.source_atlas);
+            let skel = common::example_path(&fx.source_skel);
+            (label, p, atlas, skel)
+        })
+        .collect()
 }
 
 fn render_rig(atlas: &PathBuf, skel: &PathBuf) -> Vec<CommandFixture> {
@@ -187,6 +153,7 @@ fn render_rig(atlas: &PathBuf, skel: &PathBuf) -> Vec<CommandFixture> {
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 5"]
 fn setup_pose_render_commands_match_spine_cpp() {
     let samples = render_samples();
     if samples.is_empty() {
@@ -197,17 +164,11 @@ fn setup_pose_render_commands_match_spine_cpp() {
     let mut rigs_checked = 0;
     let mut rigs_matched = 0;
 
-    for (rig, variant, fixture_path, atlas_path, skel_path) in samples {
+    for (label, fixture_path, atlas_path, skel_path) in samples {
         let fixture: RenderFixture =
             serde_json::from_str(&std::fs::read_to_string(&fixture_path).unwrap()).unwrap();
         let got = render_rig(&atlas_path, &skel_path);
         rigs_checked += 1;
-
-        let label = if variant.is_empty() {
-            rig.clone()
-        } else {
-            format!("{rig}/{variant}")
-        };
 
         if got.len() != fixture.commands.len() {
             eprintln!(

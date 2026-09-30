@@ -14,7 +14,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/build/spine_capture"
 RUNTIME_ROOT="$(cd "$HERE/../.." && pwd)"
-EXAMPLES="$RUNTIME_ROOT/../spine-runtimes/examples"
+EXAMPLES="${SPINE_EXAMPLES:-$RUNTIME_ROOT/../spine-runtimes/examples}"
 FIXTURES="$RUNTIME_ROOT/tests/fixtures/animations"
 
 if [[ ! -x "$BIN" ]]; then
@@ -33,6 +33,8 @@ declare -a ROWS=(
     "raptor pro walk 1.2666668"
     "raptor pro roar 2.1333334"
     "stretchyman pro sneak 1.8"
+    "diamond pro rotation 2.0"
+    "diamond pro size-changing-rotation 6.0"
 )
 
 mkdir -p "$FIXTURES"

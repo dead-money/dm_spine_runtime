@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:powerup", "bone:token-root", "bone:left-wing", "bone:right-wing", "bone:stars", "bone:star", "bone:star1", "bone:star2", "bone:star3", "bone:star4", "bone:star5", "bone:star6", "bone:star7", "bone:star8", "bone:star9", "bone:token"],
   "bones": [
     {
       "index": 0,

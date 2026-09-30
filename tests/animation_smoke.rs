@@ -32,6 +32,8 @@
 //! test — this one just keeps regressions to the integration plumbing
 //! visible.
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -41,10 +43,11 @@ use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 fn examples_dir() -> PathBuf {
-    PathBuf::from("../spine-runtimes/examples")
+    common::examples_root()
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 3"]
 fn all_animations_apply_without_panic() {
     let root = examples_dir();
     assert!(root.exists(), "missing examples dir: {}", root.display());

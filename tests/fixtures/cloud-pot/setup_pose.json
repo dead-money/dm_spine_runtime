@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:pot-control", "bone:cloud", "physics:cloud", "bone:rain-white", "physics:rain/rain-white", "bone:rain-green", "physics:rain/rain-green", "bone:rain-color", "physics:rain/rain-color", "bone:rain-blue", "physics:rain/rain-blue", "bone:cloud-base-1", "physics:cloud-base/cloud-base-1", "bone:cloud-base-2", "physics:cloud-base/cloud-base-2", "bone:cloud-base-3", "physics:cloud-base/cloud-base-3", "bone:cloud-base-4", "physics:cloud-base/cloud-base-4", "bone:cloud-base-5", "physics:cloud-base/cloud-base-5", "bone:cloud-base-6", "physics:cloud-base/cloud-base-6", "bone:cloud-base-7", "physics:cloud-base/cloud-base-7", "bone:cloud-base-8", "physics:cloud-base/cloud-base-8", "bone:cloud-base-9", "physics:cloud-base/cloud-base-9", "bone:cloud-base-10", "physics:cloud-base/cloud-base-10", "bone:pot", "bone:leaf-big", "physics:plant/leaf-big", "bone:leaf-small", "physics:plant/leaf-small", "bone:stem", "physics:plant/stem", "bone:stem2", "physics:plant/stem2", "bone:stem3", "physics:plant/stem3", "bone:petal-1", "physics:plant/petal-1", "bone:petal-3", "physics:plant/petal-3", "bone:petal-2", "physics:plant/petal-2", "bone:leaf-big-tip", "physics:plant/leaf-big-tip", "bone:pot-face", "physics:pot-face", "bone:cloud-face", "physics:cloud-face"],
   "bones": [
     {
       "index": 0,

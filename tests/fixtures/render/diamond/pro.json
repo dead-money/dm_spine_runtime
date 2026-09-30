@@ -1,0 +1,31 @@
+{
+  "source_skel": "spine-runtimes/examples/diamond/export/diamond-pro.skel",
+  "source_atlas": "spine-runtimes/examples/diamond/export/diamond.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 3, "num_indices": 3, "color": 2962391224, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [77.3405, 177.05], "first_uv": [0.609552, 0.303858]},
+    {"texture": 0, "blend": 0, "num_vertices": 3, "num_indices": 3, "color": 2969549017, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [-78.3448, 177.034], "first_uv": [0.609552, 0.303858]},
+    {"texture": 0, "blend": 0, "num_vertices": 9, "num_indices": 9, "color": 2969567231, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [77.3597, 256.615], "first_uv": [0.609552, 0.303858]},
+    {"texture": 0, "blend": 0, "num_vertices": 3, "num_indices": 3, "color": 2963246785, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [153.483, 217.1], "first_uv": [0.609552, 0.303858]},
+    {"texture": 0, "blend": 0, "num_vertices": 8, "num_indices": 12, "color": 2969567231, "dark_color": 4278190080, "first_pos": [-154.517, 217.272], "last_pos": [-48.3827, 310.161], "first_uv": [0.0776493, 0.258348]},
+    {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 2965164287, "dark_color": 4278190080, "first_pos": [-78.3448, 177.034], "last_pos": [-48.1583, 261.541], "first_uv": [0.0776493, 0.258348]},
+    {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 2968251903, "dark_color": 4278190080, "first_pos": [77.3405, 177.05], "last_pos": [47.5246, 261.531], "first_uv": [0.0776493, 0.258348]},
+    {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 2969567231, "dark_color": 4278190080, "first_pos": [77.3597, 256.615], "last_pos": [46.9136, 310.341], "first_uv": [0.0776493, 0.258348]},
+    {"texture": 0, "blend": 0, "num_vertices": 4, "num_indices": 6, "color": 2967788008, "dark_color": 4278190080, "first_pos": [153.483, 217.1], "last_pos": [93.6491, 286.09], "first_uv": [0.0776493, 0.258348]},
+    {"texture": 0, "blend": 1, "num_vertices": 3, "num_indices": 3, "color": 1677695982, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [77.3405, 177.05], "first_uv": [0.921076, 0.415186]},
+    {"texture": 0, "blend": 1, "num_vertices": 3, "num_indices": 3, "color": 1676235749, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [-78.3448, 177.034], "first_uv": [0.921076, 0.415186]},
+    {"texture": 0, "blend": 1, "num_vertices": 3, "num_indices": 3, "color": 1671775214, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [-154.517, 217.272], "first_uv": [0.921076, 0.415186]},
+    {"texture": 0, "blend": 1, "num_vertices": 3, "num_indices": 3, "color": 1667379958, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [-78.5564, 256.647], "first_uv": [0.921076, 0.415186]},
+    {"texture": 0, "blend": 1, "num_vertices": 3, "num_indices": 3, "color": 1662984959, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [77.3597, 256.615], "first_uv": [0.921076, 0.415186]},
+    {"texture": 0, "blend": 1, "num_vertices": 3, "num_indices": 3, "color": 1674727144, "dark_color": 4278190080, "first_pos": [-0.527008, 21.816], "last_pos": [153.483, 217.1], "first_uv": [0.921076, 0.415186]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1663122429, "dark_color": 4278190080, "first_pos": [-154.517, 217.272], "last_pos": [-94.683, 286.095], "first_uv": [0.56886, 0.258348]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1663665397, "dark_color": 4278190080, "first_pos": [-78.5566, 256.647], "last_pos": [-48.3827, 310.161], "first_uv": [0.56886, 0.258348]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1665936889, "dark_color": 4278190080, "first_pos": [-78.3448, 177.034], "last_pos": [-48.1583, 261.541], "first_uv": [0.56886, 0.258348]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1670331889, "dark_color": 4278190080, "first_pos": [77.3405, 177.05], "last_pos": [47.5246, 261.531], "first_uv": [0.56886, 0.258348]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1665936889, "dark_color": 4278190080, "first_pos": [77.3597, 256.615], "last_pos": [46.9136, 310.341], "first_uv": [0.56886, 0.258348]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1664428028, "dark_color": 4278190080, "first_pos": [153.483, 217.1], "last_pos": [93.6491, 286.09], "first_uv": [0.56886, 0.258348]},
+    {"texture": 0, "blend": 0, "num_vertices": 6, "num_indices": 12, "color": 2969434367, "dark_color": 4278190080, "first_pos": [46.9137, 310.34], "last_pos": [-48.3827, 310.161], "first_uv": [0.11446, 0.262905]},
+    {"texture": 0, "blend": 1, "num_vertices": 6, "num_indices": 12, "color": 4294967295, "dark_color": 4278190080, "first_pos": [46.9137, 310.34], "last_pos": [-48.3827, 310.161], "first_uv": [0.218157, 0.228921]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 822083583, "dark_color": 4278190080, "first_pos": [227.838, 12.9873], "last_pos": [268.968, 391.754], "first_uv": [0.335938, 0.228516]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 301989887, "dark_color": 4278190080, "first_pos": [221.003, 106.976], "last_pos": [263.841, 473.78], "first_uv": [0.335938, 0.228516]}
+  ]
+}

@@ -1,11 +1,12 @@
 {
-  "source_skel": "spine-runtimes/examples/sack/export/sack-pro.skel",
-  "source_atlas": "spine-runtimes/examples/sack/export/sack.atlas",
+  "source_skel": "spine-runtimes/examples/7-anticipation/export/sack-pro.skel",
+  "source_atlas": "spine-runtimes/examples/7-anticipation/export/7-anticipation.atlas",
   "physics": "none",
   "skeleton_x": 0,
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:sack", "bone:corner-bottom-front", "bone:corner-bottom-back", "transform:corners-bottom", "bone:sack2", "bone:corner-top-front", "bone:corner-top-back", "transform:corners-top", "bone:front-ear-plant", "bone:corner-bottom-front-ear", "transform:front-plant-transform", "bone:back-ear-plant", "bone:corner-bottom-back-ear", "transform:back-plant-transform", "bone:bone", "physics:bone", "bone:bone4", "physics:bone4", "bone:bone5", "physics:bone5", "bone:bone6", "physics:bone6", "bone:bone2", "physics:bone2", "bone:bone2b", "physics:bone2b", "bone:bone2c", "physics:bone2c", "bone:bone2d", "physics:bone2d", "bone:bone3", "physics:bone3", "bone:bone3b", "physics:bone3b", "bone:bone3c", "physics:bone3c", "bone:bone3d", "physics:bone3d", "bone:corner-top-front-ear", "physics:corner-top-front-ear", "bone:corner-top-back-ear", "physics:corner-top-back-ear", "bone:belly", "physics:belly", "bone:cape-front", "physics:cape-front", "bone:cape-front2", "physics:cape-front2", "bone:cape-front3", "physics:cape-front3", "bone:cape-front4", "physics:cape-front4", "bone:cape-front5", "physics:cape-front5"],
   "bones": [
     {
       "index": 0,
@@ -94,9 +95,9 @@
       "inherit": "noScale",
       "active": true,
       "a": -0.758419454,
-      "b": 0.651766956,
+      "b": 0.651766896,
       "c": -0.651766837,
-      "d": -0.758419394,
+      "d": -0.758419454,
       "world_x": -176.049683,
       "world_y": -1.98062134,
       "ax": 3.81469727e-06,
@@ -125,7 +126,7 @@
       "a_scale_x": 1.00000012,
       "a_scale_y": 1.00000012,
       "a_shear_x": 0,
-      "a_shear_y": 2.50462449e-06
+      "a_shear_y": 0
     },
     {
       "index": 6,
@@ -134,7 +135,7 @@
       "inherit": "noScale",
       "active": true,
       "a": 0.883528948,
-      "b": 0.468376547,
+      "b": 0.468376607,
       "c": -0.468376637,
       "d": 0.883528948,
       "world_x": 165.950211,
@@ -165,7 +166,7 @@
       "a_scale_x": 0.99999994,
       "a_scale_y": 0.99999994,
       "a_shear_x": 0,
-      "a_shear_y": 2.50462494e-06
+      "a_shear_y": 0
     },
     {
       "index": 8,

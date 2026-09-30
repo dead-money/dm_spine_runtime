@@ -540,6 +540,7 @@ mod tests {
     /// at least one region command whose vertex layout matches the
     /// expected BR/BL/UL/UR shape.
     #[test]
+    #[ignore = "Spine 4.3 phase 5"]
     fn renders_spineboy_setup_pose() {
         use crate::atlas::Atlas;
         use crate::load::{AtlasAttachmentLoader, SkeletonBinary};

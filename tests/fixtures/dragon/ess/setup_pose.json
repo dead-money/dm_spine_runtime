@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:center", "bone:back", "bone:chest", "bone:neck", "bone:chin", "bone:head", "bone:left-front-thigh", "bone:left-front-leg", "bone:left-front-toe1", "bone:left-front-toe2", "bone:left-front-toe3", "bone:left-front-toe4", "bone:right-rear-thigh", "bone:left-rear-thigh", "bone:left-rear-leg", "bone:left-wing", "bone:right-front-thigh", "bone:right-front-leg", "bone:right-front-toe1", "bone:right-front-toe2", "bone:right-front-toe3", "bone:right-rear-leg", "bone:right-rear-toe1", "bone:right-rear-toe2", "bone:right-rear-toe3", "bone:right-wing", "bone:tail1", "bone:tail2", "bone:tail3", "bone:tail4", "bone:tail5", "bone:tail6"],
   "bones": [
     {
       "index": 0,

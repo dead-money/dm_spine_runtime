@@ -1,0 +1,7 @@
+{
+  "source_skel": "spine-runtimes/examples/8-follow-through/export/8-follow-through-pro-ball.skel",
+  "source_atlas": "spine-runtimes/examples/8-follow-through/export/8-follow-through.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 34, "num_indices": 90, "color": 4294967295, "dark_color": 4278190080, "first_pos": [-68, 20.2211], "last_pos": [78, 81], "first_uv": [0.375, 0.355702]}
+  ]
+}

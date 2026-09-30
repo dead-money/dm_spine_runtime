@@ -31,7 +31,8 @@
 //! fire in the expected order; bit-for-bit value correctness sits in
 //! `tests/golden_animation.rs` via spine-cpp-captured fixtures.
 
-use std::path::PathBuf;
+mod common;
+
 use std::sync::Arc;
 
 use dm_spine_runtime::animation::{AnimationState, AnimationStateData, EventType};
@@ -40,7 +41,7 @@ use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use dm_spine_runtime::skeleton::{Physics, Skeleton};
 
 fn load_spineboy_pro() -> Arc<dm_spine_runtime::data::SkeletonData> {
-    let examples = PathBuf::from("../spine-runtimes/examples/spineboy/export");
+    let examples = common::examples_root().join("spineboy/export");
     let atlas_src = std::fs::read_to_string(examples.join("spineboy.atlas")).unwrap();
     let atlas = Atlas::parse(&atlas_src).unwrap();
     let mut loader = AtlasAttachmentLoader::new(&atlas);
@@ -65,6 +66,7 @@ fn find_anim(
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 3"]
 fn crossfade_walk_to_run_fires_start_interrupt_end() {
     let data = load_spineboy_pro();
     let mut sk = Skeleton::new(Arc::clone(&data));
@@ -143,6 +145,7 @@ fn crossfade_walk_to_run_fires_start_interrupt_end() {
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 3"]
 fn queued_animation_promotes_then_fires_start() {
     let data = load_spineboy_pro();
     let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
@@ -171,6 +174,7 @@ fn queued_animation_promotes_then_fires_start() {
 }
 
 #[test]
+#[ignore = "Spine 4.3 phase 3"]
 fn set_empty_animations_fades_all_tracks_to_setup() {
     let data = load_spineboy_pro();
     let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));

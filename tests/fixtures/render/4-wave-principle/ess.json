@@ -1,0 +1,9 @@
+{
+  "source_skel": "spine-runtimes/examples/4-wave-principle/export/4-wave-principle-ess.skel",
+  "source_atlas": "spine-runtimes/examples/4-wave-principle/export/4-wave-principle.atlas",
+  "commands": [
+    {"texture": 0, "blend": 0, "num_vertices": 28, "num_indices": 42, "color": 4294967295, "dark_color": 4278190080, "first_pos": [62.5, 24], "last_pos": [101, 1412], "first_uv": [0.484375, 0.5]},
+    {"texture": 0, "blend": 2, "num_vertices": 4, "num_indices": 6, "color": 2399141887, "dark_color": 4278190080, "first_pos": [101, 1206], "last_pos": [101, 1412], "first_uv": [0.880859, 0.714844]},
+    {"texture": 0, "blend": 1, "num_vertices": 4, "num_indices": 6, "color": 1862257097, "dark_color": 4278190080, "first_pos": [101, 1206], "last_pos": [101, 1412], "first_uv": [0.880859, 0.714844]}
+  ]
+}

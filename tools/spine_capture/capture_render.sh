@@ -9,7 +9,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/build/spine_capture"
 RUNTIME_ROOT="$(cd "$HERE/../.." && pwd)"
-EXAMPLES="$RUNTIME_ROOT/../spine-runtimes/examples"
+EXAMPLES="${SPINE_EXAMPLES:-$RUNTIME_ROOT/../spine-runtimes/examples}"
 FIXTURES="$RUNTIME_ROOT/tests/fixtures/render"
 
 if [[ ! -x "$BIN" ]]; then

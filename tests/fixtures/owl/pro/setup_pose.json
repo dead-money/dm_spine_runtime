@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:branch-1", "bone:branch-2", "bone:owl-base", "bone:tail-feathers", "physics:tail-feathers", "bone:body-top-control", "physics:body-top-control", "bone:branch-3", "physics:branch-3", "bone:leaf-1", "physics:leaf-1", "bone:leaf-7", "physics:leaf-7", "bone:leaf-3", "physics:leaf-3", "bone:branch-4", "bone:leaf-2", "physics:leaf-2", "bone:branch-5", "bone:leaf-5", "physics:leaf-5", "bone:branch-6", "bone:leaf-6", "physics:leaf-6", "bone:leaf-4", "physics:leaf-4", "bone:head", "bone:control", "bone:control-back", "transform:control-back"],
   "bones": [
     {
       "index": 0,
@@ -245,7 +246,7 @@
       "a_scale_x": 1,
       "a_scale_y": 1,
       "a_shear_x": 0,
-      "a_shear_y": -3.62853939e-06
+      "a_shear_y": -7.62939453e-06
     },
     {
       "index": 12,

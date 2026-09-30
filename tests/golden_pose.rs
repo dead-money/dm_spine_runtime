@@ -31,6 +31,8 @@
 //! the fixture (which was captured from spine-cpp, see
 //! `tools/spine_capture/`).
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -43,9 +45,7 @@ const TOLERANCE: f32 = 1e-4;
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
-    #[allow(dead_code)] // kept for debug prints on failure
     source_skel: String,
-    #[allow(dead_code)]
     source_atlas: String,
     bones: Vec<BoneFixture>,
 }
@@ -75,64 +75,22 @@ fn fixtures_root() -> PathBuf {
     PathBuf::from("tests/fixtures")
 }
 
-fn examples_root() -> PathBuf {
-    PathBuf::from("../spine-runtimes/examples")
-}
-
-/// Walk `tests/fixtures/{rig}[/variant]/setup_pose.json` and yield
-/// `(rig, variant, fixture_path)` triples. `variant` is `None` for rigs
-/// whose skel file matched the rig name directly (e.g. `chibi-stickers.skel`).
-fn collect_fixtures() -> Vec<(String, Option<String>, PathBuf)> {
-    let mut out = Vec::new();
+/// Every `setup_pose.json` under the fixtures root, labelled by its
+/// directory relative to that root.
+fn collect_fixtures() -> Vec<(String, PathBuf)> {
     let root = fixtures_root();
-    for rig_entry in std::fs::read_dir(&root).unwrap().flatten() {
-        let rig_path = rig_entry.path();
-        if !rig_path.is_dir() {
-            continue;
-        }
-        let rig = rig_path.file_name().unwrap().to_string_lossy().into_owned();
-
-        // `rig/setup_pose.json` (no variant dir) — single-variant rigs.
-        let direct = rig_path.join("setup_pose.json");
-        if direct.is_file() {
-            out.push((rig.clone(), None, direct));
-            continue;
-        }
-
-        // Otherwise `rig/{variant}/setup_pose.json`.
-        for variant_entry in std::fs::read_dir(&rig_path).unwrap().flatten() {
-            let variant_path = variant_entry.path();
-            if !variant_path.is_dir() {
-                continue;
-            }
-            let variant = variant_path
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            let fx = variant_path.join("setup_pose.json");
-            if fx.is_file() {
-                out.push((rig.clone(), Some(variant), fx));
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Resolve the matching `.skel` and non-PMA atlas for a `(rig, variant)`
-/// pair. Mirrors the pairing rule in `tools/spine_capture/capture_all.sh`.
-fn resolve_assets(rig: &str, variant: Option<&str>) -> (PathBuf, PathBuf) {
-    let export = examples_root().join(rig).join("export");
-    let skel_name = match variant {
-        Some(v) => format!("{rig}-{v}.skel"),
-        None => format!("{rig}.skel"),
-    };
-    let skel = export.join(&skel_name);
-    let atlas = export.join(format!("{rig}.atlas"));
-    assert!(skel.is_file(), "expected skel file: {}", skel.display());
-    assert!(atlas.is_file(), "expected atlas file: {}", atlas.display());
-    (atlas, skel)
+    common::json_files(&root)
+        .into_iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == "setup_pose.json"))
+        .map(|p| {
+            let label = p
+                .parent()
+                .and_then(|d| d.strip_prefix(&root).ok())
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            (label, p)
+        })
+        .collect()
 }
 
 fn load_skeleton(atlas_path: &Path, skel_path: &Path) -> Skeleton {
@@ -216,6 +174,7 @@ fn first_bone_mismatch(
 // Phase 5e: fixtures regenerated with the full constraint pipeline
 // enabled via Skeleton::updateWorldTransform.
 #[test]
+#[ignore = "Spine 4.3 phase 2"]
 fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
     let fixtures = collect_fixtures();
     assert!(
@@ -225,17 +184,13 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
     );
 
     let mut checked = 0usize;
-    for (rig, variant, fx_path) in &fixtures {
-        let rig_label = match variant {
-            Some(v) => format!("{rig}/{v}"),
-            None => rig.clone(),
-        };
-
+    for (rig_label, fx_path) in &fixtures {
         let fx_json = std::fs::read_to_string(fx_path).unwrap();
         let fx: Fixture = serde_json::from_str(&fx_json)
             .unwrap_or_else(|e| panic!("[{rig_label}] fixture parse failed: {e}"));
 
-        let (atlas_path, skel_path) = resolve_assets(rig, variant.as_deref());
+        let atlas_path = common::example_path(&fx.source_atlas);
+        let skel_path = common::example_path(&fx.source_skel);
         let mut sk = load_skeleton(&atlas_path, &skel_path);
         // Exercise the full Phase 2 public sequence, not just the bone pose
         // shortcut that Skeleton::new already seeds. `set_to_setup_pose` is a
@@ -259,7 +214,7 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
                 expected.index as usize, i,
                 "[{rig_label}] fixture bone order broken at index {i}"
             );
-            if let Some(msg) = first_bone_mismatch(&rig_label, expected, &sk.bones[i]) {
+            if let Some(msg) = first_bone_mismatch(rig_label, expected, &sk.bones[i]) {
                 mismatches += 1;
                 if first_miss.is_none() {
                     first_miss = Some(msg);

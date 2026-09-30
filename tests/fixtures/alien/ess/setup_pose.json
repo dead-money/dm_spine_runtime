@@ -6,6 +6,7 @@
   "skeleton_y": 0,
   "scale_x": 1,
   "scale_y": 1,
+  "update_cache": ["bone:root", "bone:hip", "bone:back-thigh", "bone:back-shin", "bone:back-foot", "bone:body", "bone:head", "bone:blown-up-neck", "bone:eye", "bone:front-thigh", "bone:front-shin", "bone:front-foot", "bone:front-upper-arm", "bone:front-lower-arm", "bone:highlight", "bone:upper-back-arm", "bone:lower-back-arm", "bone:metaljaw", "bone:pupil", "bone:splat"],
   "bones": [
     {
       "index": 0,
