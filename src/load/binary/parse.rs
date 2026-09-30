@@ -1372,7 +1372,11 @@ impl<'loader> SkeletonBinary<'loader> {
                 let data = &sd.events[ei];
                 let int_value = r.read_varint(false)?;
                 let float_value = r.read_float()?;
-                let string_value = r.read_string()?.or_else(|| Some(data.string_value.clone()));
+                let string_value = Some(
+                    r.read_string()?
+                        .unwrap_or_else(|| data.string_value.clone())
+                        .into(),
+                );
                 let (volume, balance) = if data.audio_path.is_empty() {
                     (data.volume, data.balance)
                 } else {

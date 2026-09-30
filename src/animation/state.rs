@@ -88,14 +88,14 @@ impl Interpolation {
             Self::Linear => a,
             Self::Smooth => a * a * (3.0 - 2.0 * a),
             Self::SlowFast => a * a,
-            Self::FastSlow => (a - 1.0) * (a - 1.0) * -1.0 + 1.0,
+            Self::FastSlow => -((a - 1.0) * (a - 1.0)) + 1.0,
             Self::Circle => {
                 if a <= 0.5 {
                     let a = a * 2.0;
                     (1.0 - (1.0 - a * a).sqrt()) / 2.0
                 } else {
                     let a = (a - 1.0) * 2.0;
-                    ((1.0 - a * a).sqrt() + 1.0) / 2.0
+                    f32::midpoint((1.0 - a * a).sqrt(), 1.0)
                 }
             }
         }
@@ -933,10 +933,10 @@ impl AnimationState {
         let (start, end) = (e.animation_start, e.animation_end);
         let duration = end - start;
         let reverse = e.reverse;
-        let mut split = if duration != 0.0 {
-            e.track_last % duration
-        } else {
+        let mut split = if duration == 0.0 {
             0.0
+        } else {
+            e.track_last % duration
         };
         if reverse {
             split = duration - split;
@@ -1297,7 +1297,7 @@ impl AnimationState {
             match to {
                 Some(to_id)
                     if !t.is_instant()
-                        && !(self.e(to_id).additive && additive)
+                        && (!additive || !self.e(to_id).additive)
                         && animation(&sd, self.e(to_id).animation).has_timeline(ids) =>
                 {
                     mode = from | HOLD;
@@ -1355,7 +1355,7 @@ impl AnimationState {
                 0,
             ))
         {
-            mode = if first != track { CURRENT } else { FIRST };
+            mode = if first == track { FIRST } else { CURRENT };
         }
         self.property_owners = owners;
         mode

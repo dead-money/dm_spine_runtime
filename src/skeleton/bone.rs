@@ -562,7 +562,7 @@ mod tests {
     use crate::data::{BoneData, BoneId, Inherit, SkeletonData};
     use crate::skeleton::{Physics, Skeleton};
 
-    /// No example rig uses the NoScale inherit modes under a reflected
+    /// No example rig uses the `NoScale` inherit modes under a reflected
     /// parent. Expected values are from `tools/spine_capture/spine_synthetic`.
     fn pose(inherit: Inherit) -> [f32; 6] {
         let mut sd = SkeletonData::default();

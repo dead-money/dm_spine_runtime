@@ -1392,9 +1392,8 @@ impl<'loader> SkeletonJson<'loader> {
                 let time = get_f32(k, "time", 0.0);
                 let int_value = get_int(k, "int", data.int_value);
                 let float_value = get_f32(k, "float", data.float_value);
-                let string_value = get_str(k, "string")
-                    .map(str::to_string)
-                    .or_else(|| Some(data.string_value.clone()));
+                let string_value: Option<std::sync::Arc<str>> =
+                    Some(get_str(k, "string").unwrap_or(&data.string_value).into());
                 let (volume, balance) = if data.audio_path.is_empty() {
                     (data.volume, data.balance)
                 } else {

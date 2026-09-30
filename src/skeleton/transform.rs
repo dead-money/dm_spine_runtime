@@ -83,8 +83,14 @@ impl Skeleton {
             } else {
                 bone::modify_world(&mut self.bones, bi, &f);
             }
+            let hoisted = *self.bones[data.source.index()].applied();
             for from in &data.properties {
-                let source = *self.bones[data.source.index()].applied();
+                // A bone constrained to itself sees its own earlier writes.
+                let source = if b == data.source {
+                    *self.bones[bi].applied()
+                } else {
+                    hoisted
+                };
                 let value = from_value(from.property, &f, &source, local_source, &data.offsets)
                     - from.offset;
                 for to in &from.to {

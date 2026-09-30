@@ -273,24 +273,20 @@ impl Skeleton {
             }
         }
         let frame = self.frame();
+        let data = Arc::clone(&self.data);
         for i in 0..self.update_cache.len() {
             match self.update_cache[i] {
                 UpdateCacheEntry::Bone(id) => {
-                    bone::update_bone(&mut self.bones, id.index(), &frame)
+                    bone::update_bone(&mut self.bones, id.index(), &frame);
                 }
-                UpdateCacheEntry::Constraint(id) => self.update_constraint(id, physics),
+                UpdateCacheEntry::Constraint(id) => match &data.constraints[id.index()] {
+                    ConstraintData::Ik(d) => self.update_ik(id, d, &data),
+                    ConstraintData::Transform(d) => self.update_transform(id, d),
+                    ConstraintData::Path(d) => self.update_path(id, d, &data),
+                    ConstraintData::Physics(d) => self.update_physics(id, d, physics),
+                    ConstraintData::Slider(d) => self.update_slider(id, d, &data),
+                },
             }
-        }
-    }
-
-    fn update_constraint(&mut self, id: ConstraintId, physics: Physics) {
-        let data = Arc::clone(&self.data);
-        match &data.constraints[id.index()] {
-            ConstraintData::Ik(d) => self.update_ik(id, d),
-            ConstraintData::Transform(d) => self.update_transform(id, d),
-            ConstraintData::Path(d) => self.update_path(id, d, &data),
-            ConstraintData::Physics(d) => self.update_physics(id, d, physics),
-            ConstraintData::Slider(d) => self.update_slider(id, d, &data),
         }
     }
 

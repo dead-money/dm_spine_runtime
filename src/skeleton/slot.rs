@@ -99,8 +99,10 @@ pub struct Slot {
 impl Slot {
     #[must_use]
     pub fn new(data: &SlotData) -> Self {
-        let mut pose = SlotPose::default();
-        pose.has_dark_color = data.dark_color.is_some();
+        let pose = SlotPose {
+            has_dark_color: data.dark_color.is_some(),
+            ..SlotPose::default()
+        };
         Self {
             data: data.index,
             bone: data.bone,

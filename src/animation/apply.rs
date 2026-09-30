@@ -382,7 +382,7 @@ pub(crate) fn apply_timeline(
                     a = base + (a - base) * alpha;
                 }
                 c.a = clamp01(a);
-            })
+            });
         }
         Timeline::Rgba2 { slot, curves } => {
             color_timeline(sk, sd, *slot, applied, |pose, setup| {
@@ -444,7 +444,7 @@ pub(crate) fn apply_timeline(
                 pose.dark_color.r = clamp01(r2);
                 pose.dark_color.g = clamp01(g2);
                 pose.dark_color.b = clamp01(b2);
-            })
+            });
         }
         Timeline::Rgb2 { slot, curves } => color_timeline(sk, sd, *slot, applied, |pose, setup| {
             let sl = setup.color;
@@ -893,13 +893,7 @@ fn active_constraint(sk: &mut Skeleton, id: ConstraintId) -> Option<&mut Constra
 
 #[inline]
 fn clamp01(v: f32) -> f32 {
-    if v < 0.0 {
-        0.0
-    } else if v > 1.0 {
-        1.0
-    } else {
-        v
-    }
+    v.clamp(0.0, 1.0)
 }
 
 /// `Color::set`, which clamps.

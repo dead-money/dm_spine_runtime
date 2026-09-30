@@ -154,7 +154,7 @@ impl Attachment {
     }
 }
 
-/// Shared by Mesh, BoundingBox, Path and Clipping.
+/// Shared by Mesh, `BoundingBox`, Path and Clipping.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct VertexData {
     /// Empty when unweighted. Otherwise, per vertex: bone count, then that

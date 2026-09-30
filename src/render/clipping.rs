@@ -98,18 +98,17 @@ impl SkeletonClipping {
             self.clipping_polygon.push(y);
             self.push_polygon_from_own();
         } else {
-            let triangles = self
-                .triangulator
-                .triangulate(&self.clipping_polygon)
-                .to_vec();
-            let polygons = self
-                .triangulator
-                .decompose(&self.clipping_polygon, &triangles);
+            let max_points = self.clipping_polygon.len() + 2;
+            let polygons = self.triangulator.triangulate_convex(&self.clipping_polygon);
             for (i, p) in polygons.iter().enumerate() {
                 if self.clipping_polygons.len() <= i {
                     self.clipping_polygons.push(Vec::new());
                 }
-                self.clipping_polygons[i].clone_from(p);
+                // Sized for the largest part so later frames don't regrow it.
+                let dst = &mut self.clipping_polygons[i];
+                dst.clear();
+                dst.reserve(max_points);
+                dst.extend_from_slice(p);
             }
             self.polygon_count = polygons.len();
         }

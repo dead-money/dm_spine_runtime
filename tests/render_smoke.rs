@@ -30,7 +30,7 @@
 //! command has internally-consistent buffer lengths, and every world
 //! position / uv is finite.
 //!
-//! This doesn't check output correctness — that's golden_render's job
+//! This doesn't check output correctness — that's `golden_render`'s job
 //! (Phase 6g). It catches walker-level regressions: out-of-bounds
 //! indexing, attachment-kind mismatches, stray NaN/Inf propagation.
 

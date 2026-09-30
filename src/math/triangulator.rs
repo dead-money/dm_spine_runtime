@@ -143,13 +143,22 @@ impl Triangulator {
 
     /// Merges triangles into convex polygons, each closed by repeating its
     /// first point.
+    ///
+    /// # Panics
+    ///
+    /// If `triangles` indexes past the end of `vertices`.
     pub fn decompose(&mut self, vertices: &[f32], triangles: &[u16]) -> &[Vec<f32>] {
         self.polygon_pool.append(&mut self.convex_polygons);
         self.indices_pool.append(&mut self.convex_polygon_indices);
+        // Pooled buffers come back in varying order, so size each one for the
+        // largest possible polygon to keep steady-state frames allocation-free.
+        let (max_points, max_indices) = (vertices.len() + 2, vertices.len() / 2);
         let mut polygon = self.polygon_pool.pop().unwrap_or_default();
         polygon.clear();
+        polygon.reserve(max_points);
         let mut polygon_indices = self.indices_pool.pop().unwrap_or_default();
         polygon_indices.clear();
+        polygon_indices.reserve(max_indices);
 
         let mut fan_base_index: i32 = -1;
         let mut last_winding = 0;
@@ -175,7 +184,11 @@ impl Triangulator {
                 self.convex_polygons.push(polygon);
                 self.convex_polygon_indices.push(polygon_indices);
                 polygon = self.polygon_pool.pop().unwrap_or_default();
+                polygon.clear();
+                polygon.reserve(max_points);
                 polygon_indices = self.indices_pool.pop().unwrap_or_default();
+                polygon_indices.clear();
+                polygon_indices.reserve(max_indices);
             }
             polygon.clear();
             polygon.extend_from_slice(&[x1, y1, x2, y2, x3, y3]);
@@ -260,6 +273,16 @@ impl Triangulator {
                 p.push(y);
             }
         }
+        &self.convex_polygons
+    }
+
+    /// [`Self::triangulate`] then [`Self::decompose`] without copying the
+    /// triangles out.
+    pub fn triangulate_convex(&mut self, vertices: &[f32]) -> &[Vec<f32>] {
+        self.triangulate(vertices);
+        let triangles = std::mem::take(&mut self.triangles);
+        self.decompose(vertices, &triangles);
+        self.triangles = triangles;
         &self.convex_polygons
     }
 
@@ -441,7 +464,7 @@ mod tests {
             polygons.len()
         );
         for p in &polygons {
-            assert!(p.len() % 2 == 0);
+            assert_eq!(p.len() % 2, 0);
             assert!(p.len() >= 6);
         }
         assert_eq!(t.convex_polygon_indices().len(), polygons.len());

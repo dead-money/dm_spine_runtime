@@ -29,7 +29,7 @@ name = "frame"
 harness = false
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -41,3 +41,14 @@ cast_possible_wrap = "allow"
 cast_sign_loss = "allow"
 similar_names = "allow"
 module_name_repetitions = "allow"
+# Literal ports of spine-cpp functions keep their length, parameter lists,
+# single-letter math names, exact float sentinels and flag fields.
+too_many_lines = "allow"
+too_many_arguments = "allow"
+many_single_char_names = "allow"
+float_cmp = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+
+[profile.bench]
+debug = true

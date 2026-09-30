@@ -48,7 +48,12 @@ impl Skeleton {
         }
     }
 
-    pub(crate) fn update_ik(&mut self, id: ConstraintId, data: &IkConstraintData) {
+    pub(crate) fn update_ik(
+        &mut self,
+        id: ConstraintId,
+        data: &IkConstraintData,
+        skeleton_data: &crate::data::SkeletonData,
+    ) {
         let Constraint::Ik(c) = &self.constraints[id.index()] else {
             unreachable!()
         };
@@ -59,7 +64,6 @@ impl Skeleton {
         let frame = self.frame();
         let target = self.bones[data.target.index()].applied();
         let (tx, ty) = (target.world_x, target.world_y);
-        let skeleton_data = std::sync::Arc::clone(&self.data);
         let length = |b: crate::data::BoneId| skeleton_data.bones[b.index()].length;
         match data.bones.len() {
             1 => apply1(

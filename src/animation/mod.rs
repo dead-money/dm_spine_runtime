@@ -63,7 +63,7 @@ pub struct Event {
     pub time: f32,
     pub int_value: i32,
     pub float_value: f32,
-    pub string_value: Option<String>,
+    pub string_value: Option<std::sync::Arc<str>>,
     pub volume: f32,
     pub balance: f32,
 }

@@ -168,7 +168,8 @@ pub struct AnimationEvent {
     pub event: EventId,
     pub int_value: i32,
     pub float_value: f32,
-    pub string_value: Option<String>,
+    /// Shared so firing the event doesn't allocate.
+    pub string_value: Option<std::sync::Arc<str>>,
     pub volume: f32,
     pub balance: f32,
 }

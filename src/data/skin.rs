@@ -29,6 +29,7 @@
 //! skin-required bones and constraints the skin brings in.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::data::{AttachmentId, BoneId, ConstraintId, SlotId};
 use crate::math::Color;
@@ -41,15 +42,40 @@ pub struct Skin {
     /// Nonessential editor color.
     pub color: Color,
     /// Indexed by slot; each map is placeholder name to attachment.
-    slots: Vec<HashMap<String, AttachmentId>>,
+    slots: Vec<NameMap>,
 }
+
+/// FNV-1a: placeholder names are short, and attachment timelines look them
+/// up every frame.
+#[derive(Default)]
+struct NameHasher(u64);
+
+impl Hasher for NameHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+
+type NameMap = HashMap<String, AttachmentId, BuildHasherDefault<NameHasher>>;
 
 impl Skin {
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            color: Color::new(0.99607843, 0.61960787, 0.30980393, 1.0),
+            color: Color::new(0.996_078_43, 0.619_607_87, 0.309_803_93, 1.0),
             ..Self::default()
         }
     }
@@ -62,7 +88,7 @@ impl Skin {
     ) {
         let i = slot.index();
         if self.slots.len() <= i {
-            self.slots.resize_with(i + 1, HashMap::new);
+            self.slots.resize_with(i + 1, NameMap::default);
         }
         self.slots[i].insert(placeholder.into(), attachment);
     }
@@ -80,7 +106,7 @@ impl Skin {
 
     #[must_use]
     pub fn attachment_count(&self) -> usize {
-        self.slots.iter().map(HashMap::len).sum()
+        self.slots.iter().map(NameMap::len).sum()
     }
 
     /// Every `(slot, placeholder, attachment)` entry.

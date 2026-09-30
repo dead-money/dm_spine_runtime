@@ -37,6 +37,9 @@ use dm_spine_runtime::atlas::Atlas;
 use dm_spine_runtime::data::SkeletonData;
 use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary, SkeletonJson};
 
+/// A skin's name and its `(slot, placeholder, attachment)` entries.
+type SkinEntries = (String, Vec<(u16, String, String)>);
+
 fn examples_root() -> PathBuf {
     common::examples_root()
 }
@@ -315,7 +318,7 @@ fn json_matches_binary_on_every_example() {
         );
 
         let skins = |sd: &SkeletonData| {
-            let mut v: Vec<(String, Vec<(u16, String, String)>)> = sd
+            let mut v: Vec<SkinEntries> = sd
                 .skins
                 .iter()
                 .map(|skin| {
