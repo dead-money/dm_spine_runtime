@@ -28,8 +28,8 @@
 //! Top-level immutable data container for a single Spine skeleton.
 
 use crate::data::{
-    Animation, Attachment, BoneData, EventData, IkConstraintData, PathConstraintData,
-    PhysicsConstraintData, Skin, SkinId, SlotData, TransformConstraintData,
+    Animation, Attachment, BoneData, ConstraintData, ConstraintId, EventData, Skin, SkinId,
+    SlotData,
 };
 
 /// Stores the setup pose and every piece of stateless data the runtime needs
@@ -59,10 +59,8 @@ pub struct SkeletonData {
     pub events: Vec<EventData>,
     pub animations: Vec<Animation>,
 
-    pub ik_constraints: Vec<IkConstraintData>,
-    pub transform_constraints: Vec<TransformConstraintData>,
-    pub path_constraints: Vec<PathConstraintData>,
-    pub physics_constraints: Vec<PhysicsConstraintData>,
+    /// Every constraint in update order.
+    pub constraints: Vec<ConstraintData>,
 
     /// Flat store for every [`Attachment`] referenced by any skin. Skins
     /// hold [`AttachmentId`][crate::data::AttachmentId] indices into this
@@ -114,23 +112,11 @@ impl SkeletonData {
     }
 
     #[must_use]
-    pub fn find_ik_constraint(&self, name: &str) -> Option<&IkConstraintData> {
-        self.ik_constraints.iter().find(|c| c.name == name)
-    }
-
-    #[must_use]
-    pub fn find_transform_constraint(&self, name: &str) -> Option<&TransformConstraintData> {
-        self.transform_constraints.iter().find(|c| c.name == name)
-    }
-
-    #[must_use]
-    pub fn find_path_constraint(&self, name: &str) -> Option<&PathConstraintData> {
-        self.path_constraints.iter().find(|c| c.name == name)
-    }
-
-    #[must_use]
-    pub fn find_physics_constraint(&self, name: &str) -> Option<&PhysicsConstraintData> {
-        self.physics_constraints.iter().find(|c| c.name == name)
+    pub fn find_constraint(&self, name: &str) -> Option<ConstraintId> {
+        self.constraints
+            .iter()
+            .position(|c| c.name() == name)
+            .map(|i| ConstraintId(i as u16))
     }
 
     /// Convenience for grabbing the default skin, if any.
@@ -173,7 +159,7 @@ mod tests {
         assert!(sd.find_event("footstep").is_some());
         assert!(sd.find_animation("walk").is_some());
         assert!(sd.find_skin("default").is_some());
-        assert!(sd.find_ik_constraint("anything").is_none());
+        assert!(sd.find_constraint("anything").is_none());
     }
 
     #[test]

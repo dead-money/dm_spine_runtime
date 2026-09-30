@@ -1,22 +1,56 @@
-# Spine 4.2 Binary `.skel` Format Reference
+# Spine 4.3 Binary `.skel` Format Reference
 
 This document describes the wire format of the Spine editor's binary skeleton
-export (`.skel`) for version 4.2.x, in enough detail to implement a loader
-from scratch. It was produced while porting `spine-cpp/SkeletonBinary.cpp` to
-Rust and captures every structural decision, subtle encoding trick, and gotcha
-surfaced along the way.
+export (`.skel`) for version 4.3.x, in enough detail to implement a loader
+from scratch. It captures every structural decision, subtle encoding trick,
+and gotcha surfaced while porting `spine-cpp/SkeletonBinary.cpp` to Rust.
 
 The format is little-documented outside the code itself. The canonical
 reference implementations are:
 
-- `spine-cpp/spine-cpp/src/spine/SkeletonBinary.cpp` (the C++ port the Spine
-  team maintains — authoritative when in doubt).
-- `spine-runtimes/spine-ts/spine-core/src/SkeletonBinary.ts` (TypeScript port;
-  often easier to read.)
-- `dm_spine_runtime/src/load/binary/parse.rs` (Rust port, this project).
+- `spine-cpp/src/spine/SkeletonBinary.cpp` (the C++ port the Spine team
+  maintains — authoritative when in doubt).
+- `spine-ts/spine-core/src/SkeletonBinary.ts` (TypeScript port; often easier
+  to read).
+- `dm_spine_runtime/src/load/binary/parse.rs` (Rust port, this project;
+  verified against every 4.3 example export).
 
-Wherever this document cites line numbers, they refer to the `spine-cpp`
-sources as of the 4.2 branch.
+Wherever this document cites line numbers, they refer to the 4.3
+`spine-cpp` / `spine-ts` sources.
+
+## Changes from 4.2
+
+For porters updating a 4.2 loader:
+
+- Version string starts with `"4.3"`.
+- Bones: `inherit` is a byte and precedes `length`; nonessential adds
+  `iconSize` and `iconRotation` floats after `icon`.
+- The four per-type constraint sections (IK, transform, path, physics) are
+  replaced by **one ordered constraint list**; each entry has a type byte
+  (`0` IK, `1` path, `2` transform, `3` physics, `4` slider). The per-constraint
+  `order` field is gone — list order is update order.
+- IK: flag bit `2` gates a `scaleYMode` byte; bend direction is now an
+  *inverted* bit (`4` set → `-1`); the other bits shift up by one.
+- Transform constraint rewritten: `source` bone, flags
+  `localSource/localTarget/additive/clamp`, a list of from/to property
+  records, then an offsets flag byte and a mix flag byte.
+- Path: `skinRequired` moved into the flags byte; mode bits shifted up by one.
+- Physics: a negative `scaleX` carries `scaleYMode`.
+- New **slider** constraint; its animation indices are written **after the
+  animations section**.
+- Named skins have a single constraint-index list (into the unified list)
+  instead of four.
+- Weighted vertices are preceded by a varint giving the total length of the
+  `bones` array.
+- Meshes carry a `timelineSlots` list.
+- Linked meshes write `sourceIndex` (slot) before `skinIndex`.
+- Clipping attachments have `convex` / `inverse` flag bits.
+- Every region and mesh has a `Sequence`; when the flag bit is clear it is an
+  implicit 1-frame sequence with no path suffix.
+- Animations: new slider timeline section (after physics), new draw-order
+  folder timelines (after draw order), and a nonessential animation color
+  `int` at the very end of each animation.
+- Constraint timeline indices point into the unified constraint list.
 
 ## Conventions
 
@@ -29,7 +63,7 @@ Fixed-size primitives:
 | Type         | Size  | Notes                                                      |
 | ------------ | ----- | ---------------------------------------------------------- |
 | `byte`       | 1 B   | `u8`.                                                      |
-| `sbyte`      | 1 B   | `i8`. Used for curve-type discriminants on timelines.      |
+| `sbyte`      | 1 B   | `i8`. Used for curve-type discriminants and property types. |
 | `bool`       | 1 B   | Stored as a byte; non-zero means true.                     |
 | `int`        | 4 B   | Big-endian `i32`.                                          |
 | `float`      | 4 B   | Big-endian IEEE-754 single precision (bit-reinterpreted `int`). |
@@ -40,10 +74,10 @@ Fixed-size primitives:
 A varint is 1–5 bytes. Each byte contributes its low 7 bits to the value, with
 the MSB (`0x80`) acting as a continuation flag. The 5th byte's high bit is a
 hard cap — anything beyond is a format error. (`spine-cpp` silently truncates;
-more strict parsers should error.)
+stricter parsers should error.)
 
-**Unsigned varint** (also called "optimize positive" in the C++ code): bytes
-accumulate in little-endian septets directly.
+**Unsigned varint** (`readInt(true)`, "optimize positive"): bytes accumulate
+in little-endian septets directly.
 
     byte 0: C b b b b b b b   ─► value[0..7]
     byte 1: C b b b b b b b   ─► value[7..14]
@@ -51,23 +85,24 @@ accumulate in little-endian septets directly.
     byte 3: C b b b b b b b   ─► value[21..28]
     byte 4: _ b b b b b b b   ─► value[28..35] (low 4 bits only used)
 
-**Signed varint** (zigzag, when `optimize_positive = false`): read the value
-as if unsigned, then zigzag-decode:
+**Signed varint** (zigzag, `readInt(false)`): read the value as if unsigned,
+then zigzag-decode:
 
     signed = (unsigned >> 1) ^ -(unsigned & 1)
 
-Used for fields that are typically small but may be negative (`EventData::int_value`).
+Used for fields that are typically small but may be negative (event
+`intValue`).
 
 ### "Unsigned-as-signed" trick (DrawOrder shifts)
 
-One field — the DrawOrder timeline's per-slot `shift` — is written as an
-unsigned varint but interpreted semantically as signed via integer
-wraparound. `spine-cpp` reads the varint as `int`, casts to `size_t`, and
-adds it to an index; on two's-complement hardware `(size_t)(-2) + 9 == 7` at
-any pointer width, which produces the correct target index. **Porters on
-languages without unsigned wrap-based arithmetic (e.g. Rust's `usize` on
-64-bit) must read the shift as signed `i32` and do the addition in signed
-arithmetic before casting back.** See the Gotchas section.
+One field — the per-slot `shift` in draw-order and draw-order-folder
+timelines — is written as an unsigned varint but interpreted semantically as
+signed via integer wraparound. `spine-cpp` reads the varint as `int`, casts
+to `size_t`, and adds it to an index; on two's-complement hardware
+`(size_t)(-2) + 9 == 7` at any pointer width, which produces the correct
+target index. **Porters on languages without unsigned wrap-based arithmetic
+(e.g. Rust's `usize` on 64-bit) must read the shift as signed `i32` and do
+the addition in signed arithmetic before casting back.** See Gotchas.
 
 ## Strings
 
@@ -76,10 +111,10 @@ Every string is length-prefixed by an unsigned varint `n`:
 - `n == 0` → the string is `None` / null. No payload follows.
 - `n > 0` → `n - 1` bytes of UTF-8 follow (no trailing NUL on the wire).
 
-Many strings appear twice in a skeleton (attachment names, slot names, bone
-names, etc.) and are deduplicated through a **string table** written early in
-the file. A "string-ref" is a one-byte-plus unsigned varint that either
-indexes the table or encodes `None`:
+Many strings appear repeatedly (attachment names, placeholder names, etc.)
+and are deduplicated through a **string table** written early in the file.
+A "string-ref" is an unsigned varint that either indexes the table or
+encodes `None`:
 
 - `0` → `None`.
 - `n > 0` → `table[n - 1]`.
@@ -91,8 +126,8 @@ must be used for payloads that may be empty.
 
 Four bytes R, G, B, A, each divided by 255 to produce an `f32` in `[0, 1]`.
 
-The `SlotData` "dark color" has a special 4-byte layout where all-`0xFF`
-means "no dark color." See the Slots section.
+The `SlotData` "dark color" is a 4-byte `int` where `-1` (all `0xFF`) means
+"no dark color." See the Slots section.
 
 ## Scale
 
@@ -109,16 +144,15 @@ Read in strict order:
 3. [String table](#string-table).
 4. [Bones](#bones).
 5. [Slots](#slots).
-6. [IK constraints](#ik-constraints).
-7. [Transform constraints](#transform-constraints).
-8. [Path constraints](#path-constraints).
-9. [Physics constraints](#physics-constraints).
-10. [Default skin](#default-skin) (only written if non-empty).
-11. [Named skins](#named-skins).
-12. [Linked mesh resolution](#linked-mesh-resolution) — not a stream section,
-    but must happen before animations are read.
-13. [Events](#events).
-14. [Animations](#animations).
+6. [Constraints](#constraints) — one ordered list, all types.
+7. [Default skin](#default-skin) (only written if non-empty).
+8. [Named skins](#named-skins).
+9. [Linked mesh resolution](#linked-mesh-resolution) — not a stream section,
+   but must happen before animations are read.
+10. [Events](#events).
+11. [Animations](#animations).
+12. [Slider animation indices](#slider-animation-indices) — one uvarint per
+    slider constraint.
 
 Parsing should consume the entire file; leftover bytes indicate a drift.
 
@@ -128,7 +162,7 @@ Parsing should consume the entire file; leftover bytes indicate a drift.
 | ----- | -------------------- | ----------------------------- | ------------------------------------------------------------------ |
 | 1     | `hashLow`            | `int`                         | Low 32 bits of skeleton hash.                                      |
 | 2     | `hashHigh`           | `int`                         | High 32 bits of skeleton hash.                                     |
-| 3     | `version`            | string                        | Editor version string, e.g. `"4.2.41"`. Must start with `"4.2"`.   |
+| 3     | `version`            | string                        | Editor version string, e.g. `"4.3.12"`. Must start with `"4.3"`.   |
 | 4     | `x`                  | `float`                       | Skeleton AABB origin X.                                            |
 | 5     | `y`                  | `float`                       | Skeleton AABB origin Y.                                            |
 | 6     | `width`              | `float`                       | Skeleton AABB width.                                               |
@@ -147,12 +181,10 @@ If `nonessential == true`, three more header fields follow:
 | 11    | `imagesPath`  | string   | Editor hint for texture folder.           |
 | 12    | `audioPath`   | string   | Editor hint for audio folder.             |
 
-Runtime code should tolerate a file whose version begins with `"4.2"` but has
-a different patch version. A mismatching major/minor should be a hard error.
+Accept any version beginning with `"4.3"`; a mismatching major/minor is a
+hard error.
 
 # String table
-
-An unsigned varint count followed by that many strings:
 
 ```
 numStrings : uvarint
@@ -176,13 +208,15 @@ for i in 0..numBones:
     scaleY     : float
     shearX     : float
     shearY     : float
+    inherit    : byte enum (see Inherit below)
     length     : float (scaled)
-    inherit    : uvarint enum (see Inherit below)
     skinRequired : bool
     if nonessential:
-        color   : rgba
-        icon    : string
-        visible : bool
+        color        : rgba
+        icon         : string
+        iconSize     : float
+        iconRotation : float
+        visible      : bool
 ```
 
 Bones are stored in parent-first order; `parentIdx` for bone `i` is always
@@ -198,9 +232,7 @@ an index `< i`. The root bone (index 0) has no parent field on the wire.
 | 3     | `NoScale`                 | Inherit TR; drop parent scale.                  |
 | 4     | `NoScaleOrReflection`     | Inherit TR; drop parent scale and reflection.   |
 
-**Encoding note:** In the BoneData block above, `inherit` is an **unsigned
-varint**. In the `InheritTimeline` (under Bone timelines), the same enum is
-encoded as a **single byte**. See Gotchas.
+Encoded as a single byte both here and in the `Inherit` bone timeline.
 
 # Slots
 
@@ -210,7 +242,7 @@ for i in 0..numSlots:
     name           : string
     boneIdx        : uvarint (into bones[])
     color          : rgba
-    darkColor      : 4 bytes, see below
+    darkColor      : int, see below
     attachmentName : string-ref
     blendMode      : uvarint enum (see below)
     if nonessential:
@@ -221,11 +253,10 @@ Slots are written in setup-pose draw order.
 
 ## Dark color encoding
 
-Four raw bytes in the order `a, r, g, b` (note: alpha first). If all four
-bytes equal `0xFF`, the slot has *no* dark color. Otherwise the slot has a
-dark color of `(r / 255, g / 255, b / 255, 1.0)`. The 4th byte is always
-treated as if it were `1.0` alpha — the alpha channel here is a sentinel,
-not a color value.
+A 4-byte `int`. If it equals `-1` (all bytes `0xFF`), the slot has *no* dark
+color. Otherwise it is read as `rgb888` from the low three bytes:
+`r = (v >> 16) & 0xFF`, `g = (v >> 8) & 0xFF`, `b = v & 0xFF`, alpha `1.0`.
+The high byte is only a sentinel.
 
 ## `BlendMode` enum
 
@@ -236,169 +267,225 @@ not a color value.
 | 2     | `Multiply` |
 | 3     | `Screen`   |
 
-# IK constraints
+# Constraints
+
+All constraints share one list. Its order is the constraint update order;
+there is no separate `order` field. Every constraint reference elsewhere in
+the file (skins, animation timelines) indexes this list.
 
 ```
-numIk : uvarint
-for i in 0..numIk:
-    name        : string
-    order       : uvarint  ; update-cache order key
-    numBones    : uvarint
-    bones[numBones] : uvarint each, into bones[]
-    target      : uvarint, into bones[]
-    flags       : byte (bit layout below)
-    if flags & 32:
-        mix     : float  (or 1.0 when flags & 64 == 0 — see below)
-    if flags & 128:
-        softness : float (scaled)
+numConstraints : uvarint
+for i in 0..numConstraints:
+    name : string
+    type : byte   ; ConstraintType
+    body : depends on type (below)
 ```
 
-**Flag bits:**
+| `type` | Constraint  |
+| ------ | ----------- |
+| 0      | IK          |
+| 1      | Path        |
+| 2      | Transform   |
+| 3      | Physics     |
+| 4      | Slider      |
+
+Fields not present on the wire keep their constructor defaults, which are
+`0` for every setup-pose mix, offset, position, spacing and softness.
+
+## `ScaleYMode` enum
+
+Used by IK and physics.
+
+| Value | Name      |
+| ----- | --------- |
+| 0     | `None`    |
+| 1     | `Uniform` |
+| 2     | `Volume`  |
+
+## `TransformProperty` enum
+
+Used by transform-constraint from/to records and slider properties. Stored
+as a byte.
+
+| Value | Property | Scaled |
+| ----- | -------- | ------ |
+| 0     | `Rotate` | no     |
+| 1     | `X`      | yes    |
+| 2     | `Y`      | yes    |
+| 3     | `ScaleX` | no     |
+| 4     | `ScaleY` | no     |
+| 5     | `ShearY` | no     |
+
+## IK constraint (type 0)
+
+```
+numBones    : uvarint
+bones[numBones] : uvarint each, into bones[]
+target      : uvarint, into bones[]
+flags       : byte (bit layout below)
+if flags & 2:
+    scaleYMode : byte   ; ScaleYMode
+if flags & 32:
+    mix     : float  (only if flags & 64; else mix = 1)
+if flags & 128:
+    softness : float (scaled)
+```
 
 | Bit   | Meaning                                                                          |
 | ----- | -------------------------------------------------------------------------------- |
 | `1`   | `skinRequired`.                                                                  |
-| `2`   | `bendDirection`: 1 if set, else -1.                                              |
-| `4`   | `compress`.                                                                      |
-| `8`   | `stretch`.                                                                       |
-| `16`  | `uniform`.                                                                       |
-| `32`  | `mix` is present. If unset, `mix = 0`.                                           |
+| `2`   | `scaleYMode` byte follows.                                                       |
+| `4`   | `bendDirection = -1` if set, else `1` (inverted relative to 4.2).                |
+| `8`   | `compress`.                                                                      |
+| `16`  | `stretch`.                                                                       |
+| `32`  | `mix` is non-zero. If unset, `mix = 0`.                                          |
 | `64`  | Only meaningful when bit 32 is set: if set, read `mix` as a float; else `mix = 1`. |
 | `128` | `softness` is present. If unset, `softness = 0`.                                 |
 
-The `bendDirection` is always ±1 — the bit decides which.
+There is no `uniform` bit; `scaleYMode` replaces it.
 
-# Transform constraints
-
-```
-numTc : uvarint
-for i in 0..numTc:
-    name        : string
-    order       : uvarint
-    numBones    : uvarint
-    bones[numBones] : uvarint each, into bones[]
-    target      : uvarint, into bones[]
-    flagsA      : byte
-    ; conditionally read offset*:
-    if flagsA & 8:   offsetRotation : float
-    if flagsA & 16:  offsetX        : float (scaled)
-    if flagsA & 32:  offsetY        : float (scaled)
-    if flagsA & 64:  offsetScaleX   : float
-    if flagsA & 128: offsetScaleY   : float
-
-    flagsB      : byte
-    ; conditionally read remaining mix* / offset*:
-    if flagsB & 1:  offsetShearY : float
-    if flagsB & 2:  mixRotate    : float
-    if flagsB & 4:  mixX         : float
-    if flagsB & 8:  mixY         : float
-    if flagsB & 16: mixScaleX    : float
-    if flagsB & 32: mixScaleY    : float
-    if flagsB & 64: mixShearY    : float
-```
-
-**`flagsA` bits:**
-
-| Bit | Meaning                                      |
-| --- | -------------------------------------------- |
-| 1   | `skinRequired`.                              |
-| 2   | `local`.                                     |
-| 4   | `relative`.                                  |
-| 8   | `offsetRotation` present.                    |
-| 16  | `offsetX` present (scaled).                  |
-| 32  | `offsetY` present (scaled).                  |
-| 64  | `offsetScaleX` present.                      |
-| 128 | `offsetScaleY` present.                      |
-
-**`flagsB` bits:** as annotated above.
-
-Fields that are not flagged retain their setup-pose defaults (1.0 for every
-`mix*` and 0.0 for every `offset*`; `offsetScaleX/Y` default to 0.0 despite
-`scaleX/Y` being multiplicative, because a value of "0" in the offset is
-the additive identity for Spine's scale math — the factor is `1 + offset`).
-
-# Path constraints
+## Transform constraint (type 2)
 
 ```
-numPc : uvarint
-for i in 0..numPc:
-    name          : string
-    order         : uvarint
-    skinRequired  : bool
-    numBones      : uvarint
-    bones[numBones] : uvarint each, into bones[]
-    target        : uvarint, into slots[]
-    flags         : byte
-        positionMode = flags & 1
-        spacingMode  = (flags >> 1) & 3
-        rotateMode   = (flags >> 3) & 3
-    if flags & 128: offsetRotation : float
-    position      : float  (scaled if positionMode == Fixed)
-    spacing       : float  (scaled if spacingMode in {Length, Fixed})
-    mixRotate     : float
-    mixX          : float
-    mixY          : float
+numBones    : uvarint
+bones[numBones] : uvarint each, into bones[]
+source      : uvarint, into bones[]
+flags       : byte
+    skinRequired = flags & 1
+    localSource  = flags & 2
+    localTarget  = flags & 4
+    additive     = flags & 8
+    clamp        = flags & 16
+    numFrom      = flags >> 5          ; 0..7
+for _ in 0..numFrom:
+    fromType : byte  ; TransformProperty
+    offset   : float (× fromScale)
+    numTo    : byte
+    for _ in 0..numTo:
+        toType : byte  ; TransformProperty
+        offset : float (× toScale)
+        max    : float (× toScale)
+        scale  : float (× toScale / fromScale)
+offsetFlags : byte
+    if & 1:  offsetRotation : float
+    if & 2:  offsetX        : float (scaled)
+    if & 4:  offsetY        : float (scaled)
+    if & 8:  offsetScaleX   : float
+    if & 16: offsetScaleY   : float
+    if & 32: offsetShearY   : float
+mixFlags : byte
+    if & 1:  mixRotate : float
+    if & 2:  mixX      : float
+    if & 4:  mixY      : float
+    if & 8:  mixScaleX : float
+    if & 16: mixScaleY : float
+    if & 32: mixShearY : float
 ```
 
-## Mode enums
+`fromScale` / `toScale` are the loader `scale` for `X` / `Y` properties and
+`1` otherwise. The to-record `scale` is a ratio, so it is divided by the
+from-scale.
 
-| Bits       | `PositionMode` | `SpacingMode`   | `RotateMode`   |
-| ---------- | -------------- | --------------- | -------------- |
-| 0          | `Fixed`        | `Length`        | `Tangent`      |
-| 1          | `Percent`      | `Fixed`         | `Chain`        |
-| 2          | —              | `Percent`       | `ChainScale`   |
-| 3          | —              | `Proportional`  | —              |
-
-`PositionMode` is stored as a 1-bit value; the remaining modes share the
-upper bits of the same flags byte.
-
-# Physics constraints
+## Path constraint (type 1)
 
 ```
-numPhys : uvarint
-for i in 0..numPhys:
-    name         : string
-    order        : uvarint
+numBones      : uvarint
+bones[numBones] : uvarint each, into bones[]
+target        : uvarint, into slots[]
+flags         : byte
+    skinRequired = flags & 1
+    positionMode = (flags >> 1) & 1
+    spacingMode  = (flags >> 2) & 3
+    rotateMode   = (flags >> 4) & 3
+if flags & 128: offsetRotation : float
+position      : float  (scaled if positionMode == Fixed)
+spacing       : float  (scaled if spacingMode in {Length, Fixed})
+mixRotate     : float
+mixX          : float
+mixY          : float
+```
+
+| Value | `PositionMode` | `SpacingMode`   | `RotateMode`   |
+| ----- | -------------- | --------------- | -------------- |
+| 0     | `Fixed`        | `Length`        | `Tangent`      |
+| 1     | `Percent`      | `Fixed`         | `Chain`        |
+| 2     | —              | `Percent`       | `ChainScale`   |
+| 3     | —              | `Proportional`  | —              |
+
+## Physics constraint (type 3)
+
+```
+bone         : uvarint, into bones[]
+flagsA       : byte
+if flagsA & 2:  x       : float
+if flagsA & 4:  y       : float
+if flagsA & 8:  rotate  : float
+if flagsA & 16: scaleX  : float   ; also carries scaleYMode, see below
+if flagsA & 32: shearX  : float
+limit       : float (scaled)   ; read if flagsA & 64; else 5000 (then scaled)
+step        : byte              ; stored as fps; step = 1 / byte
+inertia     : float
+strength    : float
+damping     : float
+massInverse : float             ; read if flagsA & 128; else 1.0
+wind        : float
+gravity     : float
+flagsB      : byte
+    inertiaGlobal  = flagsB & 1
+    strengthGlobal = flagsB & 2
+    dampingGlobal  = flagsB & 4
+    massGlobal     = flagsB & 8
+    windGlobal     = flagsB & 16
+    gravityGlobal  = flagsB & 32
+    mixGlobal      = flagsB & 64
+mix         : float             ; read if flagsB & 128; else 1.0
+```
+
+`flagsA & 1` = `skinRequired`.
+
+**`scaleX` sign encodes `scaleYMode`:**
+
+| Raw value `v`  | `scaleYMode` | `scaleX`    |
+| -------------- | ------------ | ----------- |
+| `v >= 0`       | `None`       | `v`         |
+| `-2 <= v < 0`  | `Uniform`    | `-1 - v`    |
+| `v < -2`       | `Volume`     | `-2 - v`    |
+
+The `*Global` booleans mean the parameter is driven by the skeleton-wide
+value at runtime rather than this constraint's own field.
+
+## Slider constraint (type 4)
+
+```
+flags : byte
+if flags & 8:
+    value : float   ; max if (nonessential && flags & 64), else setup time
+if flags & 16:
+    mix   : float   (only if flags & 32; else mix = 1)
+if flags & 64:
     bone         : uvarint, into bones[]
-    flagsA       : byte
-    if flagsA & 2:  x       : float  (mix fraction for x-axis)
-    if flagsA & 4:  y       : float
-    if flagsA & 8:  rotate  : float
-    if flagsA & 16: scaleX  : float
-    if flagsA & 32: shearX  : float
-    limit       : float (scaled)   ; if flagsA & 64, read; else default 5000
-    step        : byte              ; stored as 1 / step_raw  (e.g. 60 → 1/60)
-    inertia     : float
-    strength    : float
-    damping     : float
-    massInverse : float             ; if flagsA & 128, read; else default 1.0
-    wind        : float
-    gravity     : float
-    flagsB      : byte
-        inertiaGlobal  = flagsB & 1
-        strengthGlobal = flagsB & 2
-        dampingGlobal  = flagsB & 4
-        massGlobal     = flagsB & 8
-        windGlobal     = flagsB & 16
-        gravityGlobal  = flagsB & 32
-        mixGlobal      = flagsB & 64
-    mix         : float             ; if flagsB & 128, read; else default 1.0
+    propOffset   : float   ; property offset (× propertyScale)
+    propertyType : byte    ; TransformProperty
+    offset       : float   ; slider offset
+    scale        : float   ; ÷ propertyScale
 ```
 
-**`flagsA` bit 1** = `skinRequired`.
+| Bit   | Meaning                                                             |
+| ----- | ------------------------------------------------------------------- |
+| `1`   | `skinRequired`.                                                     |
+| `2`   | `loop`.                                                             |
+| `4`   | `additive`.                                                         |
+| `8`   | A value float follows (meaning depends on bit 64 + nonessential).   |
+| `16`  | `mix` is non-zero. If unset, `mix = 0`.                             |
+| `32`  | Only meaningful with bit 16: read `mix` as a float; else `mix = 1`. |
+| `64`  | Bone-driven: bone/property block follows.                           |
+| `128` | `local` (only meaningful with bit 64).                              |
 
-The `*Global` booleans indicate that the corresponding dynamic parameter
-draws its value from a skeleton-wide setting at runtime rather than from
-this constraint's own field.
-
-**Physics timelines** (later in animation blocks) reference constraints by
-a 1-indexed reference: value `0` means "all physics constraints in the
-skeleton" and `n > 0` means `physics_constraints[n - 1]`. See Gotchas.
+`propertyScale` is the loader `scale` for `X` / `Y`, else `1`. The slider's
+animation is **not** in this record; see
+[Slider animation indices](#slider-animation-indices).
 
 # Default skin
-
-The default skin is written even if empty; its slot count serves as an
-"is there a default skin?" gate.
 
 ```
 slotCount : uvarint
@@ -408,6 +495,9 @@ else:
     read attachment-block for each of slotCount slots (see below)
 ```
 
+The default skin has no name, color, bone list or constraint list on the
+wire.
+
 # Named skins
 
 ```
@@ -415,23 +505,17 @@ numSkins : uvarint
 for i in 0..numSkins:
     name             : string
     if nonessential:
-        color        : rgba        ; skin color — informational only
+        color        : rgba        ; informational only
     numSkinBones     : uvarint
     skinBones[]      : uvarint each, into bones[]
-    numIk            : uvarint
-    skinIk[]         : uvarint each, into ikConstraints[]
-    numTc            : uvarint
-    skinTc[]         : uvarint each, into transformConstraints[]
-    numPc            : uvarint
-    skinPc[]         : uvarint each, into pathConstraints[]
-    numPhys          : uvarint
-    skinPhys[]       : uvarint each, into physicsConstraints[]
+    numConstraints   : uvarint
+    skinConstraints[]: uvarint each, into constraints[] (unified list)
     slotCount        : uvarint
     read attachment-block for each of slotCount slots (see below)
 ```
 
-Each skin carries its own membership lists for skin-required bones and
-constraints. A skin-required element is only active when at least one
+Skin indices: the default skin (if present) is index 0 and named skins
+follow. A skin-required bone or constraint is only active when at least one
 applied skin lists it.
 
 ## Attachment block (shared between default and named skins)
@@ -445,20 +529,16 @@ for each of slotCount slots:
         attachment      : attachment-record (see below)
 ```
 
-The `placeholderName` is the name used to look the attachment up at render
-time — it may differ from the attachment's own `name` (which may be a
-texture path on the atlas). For example, a skin called `goggles` might map
-placeholder `"head-accessory"` to an attachment named `"goggles/gold-goggles"`.
+The `placeholderName` is the skin lookup key; it may differ from the
+attachment's own `name` (which may be a texture path on the atlas).
 
 ## Attachment record
-
-Every attachment begins with a byte of flags:
 
 ```
 flags : byte
     type = flags & 0x7         ; AttachmentType enum
-    nameOverride = flags & 8   ; if set, next field overrides the placeholder name
-name  : string-ref  (only if nameOverride; else falls back to the placeholder)
+    nameOverride = flags & 8
+name  : string-ref  (only if nameOverride; else name = placeholder)
 ```
 
 The meaning of the remaining `flags` bits depends on `type`.
@@ -472,7 +552,7 @@ The meaning of the remaining `flags` bits depends on `type`.
 | 2     | `Mesh`         | Arbitrary triangle mesh with own vertex data.            |
 | 3     | `LinkedMesh`   | Mesh that inherits vertex data from another mesh.        |
 | 4     | `Path`         | Cubic bezier path (for path-constrained bones).          |
-| 5     | `Point`        | Oriented point (hitspawn location).                      |
+| 5     | `Point`        | Oriented point.                                          |
 | 6     | `Clipping`     | Polygonal mask. Applies until `endSlot` in draw order.   |
 
 ### `Region` attachment
@@ -480,7 +560,7 @@ The meaning of the remaining `flags` bits depends on `type`.
 ```
 path      : string-ref        ; only if flags & 16; else path = name
 color     : rgba              ; only if flags & 32; else (1,1,1,1)
-sequence  : Sequence record   ; only if flags & 64; see below
+sequence  : Sequence record   ; fields only if flags & 64; see below
 rotation  : float             ; only if flags & 128; else 0
 x         : float (scaled)
 y         : float (scaled)
@@ -490,15 +570,10 @@ width     : float (scaled)
 height    : float (scaled)
 ```
 
-When `sequence` is present, the loader should populate its `regions[]`
-array via atlas lookups rather than looking up `path` as a single region.
-See the Sequence attachment section below and Gotchas.
-
 ### `BoundingBox` attachment
 
 ```
-vertices  : Vertices record (see below)
-                 ; flags & 16 → weighted, else unweighted
+vertices  : Vertices record   ; flags & 16 → weighted
 if nonessential:
     color : rgba
 ```
@@ -508,59 +583,54 @@ if nonessential:
 ```
 path       : string-ref  ; only if flags & 16; else path = name
 color      : rgba        ; only if flags & 32
-sequence   : Sequence    ; only if flags & 64
-hullLength : uvarint     ; hull vertex count (raw, in vertex units)
+sequence   : Sequence    ; fields only if flags & 64
+hullLength : uvarint     ; hull vertex count (undoubled); stored ×2 at runtime
 vertices   : Vertices record  ; flags & 128 → weighted
-uvs        : float[verticesLength]     ; one f32 per vertex axis; not scaled
-triangles  : ushort[(verticesLength - hullLength - 2) * 3]
-                              ; each element is an unsigned varint
-                              ; index into this mesh's vertex list
+uvs        : float[verticesLength]     ; not scaled
+triangles  : uvarint[(verticesLength - hullLength - 2) * 3]
+numTimelineSlots : uvarint
+timelineSlots    : uvarint[numTimelineSlots], into slots[]
 if nonessential:
     edgesCount : uvarint
-    edges      : ushort[edgesCount]     ; varints, pairs of vertex indices
-    width      : float       ; display-only; not scaled in core
-    height     : float
+    edges      : uvarint[edgesCount]
+    width      : float (scaled)
+    height     : float (scaled)
 ```
 
-`verticesLength` in the triangle-count formula is the "doubled vertex count"
-returned by the Vertices record (see below) — i.e. `vertexCount * 2`. The
-hullLength is the *undoubled* vertex count of the mesh's hull. Both units
-mixing in one formula looks wrong but produces the correct triangle count.
-See Gotchas.
+`verticesLength` is `vertexCount * 2` from the Vertices record. See Gotchas
+for the mixed units in the triangle count.
+
+`timelineSlots` lists additional slots whose deform/sequence timelines this
+mesh responds to. An empty list leaves the runtime default.
 
 ### `LinkedMesh` attachment
 
 ```
 path            : string-ref       ; only if flags & 16; else path = name
 color           : rgba             ; only if flags & 32
-sequence        : Sequence         ; only if flags & 64
-inheritTimeline : bool             ; flags & 128
-parentSkinIdx   : uvarint          ; index into skeleton's skin list
-parentName      : string-ref       ; placeholder name in parent skin
+sequence        : Sequence         ; fields only if flags & 64
+inheritTimelines: (flags & 128)    ; no bytes
+sourceIndex     : uvarint          ; slot index of the source mesh
+skinIndex       : uvarint          ; index into skins (default skin = 0)
+source          : string-ref       ; placeholder name in that skin/slot
 if nonessential:
     width       : float (scaled)
     height      : float (scaled)
 ```
 
-LinkedMesh attachments have no vertex data on the wire — they're resolved
-into full mesh attachments by a second pass after all skins have loaded.
-See [Linked mesh resolution](#linked-mesh-resolution).
+No vertex data on the wire — resolved after all skins load. See
+[Linked mesh resolution](#linked-mesh-resolution).
 
 ### `Path` attachment
 
 ```
-closed        : bool             ; flags & 16
-constantSpeed : bool             ; flags & 32
+closed        : (flags & 16)
+constantSpeed : (flags & 32)
 vertices      : Vertices record  ; flags & 64 → weighted
-lengths       : float[verticesLength / 6]     ; per-cubic-segment arc length
-                                              ; each value is scaled
+lengths       : float[verticesLength / 6]   ; per-segment arc length, scaled
 if nonessential:
     color     : rgba
 ```
-
-The path has `verticesLength / 6` cubic segments because each segment uses
-3 control points (= 6 floats). When `closed`, the last segment wraps to
-the first control point.
 
 ### `Point` attachment
 
@@ -575,12 +645,13 @@ if nonessential:
 ### `Clipping` attachment
 
 ```
-endSlotIdx : uvarint  ; index into slots[]; clipping is active until this
-                      ; slot is rendered
+endSlotIdx : uvarint  ; into slots[]
 vertices   : Vertices record  ; flags & 16 → weighted
 if nonessential:
     color  : rgba
 ```
+
+`convex = flags & 32`, `inverse = flags & 64`.
 
 ### Vertices record (shared)
 
@@ -588,70 +659,69 @@ Used by mesh, bounding box, path, and clipping attachments.
 
 ```
 vertexCount : uvarint
-verticesLength = vertexCount * 2   ; semantic: 2D vertex count × 2 axes
+verticesLength = vertexCount * 2
 
-if unweighted (flag bit clear):
+if unweighted:
     vertices : float[verticesLength]     ; interleaved xy, scaled
 else (weighted):
-    for each of vertexCount vertices:
-        boneCount : uvarint               ; emitted into `bones`
+    bonesLength : uvarint                 ; total length of the bones array
+    while bones.len() < bonesLength:
+        boneCount : uvarint               ; appended to `bones`
         for each of boneCount bones:
-            boneIdx : uvarint             ; emitted into `bones`
-            bx      : float (scaled)       ; vertex pos in bone local space
+            boneIdx : uvarint             ; appended to `bones`
+            bx      : float (scaled)
             by      : float (scaled)
-            weight  : float                ; not scaled
+            weight  : float
 ```
 
-When weighted, `bones[]` is a flattened run-length stream: for each vertex
-one count followed by that many bone indices. `vertices[]` is correspondingly
-a flattened stream of `(bx, by, weight)` triples (3 floats per bone per
-vertex). This encoding is what the `Deform` animation timeline expects to
-see unchanged on the wire.
+`bonesLength = vertexCount + Σ boneCount`, so the weighted `vertices` array
+has `(bonesLength - vertexCount) * 3` floats. Loop on `bonesLength`, not on
+`vertexCount` (the two terminate identically for valid files, but
+`bonesLength` must be consumed).
 
-Consumers that need per-vertex-axis counts (e.g. deform timelines) compute
-`deformLength = vertices.len() / 3 * 2` for weighted and
-`deformLength = vertices.len()` for unweighted.
+Deform length: `vertices.len() / 3 * 2` for weighted, `vertices.len()` for
+unweighted.
 
-### Sequence record (used by Region and Mesh)
+### Sequence record (Region, Mesh, LinkedMesh)
+
+Every region and mesh has a sequence. The record's bytes are present only
+when the attachment's sequence flag (`64`) is set:
 
 ```
-count      : uvarint    ; frame count
-start      : uvarint    ; first frame number (typically 1)
-digits     : uvarint    ; zero-pad width for filenames
-setupIndex : uvarint    ; frame shown in setup pose
+if flag set:
+    count      : uvarint    ; frame count
+    start      : uvarint    ; first frame number
+    digits     : uvarint    ; zero-pad width
+    setupIndex : uvarint    ; frame shown in setup pose
+    ; pathSuffix = true
+else:
+    ; implicit: count = 1, pathSuffix = false, no bytes read
 ```
 
-**Frame path formatting** (replicates `spine-cpp/Sequence::getPath`):
+**Frame path** (`Sequence::getPath`):
 
-    frame_path(basePath, i) = basePath + format("{:0>digits$}", start + i)
+    frame_path(basePath, i) = pathSuffix
+        ? basePath + format("{:0>digits$}", start + i)
+        : basePath
 
-No separator is inserted between `basePath` and the frame number — the
-editor already includes any delimiter in the base. For example,
-`base = "left-wing"`, `start = 1`, `digits = 2`, `i = 0` produces
-`"left-wing01"`.
+No separator is inserted. `base = "left-wing"`, `start = 1`, `digits = 2`,
+`i = 0` → `"left-wing01"`.
 
-A loader backed by an atlas should resolve each frame's region individually
-and populate the sequence's `regions[]` array. The attachment's own
-`region` reference is left unset when a sequence is present — rendering
-pulls from `sequence.regions[current_frame]` instead.
+The atlas loader populates `sequence.regions[i]` from `frame_path(path, i)`
+for every attachment; rendering reads the current frame's region.
 
 # Linked mesh resolution
 
-After all skins have been read, iterate recorded linked-mesh entries and
-attach them to their parents:
+After all skins are read, for each recorded linked mesh:
 
-1. Look up `parentMesh = skins[parentSkinIdx].getAttachment(slotIdx, parentName)`.
-   Must be a `Mesh` attachment; error if missing.
-2. Copy the parent's `bones`, `vertices`, `regionUVs`, `triangles`,
-   `hullLength`, `edges` into the linked mesh.
-3. Record `linkedMesh.parentMesh = parentMeshId`.
-4. Set `linkedMesh.timelineAttachment` to either the parent (if
-   `inheritTimeline` was true) or the linked mesh itself (if false). This
-   controls which attachment's deform keyframes the linked mesh samples at
-   runtime.
-5. If the linked mesh carries an atlas region (no sequence), run its
-   `updateRegion` recomputation so its UVs pick up the parent's region
-   mapping.
+1. `source = skins[skinIndex].getAttachment(sourceIndex, source)`. Must be a
+   mesh; error if missing. (The slot is `sourceIndex` from the record, not
+   the slot the linked mesh itself lives in.)
+2. Set the timeline attachment to `source` if `inheritTimelines`, else to
+   the linked mesh itself.
+3. `setSourceMesh(source)` — copies bones, vertices, region UVs, triangles,
+   hull length, edges, width/height.
+4. `updateSequence()` so UVs pick up the region mapping.
 
 # Events
 
@@ -668,9 +738,8 @@ for i in 0..numEvents:
         balance : float
 ```
 
-The presence of `volume` and `balance` is gated by the *presence* of
-`audioPath`, not a flag bit. Events without audio default to `volume = 1.0`,
-`balance = 0.0`.
+Presence of `volume` / `balance` is gated by `audioPath` being non-empty.
+Defaults: `volume = 1.0`, `balance = 0.0`.
 
 # Animations
 
@@ -681,74 +750,60 @@ for i in 0..numAnimations:
     body  : Animation record
 ```
 
-Each animation record:
+Each animation record, in order:
 
 ```
-numTimelines : uvarint   ; hint; unused (timelines are counted implicitly
-                         ; via the per-section counts below)
+numTimelines : uvarint   ; capacity hint only
 
 ; --- Slot timelines ---
-numSlotTimelines : uvarint
-for _ in 0..numSlotTimelines:
-    slotIdx : uvarint
-    n       : uvarint
-    for _ in 0..n:
-        ttype : byte  ; SlotTimelineType
-        frameCount : uvarint
-        body depends on ttype (see below)
-
 ; --- Bone timelines ---
-numBoneTimelines : uvarint
-for _ in 0..numBoneTimelines:
-    boneIdx : uvarint
-    n       : uvarint
-    for _ in 0..n:
-        ttype : byte  ; BoneTimelineType
-        frameCount : uvarint
-        body depends on ttype (see below)
-
 ; --- IK constraint timelines ---
 ; --- Transform constraint timelines ---
 ; --- Path constraint timelines ---
 ; --- Physics constraint timelines ---
+; --- Slider timelines ---
 ; --- Attachment timelines (Deform and Sequence) ---
 ; --- Draw order timeline ---
+; --- Draw order folder timelines ---
 ; --- Event timeline ---
+if nonessential:
+    color : rgba          ; animation color, after the event timeline
 ```
 
 Every section starts with its own `uvarint` count. Sections with count `0`
-consume only that single byte.
+consume only that byte. Duration is the max last-frame time over all
+timelines (not on the wire).
 
 ## Curve encoding (shared by most timelines)
 
-A "curve timeline" consists of frames and per-frame curve data. Each frame
-has a fixed number of `f32` entries determined by the timeline type
-("entries" = `1 + value channels`, always including time at index 0).
-
-The layout is: read the first frame's `(time, values...)` unconditionally.
-For each subsequent frame, read `(time, values...)` for that frame and a
-1-byte **curve type** that describes the transition between the previous
-frame and this one:
+Each frame has `entries = 1 + channels` floats (time first). Read the first
+frame's `(time, values...)`. For each subsequent frame read `(time,
+values...)` then an `sbyte` **curve type** for the transition from the
+previous frame:
 
 | Curve type (`sbyte`) | Meaning                                                 |
 | -------------------- | ------------------------------------------------------- |
 | `0` `LINEAR`         | Linear interpolation; no extra data.                    |
 | `1` `STEPPED`        | Step (hold previous value); no extra data.              |
-| `2` `BEZIER`         | Cubic bezier with 4-float control points per channel.   |
+| `2` `BEZIER`         | Cubic bezier: 4 floats `(cx1, cy1, cx2, cy2)` per channel. |
 
-For `BEZIER`, one 4-float `(cx1, cy1, cx2, cy2)` block is read **per value
-channel**. A `RotateTimeline` (1 channel) reads 4 floats; a
-`TranslateTimeline` (2 channels) reads 8 floats; a `Rgba2Timeline`
-(7 channels) reads 28 floats.
-
-The `bezierCount` read before each curve timeline is a hint indicating the
-total number of bezier segments across all value channels and all frames —
-useful for pre-allocating the runtime segmentation table but not strictly
-needed for parsing.
+For `BEZIER`, `cy1` / `cy2` are multiplied by the channel's value scale
+(e.g. loader `scale` for translate). `bezierCount` (read before the frames)
+is the total number of bezier channel segments and sizes the runtime curve
+table.
 
 ## Slot timelines
 
-### `SlotTimelineType` enum
+```
+numSlots : uvarint
+for _ in 0..numSlots:
+    slotIdx : uvarint
+    n       : uvarint
+    for _ in 0..n:
+        ttype      : byte  ; SlotTimelineType
+        frameCount : uvarint
+        body
+```
 
 | Value | Name           | Value channels     |
 | ----- | -------------- | ------------------ |
@@ -759,47 +814,47 @@ needed for parsing.
 | 4     | `Rgb2`         | 6 (byte channels)  |
 | 5     | `Alpha`        | 1 (byte channel)   |
 
-### `Attachment` slot timeline
+### `Attachment`
 
 ```
 for _ in 0..frameCount:
     time        : float
-    attachment  : string-ref   ; None = hide the slot's attachment
+    attachment  : string-ref   ; None = hide
 ```
 
-No bezier curves — every frame is a step.
+No curves, no `bezierCount`.
 
-### Color slot timelines (`Rgba`, `Rgb`, `Rgba2`, `Rgb2`, `Alpha`)
+### Color (`Rgba`, `Rgb`, `Rgba2`, `Rgb2`, `Alpha`)
 
 ```
 bezierCount : uvarint
-for first frame:
-    time   : float
-    for each color channel:
-        value : byte   ; byte / 255.0
-
-for each subsequent frame:
+first frame: time : float, then one byte per channel (byte / 255)
+each subsequent frame:
     time : float
-    for each color channel:
-        value : byte
+    one byte per channel
     curveType : sbyte
-    if curveType == BEZIER:
-        for each color channel:
-            4 floats (cx1, cy1, cx2, cy2)
+    if BEZIER: 4 floats per channel
 ```
-
-The number of channels depends on the timeline variant (see table above).
 
 ## Bone timelines
 
-### `BoneTimelineType` enum
+```
+numBones : uvarint
+for _ in 0..numBones:
+    boneIdx : uvarint
+    n       : uvarint
+    for _ in 0..n:
+        ttype      : byte  ; BoneTimelineType
+        frameCount : uvarint
+        body
+```
 
 | Value | Name         | Value channels | Scaling  |
 | ----- | ------------ | -------------- | -------- |
 | 0     | `Rotate`     | 1              | none     |
-| 1     | `Translate`  | 2              | world    |
-| 2     | `TranslateX` | 1              | world    |
-| 3     | `TranslateY` | 1              | world    |
+| 1     | `Translate`  | 2              | scaled   |
+| 2     | `TranslateX` | 1              | scaled   |
+| 3     | `TranslateY` | 1              | scaled   |
 | 4     | `Scale`      | 2              | none     |
 | 5     | `ScaleX`     | 1              | none     |
 | 6     | `ScaleY`     | 1              | none     |
@@ -808,99 +863,98 @@ The number of channels depends on the timeline variant (see table above).
 | 9     | `ShearY`     | 1              | none     |
 | 10    | `Inherit`    | special        | none     |
 
-Types 0–9 are standard curve timelines: read `bezierCount : uvarint`, then
-use the shared curve encoding with `entries = 1 + channels`. Scaled types
-multiply value channels (not time) by the loader's `scale`.
+Types 0–9: `bezierCount : uvarint`, then the shared curve encoding.
 
-### `Inherit` bone timeline (type 10)
+### `Inherit` (type 10)
 
 ```
 for _ in 0..frameCount:
     time    : float
-    inherit : byte   ; Inherit enum value, 0..4
+    inherit : byte   ; Inherit enum
 ```
 
-**No bezier curves, no `bezierCount` prefix.** The inherit value is a plain
-byte per frame. See Gotchas.
+No curves, no `bezierCount`.
 
 ## Constraint timelines
 
-### IK constraint timeline
+All constraint indices below index the **unified constraint list**. A
+loader should check the referenced constraint has the expected type.
+
+### IK constraint timelines
 
 ```
-idx         : uvarint, into ikConstraints[]
-frameCount  : uvarint
-bezierCount : uvarint
-flags (first frame) : byte
-time (first frame)  : float
-if flags & 1:
-    if flags & 2: mix = float
-    else:         mix = 1
-else:             mix = 0
-if flags & 4: softness = float (scaled)
-else:         softness = 0
-
-for each subsequent frame:
-    flags : byte
-    time2 : float
-    (mix2, softness2 read same as above)
-    if flags & 64:  ; STEPPED
-        no curve data
-    else if flags & 128:  ; BEZIER
-        4 floats for mix channel
-        4 floats for softness channel
-    else:  ; LINEAR
-        no curve data
+n : uvarint
+for _ in 0..n:
+    idx         : uvarint, into constraints[] (must be IK)
+    frameCount  : uvarint
+    bezierCount : uvarint
+    first frame:
+        flags : byte
+        time  : float
+        mix      = flags & 1 ? (flags & 2 ? float : 1) : 0
+        softness = flags & 4 ? float (scaled) : 0
+    each subsequent frame:
+        flags : byte
+        time2 : float
+        mix2, softness2 as above
+        if flags & 64:   STEPPED
+        elif flags & 128: BEZIER — 4 floats for mix, 4 floats for softness
+                          (softness cy values scaled)
+        else:            LINEAR
 ```
 
-Flags also encode per-frame `bendDirection` (bit 8 → ±1), `compress`
-(bit 16), `stretch` (bit 32).
+Per-frame flags also carry `bendDirection` (`8` → `1`, else `-1`),
+`compress` (`16`), `stretch` (`32`). Note the timeline bend bit is *not*
+inverted, unlike the IK constraint data flags.
 
-### Transform constraint timeline
+### Transform constraint timelines
 
 ```
-idx         : uvarint
-frameCount  : uvarint
-bezierCount : uvarint
+n : uvarint
+for _ in 0..n:
+    idx         : uvarint, into constraints[] (must be transform)
+    frameCount  : uvarint
+    bezierCount : uvarint
+    body        : curve timeline, entries = 7
 ```
 
-Standard curve timeline with `entries = 7` (time + 6 mix channels:
-`mixRotate`, `mixX`, `mixY`, `mixScaleX`, `mixScaleY`, `mixShearY`).
+Channels: `mixRotate`, `mixX`, `mixY`, `mixScaleX`, `mixScaleY`, `mixShearY`.
 
 ### Path constraint timelines
 
-Each path-constraint-indexed group contains multiple per-property
-timelines:
-
 ```
-idx   : uvarint
-numSub : uvarint
-for _ in 0..numSub:
-    ptype      : byte   ; PathTimelineType
-    frameCount : uvarint
-    bezierCount : uvarint
-    body : standard curve timeline
+n : uvarint
+for _ in 0..n:
+    idx    : uvarint, into constraints[] (must be path)
+    numSub : uvarint
+    for _ in 0..numSub:
+        ptype       : byte
+        frameCount  : uvarint
+        bezierCount : uvarint
+        body        : curve timeline
 ```
 
-| `ptype` | Timeline                   | Entries | Scaling                                     |
-| ------- | -------------------------- | ------- | ------------------------------------------- |
-| 0       | `PathConstraintPosition`   | 2       | scaled if data.positionMode == Fixed        |
+| `ptype` | Timeline                   | Entries | Scaling                                      |
+| ------- | -------------------------- | ------- | -------------------------------------------- |
+| 0       | `PathConstraintPosition`   | 2       | scaled if data.positionMode == Fixed         |
 | 1       | `PathConstraintSpacing`    | 2       | scaled if data.spacingMode ∈ {Length, Fixed} |
-| 2       | `PathConstraintMix`        | 4       | none                                        |
+| 2       | `PathConstraintMix`        | 4       | none                                         |
 
 ### Physics constraint timelines
 
 ```
-idxPlusOne : uvarint    ; 0 = "all physics constraints", n > 0 = constraint n-1
-numSub     : uvarint
-for _ in 0..numSub:
-    ptype : byte  ; PhysicsTimelineType
-    frameCount : uvarint
-    if ptype == 8 (RESET):
-        frames[frameCount] : each a float (time)
-    else:
-        bezierCount : uvarint
-        body : standard curve timeline, entries = 2
+n : uvarint
+for _ in 0..n:
+    idxPlusOne : uvarint    ; 0 = all physics constraints, k > 0 = constraints[k - 1]
+    numSub     : uvarint
+    for _ in 0..numSub:
+        ptype      : byte
+        frameCount : uvarint
+        if ptype == 8 (Reset):
+            frameCount floats (time only)
+        else:
+            bezierCount : uvarint
+            body        : curve timeline, entries = 2
 ```
 
 | `ptype` | Property      |
@@ -914,62 +968,68 @@ for _ in 0..numSub:
 | 7       | `Mix`         |
 | 8       | `Reset`       |
 
-Note that discriminant `3` is unused (reserved). See Gotchas for the
-`idxPlusOne` encoding.
+Discriminant `3` is unused. `k - 1` indexes the unified constraint list.
+
+### Slider timelines
+
+```
+n : uvarint
+for _ in 0..n:
+    idx    : uvarint, into constraints[] (must be slider)
+    numSub : uvarint
+    for _ in 0..numSub:
+        stype       : byte   ; 0 = SliderTime, 1 = SliderMix
+        frameCount  : uvarint
+        bezierCount : uvarint
+        body        : curve timeline, entries = 2, unscaled
+```
 
 ## Attachment timelines (Deform and Sequence)
 
 ```
-numSkinGroups : uvarint
-for _ in 0..numSkinGroups:
-    skinIdx : uvarint       ; into skins[]
-    numSlotGroups : uvarint
-    for _ in 0..numSlotGroups:
+numSkins : uvarint
+for _ in 0..numSkins:
+    skinIdx  : uvarint       ; into skins[]
+    numSlots : uvarint
+    for _ in 0..numSlots:
         slotIdx : uvarint
         numAtts : uvarint
         for _ in 0..numAtts:
-            attName : string-ref   ; must resolve to an attachment in this skin/slot
-            ttype   : byte          ; 0 = Deform, 1 = Sequence
+            attName    : string-ref   ; must resolve in this skin/slot
+            ttype      : byte          ; 0 = Deform, 1 = Sequence
             frameCount : uvarint
-            body depends on ttype
+            body
 ```
 
-### Deform timeline
+### Deform
 
 ```
 bezierCount : uvarint
-time (first) : float
+time : float                    ; first frame
 for each frame:
     end : uvarint
     if end == 0:
-        no vertex data this frame; resolve to weighted-zero or unweighted
-        setup-pose values at apply time
+        no data; weighted → zeros, unweighted → setup vertices
     else:
         start : uvarint
-        read `end` floats into deform[start..start+end]   ; scaled
-
-    if frame is not the last:
-        time2 : float
+        end floats into deform[start .. start + end]   ; scaled
+        ; unweighted: setup vertices are added to the frame at load time
+    if not the last frame:
+        time2     : float
         curveType : sbyte
-        if curveType == BEZIER:
-            4 floats (single channel)
+        if BEZIER: 4 floats (one 0→1 percent channel)
 ```
 
-`deformLength` is `vertices.len() / 3 * 2` for weighted mesh attachments and
-`vertices.len()` otherwise.
-
-### Sequence timeline
+### Sequence
 
 ```
 for _ in 0..frameCount:
     time         : float
-    modeAndIndex : int   ; packed: mode = low 4 bits, frameIndex = upper bits
+    modeAndIndex : int     ; mode = low 4 bits, index = value >> 4
     delay        : float
 ```
 
-`SequenceMode` values (low 4 bits of `modeAndIndex`):
-
-| Value | Mode              |
+| Value | `SequenceMode`    |
 | ----- | ----------------- |
 | 0     | `Hold`            |
 | 1     | `Once`            |
@@ -982,154 +1042,194 @@ for _ in 0..frameCount:
 ## Draw order timeline
 
 ```
-drawOrderCount : uvarint
-if drawOrderCount == 0: ; skip
-else:
-    for _ in 0..drawOrderCount:
-        time        : float
-        offsetCount : uvarint
-        if offsetCount == 0:
-            no changes this frame (keep setup-pose draw order)
-        else:
-            for _ in 0..offsetCount:
-                slotIdx : uvarint          ; next modified slot
-                shift   : varint-signed    ; see Gotchas
-                ; The slot at `slotIdx` moves to position `slotIdx + shift`
-                ; in the new draw order.
+frameCount : uvarint
+for _ in 0..frameCount:
+    time      : float
+    drawOrder : draw-order record over slotCount = slots.len()
 ```
 
-The reconstruction algorithm (from `spine-cpp`): build a `-1`-sentinel
-`drawOrder[slotCount]`, then for each offset place
-`drawOrder[slotIdx + shift] = slotIdx`. Unchanged slots fill remaining
-`-1` positions in their original order.
+**Draw-order record** (shared with folder timelines):
+
+```
+changeCount : uvarint
+if changeCount == 0:
+    ; None — restore setup order
+else:
+    for _ in 0..changeCount:
+        slotIdx : uvarint           ; ascending
+        shift   : uvarint, signed via wraparound (see Gotchas)
+```
+
+Reconstruction (`readDrawOrder`): fill `drawOrder[slotCount]` with `-1`;
+walk slots in original order, collecting skipped ones into `unchanged[]`;
+for each change set `drawOrder[slotIdx + shift] = slotIdx`; append the
+remaining slots to `unchanged[]`; then fill `-1` positions from the back
+with `unchanged[]` popped from the back.
+
+## Draw order folder timelines
+
+```
+numFolders : uvarint
+for _ in 0..numFolders:
+    folderSlotCount : uvarint
+    folderSlots     : uvarint[folderSlotCount], into slots[]
+    keyCount        : uvarint
+    for _ in 0..keyCount:
+        time      : float
+        drawOrder : draw-order record over slotCount = folderSlotCount
+```
+
+Indices inside a folder's draw-order record are **folder-local** (positions
+in `folderSlots`), not skeleton slot indices.
 
 ## Event timeline
 
 ```
 eventCount : uvarint
-if eventCount == 0: ; skip
-else:
-    for _ in 0..eventCount:
-        time         : float
-        eventIdx     : uvarint, into events[]
-        intValue     : signed varint    ; overrides EventData.intValue
-        floatValue   : float            ; overrides EventData.floatValue
-        stringValue  : string           ; None → inherit from EventData
-        if EventData.audioPath is non-empty:
-            volume  : float
-            balance : float
+for _ in 0..eventCount:
+    time         : float
+    eventIdx     : uvarint, into events[]
+    intValue     : signed varint
+    floatValue   : float
+    stringValue  : string           ; None → inherit EventData.stringValue
+    if EventData.audioPath is non-empty:
+        volume  : float
+        balance : float
 ```
+
+# Slider animation indices
+
+After the last animation, one `uvarint` is written **per slider
+constraint**, in constraint-list order, giving the index into `animations[]`
+that the slider drives:
+
+```
+for c in constraints where c.type == Slider:
+    animationIdx : uvarint
+```
+
+Constraints of other types contribute nothing. This is the final section of
+the file.
 
 # Gotchas / porter's guide
 
-Four issues surfaced during the Rust port that are not obvious from the
-byte-layout tables alone. Any porter should check these early.
+Issues not obvious from the byte-layout tables alone.
 
 ## 1. Mesh triangle-count formula mixes units
 
-The count passed to `readShortArray(triangles)` is `(verticesLength - hullLength - 2) * 3`.
+The triangle array length is `(verticesLength - hullLength - 2) * 3`, where
+`verticesLength = vertexCount * 2` but `hullLength` is the *undoubled* hull
+vertex count as read from the wire. The runtime then stores
+`hullLength << 1`. Compute the triangle count from the raw wire value
+before doubling.
 
-- `verticesLength` is `vertexCount * 2` — the "doubled" vertex count used for
-  2-float interleaved arrays.
-- `hullLength` is the *undoubled* vertex count of the hull boundary.
-- The formula therefore mixes units but produces the correct triangle count
-  because a simple hull of `H` vertices yields `H - 2` triangles and interior
-  vertices each add 2 triangles.
+Sanity check, 10-vertex all-hull mesh: `(20 - 10 - 2) * 3 = 24` = 8
+triangles. ✓
 
-Sanity-check: for a 10-vertex all-hull mesh: `(20 - 10 - 2) * 3 = 24` =
-8 triangles × 3 indices. ✓
+spine-cpp: `SkeletonBinary.cpp:653`. spine-ts: `SkeletonBinary.ts:530`.
 
-spine-cpp: `SkeletonBinary.cpp:636`. spine-ts: `SkeletonBinary.ts:414`.
+## 2. DrawOrder `shift` is unsigned-as-signed
 
-## 2. `Inherit` has two different encodings
+`shift` is an unsigned varint, but negative shifts are written as
+two's-complement bit patterns (`-2` → `0xFFFFFFFE`, five varint bytes).
+`spine-cpp` (`SkeletonBinary.cpp:1461`) does
+`drawOrder[index + (size_t) readInt(true)]`, relying on unsigned wraparound.
 
-In `BoneData` it's an **unsigned varint**. In the `InheritTimeline`
-(bone timeline type 10) each frame's value is a **single byte**.
+In Rust, `u32 as usize` on 64-bit gives `0xFFFFFFFE`, not
+`0xFFFF_FFFF_FFFF_FFFE`, and indexes out of bounds. **Read the shift as
+`i32` and add in signed arithmetic.** The same record is used by
+draw-order folder timelines, so fix it once in the shared helper.
 
-- `spine-cpp/SkeletonBinary.cpp:166`: `static_cast<Inherit>(readVarint(input, true))` (bone header)
-- `spine-cpp/SkeletonBinary.cpp:1092`: `Inherit inherit = (Inherit) readByte(input)` (timeline frame)
+Only animations that move a slot earlier exercise this path.
 
-A naive port that reuses the same "read inherit" helper for both contexts
-reads multi-byte garbage in the timeline path. Symptom: animation parsing
-drifts a few bytes and later sections explode at apparently-random offsets.
+## 3. Slider animation indices trail the animations section
 
-## 3. DrawOrder `shift` is unsigned-as-signed
+Slider constraints are read before animations exist, so their animation
+reference is written after the animations section — one uvarint per slider,
+in constraint order. A loader that stops after the animations leaves
+trailing bytes and sliders without an animation. A loader that tries to
+read the index inside the slider record desynchronises immediately.
 
-Spine writes the `shift` as an unsigned varint, but the editor emits
-negative values (e.g. "slot moves 2 positions earlier") as two's-complement
-bit patterns — so `-2` on the wire is `0xFFFFFFFE` (five varint bytes).
+spine-cpp: `SkeletonBinary.cpp:536`.
 
-`spine-cpp/SkeletonBinary.cpp:1440` reads this with `(size_t) readVarint(input, true)`
-and does `drawOrder[index + (size_t) shift] = ...`. The `size_t(-2) + 9`
-wraps in unsigned arithmetic to `7`, producing the correct target index
-at any pointer width.
+## 4. Constraint indices are into one unified list
 
-In a language that doesn't widen the unsigned conversion the same way
-(Rust's `u32 as u64 as usize` on 64-bit is `0xFFFFFFFE`, not
-`0xFFFFFFFFFFFFFFFE`), this naive approach crashes with an out-of-bounds
-index of ~4×10⁹. **Fix: read the shift as signed `i32` and do the
-addition in signed arithmetic before casting back.**
+Skins and all constraint timelines (IK, transform, path, physics, slider)
+index the single constraint list, not a per-type list. A 4.2-style loader
+that keeps separate per-type arrays will resolve the wrong constraint (or
+go out of range) as soon as a rig mixes constraint types. Validate the type
+at each reference.
 
-Only animations that actually move at least one slot earlier in draw order
-exercise this path. Animations with empty or forward-only draw-order
-changes silently pass a buggy implementation.
+## 5. Physics timeline index is 1-based with 0 as "all"
 
-## 4. Sequence attachments resolve per-frame paths, not a single base
+`0` → apply to every physics constraint (typical for `Reset`); `k > 0` →
+`constraints[k - 1]`. spine-cpp (`SkeletonBinary.cpp:1189`) reads
+`readInt(true) - 1` and treats `-1` as "all". Other constraint timelines
+are 0-based.
 
-When a region or mesh attachment carries a `Sequence`, its `path` is a
-**base** — actual atlas regions are looked up per-frame using
-`frame_path(base, i) = base + zero_padded(start + i, digits)`.
+## 6. Every region and mesh has a sequence
 
-A loader that calls `atlas.find_region(path)` directly on the attachment's
-path fails for any sequence-backed attachment because the base ("left-wing")
-doesn't exist in the atlas — only its numbered frames ("left-wing01",
-"left-wing02", …) do.
+When flag `64` is clear no bytes are read, but the attachment still gets a
+`Sequence(count = 1, pathSuffix = false)`, and its single region is looked
+up via `frame_path`, which returns the base path unchanged. When the flag
+is set, `path` is a **base**: the atlas contains only the numbered frames
+(`"left-wing01"`, …), so looking up the base directly fails. Always resolve
+regions through the sequence.
 
-The correct pattern:
+## 7. IK bend bit is inverted in data but not in timelines
 
-- If the attachment record has a sequence: populate `sequence.regions[i]` by
-  looking up `frame_path(path, i)` for each frame; leave the attachment's
-  direct region unset.
-- Otherwise: resolve `path` as a single region and store it on the attachment.
+IK constraint data: `flags & 4` set → `bendDirection = -1`. IK timeline
+frames: `flags & 8` set → `bendDirection = +1`. Porting one from the other
+flips every bend.
 
-## 5. Physics timeline constraint index is 1-indexed with 0 as sentinel
+## 8. Physics `scaleX` carries `scaleYMode`
 
-Physics timelines encode the constraint reference as an unsigned varint
-that is one greater than the actual index:
+There is no separate byte. Negative `scaleX` values decode to `Uniform`
+(`-2 <= v < 0`, `scaleX = -1 - v`) or `Volume` (`v < -2`,
+`scaleX = -2 - v`). Reading the float as-is yields a negative scale mix.
 
-- `0` on the wire → `None` / "apply to all physics constraints" (used for
-  `PhysicsReset` timelines).
-- `n > 0` on the wire → `physicsConstraints[n - 1]`.
+## 9. Weighted vertices have a bones-length prefix
 
-`spine-cpp/SkeletonBinary.cpp:1288` uses `int index = readVarint(true) - 1`,
-accepting `-1` as the "all constraints" marker. Ports using unsigned
-indices throughout need an `Option` or sentinel to handle this case.
+Weighted vertex data starts with an extra uvarint (total `bones` array
+length) after `vertexCount`. Omitting it shifts every subsequent weighted
+read by one varint.
+
+## 10. Linked mesh source slot comes from the record
+
+The source mesh is looked up in slot `sourceIndex` (read before
+`skinIndex`), which may differ from the slot the linked mesh is attached
+to.
+
+## 11. Nonessential data appears in unexpected places
+
+Beyond the header: bone `color/icon/iconSize/iconRotation/visible`, slot
+`visible`, skin `color`, attachment colors, mesh `edges/width/height`,
+linked-mesh `width/height`, the slider `max` (via flag bits 8 + 64), and the
+animation `color` after each animation's event timeline. Missing any one of
+these desynchronises the rest of the file.
 
 # Verification checklist for new ports
 
-Run these against a full Spine 4.2 example set
-(`spine-runtimes/examples/*/export/*.skel`, 25+ rigs):
+Run against the full 4.3 example set (`spine-runtimes/examples/*/export/*.skel`):
 
 - [ ] Every `.skel` parses to non-empty `bones`, `slots`, `animations`.
-- [ ] `SkeletonData::version` starts with `"4.2"` for all of them.
-- [ ] Bones are emitted parent-first: for every bone `b` with a parent,
+- [ ] `SkeletonData::version` starts with `"4.3"` for all of them.
+- [ ] Bones are parent-first: for every bone `b` with a parent,
       `parent.index < b.index`.
-- [ ] The total bytes consumed equals the file size (no trailing garbage,
-      no early EOF).
-- [ ] Spineboy (pro export) has `root`, `hip`, `head` bones and
-      `walk`, `run`, `jump`, `idle` animations with plausible durations.
-- [ ] Dragon loads without a "region not found" error (exercises sequence
-      attachments).
-- [ ] Celestial-circus loads (exercises physics constraints + timelines).
-- [ ] Spineboy-ess's "run" animation loads (exercises DrawOrder with a
-      negative shift — catches gotcha #3).
+- [ ] Total bytes consumed equals file size (includes the trailing slider
+      animation indices).
+- [ ] Both `-ess` and `-pro` exports load where a rig has both (exercises
+      the nonessential paths).
+- [ ] Spineboy (pro) has `root`, `hip`, `head` bones and `walk`, `run`,
+      `jump`, `idle` animations with plausible durations.
+- [ ] Dragon loads without "region not found" (sequence attachments).
+- [ ] Celestial-circus loads (physics constraints + timelines).
+- [ ] Spineboy-ess "run" loads (draw order with a negative shift — gotcha #2).
 
 # References
 
-- `spine-cpp/spine-cpp/include/spine/SkeletonBinary.h` — constant definitions
-  (discriminants for bone / slot / attachment / path / physics timeline types).
-- `spine-cpp/spine-cpp/src/spine/SkeletonBinary.cpp` — authoritative loader
-  implementation.
-- `spine-runtimes/spine-ts/spine-core/src/SkeletonBinary.ts` — TypeScript
-  port; often easier to read than the C++.
+- `spine-cpp/include/spine/SkeletonBinary.h` — discriminant constants (bone
+  / slot / attachment / constraint / path / physics / slider timeline types).
+- `spine-cpp/src/spine/SkeletonBinary.cpp` — authoritative loader.
+- `spine-ts/spine-core/src/SkeletonBinary.ts` — TypeScript port.
 - `dm_spine_runtime/src/load/binary/parse.rs` — this project's Rust port.

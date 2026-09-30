@@ -46,7 +46,12 @@ hommlet's baseline (2026-09-27 bench, "war" save) is 2.71 ms/frame total. Spine 
 
 ## Branching
 
-Phases land on `main` as PRs, merged with merge commits, after the 4.2 tag. The crate must compile and pass clippy at every merge. Goldens for a phase that hasn't landed are `#[ignore = "4.3 phase N"]`; each phase un-ignores its own gate.
+Phase 0 landed on `main` as its own PR. Phases 1–6 landed together as one PR from `spine-4.3/core`, one commit per phase. The 4.3 data model breaks every layer above it at once, so there was no intermediate state that compiled. Phases 7 onward land as separate PRs, merged with merge commits. The crate must compile and pass clippy at every merge.
+
+## Progress
+
+- **0–6 done.** Setup pose 43/43, animation samples 45/45, `AnimationState` scenarios 8/8, render commands (including positions and UVs) 43/43. Steady-state frames don't allocate. On hommlet's rigs a full frame takes 0.51–0.63× spine-cpp's time (Human: 7.8 µs against 13.0 µs). World transform on humanoids is still 1.1× spine-cpp; that's the next performance target once hommlet profiles it in place.
+- **7–9 open.**
 
 ## Phases
 

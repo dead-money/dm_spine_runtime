@@ -30,40 +30,36 @@
 use crate::data::BoneId;
 use crate::math::Color;
 
-/// Controls how a bone inherits its parent's world transform.
-///
-/// Ported from `spine-cpp/include/spine/Inherit.h`. Prior to Spine 4.2 this
-/// was named `TransformMode` with `SP_TRANSFORMMODE_*` variants.
+/// How a bone inherits its parent's world transform.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Inherit {
-    /// Default: inherit translation, rotation, scale, shear.
     #[default]
     Normal,
-    /// Inherit translation only.
     OnlyTranslation,
-    /// Inherit translation and scale; ignore parent rotation / reflection.
     NoRotationOrReflection,
-    /// Inherit translation and rotation; ignore parent scale.
     NoScale,
-    /// Inherit translation and rotation; ignore parent scale and reflection.
     NoScaleOrReflection,
 }
 
-/// Immutable setup-pose bone, owned by [`SkeletonData`].
-///
-/// The `Skeleton` runtime instance holds mutable `Bone` snapshots
-/// initialised from this data.
-///
-/// [`SkeletonData`]: crate::data::SkeletonData
-#[derive(Debug, Clone, PartialEq)]
-pub struct BoneData {
-    /// Index of this bone in [`SkeletonData::bones`][crate::data::SkeletonData::bones].
-    pub index: BoneId,
-    pub name: String,
-    /// Parent bone index, or `None` for the root bone.
-    pub parent: Option<BoneId>,
+impl Inherit {
+    /// Wire value used by both the binary and JSON formats.
+    #[must_use]
+    pub fn from_index(v: u32) -> Option<Self> {
+        Some(match v {
+            0 => Self::Normal,
+            1 => Self::OnlyTranslation,
+            2 => Self::NoRotationOrReflection,
+            3 => Self::NoScale,
+            4 => Self::NoScaleOrReflection,
+            _ => return None,
+        })
+    }
+}
 
-    pub length: f32,
+/// A bone's local transform. Used for the setup pose, the unconstrained
+/// pose animations write, and the constrained pose constraints write.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoneLocal {
     pub x: f32,
     pub y: f32,
     pub rotation: f32,
@@ -72,28 +68,11 @@ pub struct BoneData {
     pub shear_x: f32,
     pub shear_y: f32,
     pub inherit: Inherit,
-
-    /// When true, this bone is only active while a skin that lists it is
-    /// applied to the skeleton.
-    pub skin_required: bool,
-
-    // Non-essential fields (only present when the export included
-    // non-essential data; set to sensible defaults otherwise).
-    pub color: Color,
-    pub icon: String,
-    pub visible: bool,
 }
 
-impl BoneData {
-    /// Construct a bone with setup-pose defaults matching `spine-cpp`'s
-    /// `BoneData` constructor: identity rotation, unit scale, no shear.
-    #[must_use]
-    pub fn new(index: BoneId, name: impl Into<String>, parent: Option<BoneId>) -> Self {
+impl Default for BoneLocal {
+    fn default() -> Self {
         Self {
-            index,
-            name: name.into(),
-            parent,
-            length: 0.0,
             x: 0.0,
             y: 0.0,
             rotation: 0.0,
@@ -102,28 +81,43 @@ impl BoneData {
             shear_x: 0.0,
             shear_y: 0.0,
             inherit: Inherit::Normal,
-            skin_required: false,
-            color: Color::WHITE,
-            icon: String::new(),
-            visible: true,
         }
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::float_cmp)] // All comparisons in this module are against literal setup-pose defaults.
-mod tests {
-    use super::*;
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoneData {
+    pub index: BoneId,
+    pub name: String,
+    pub parent: Option<BoneId>,
+    pub length: f32,
+    pub setup: BoneLocal,
+    /// Active only while a skin listing this bone is applied.
+    pub skin_required: bool,
 
-    #[test]
-    fn new_bone_has_setup_pose_defaults() {
-        let b = BoneData::new(BoneId(0), "root", None);
-        assert_eq!(b.scale_x, 1.0);
-        assert_eq!(b.scale_y, 1.0);
-        assert_eq!(b.rotation, 0.0);
-        assert_eq!(b.inherit, Inherit::Normal);
-        assert_eq!(b.parent, None);
-        assert_eq!(b.color, Color::WHITE);
-        assert!(b.visible);
+    // Nonessential.
+    pub color: Color,
+    pub icon: String,
+    pub icon_size: f32,
+    pub icon_rotation: f32,
+    pub visible: bool,
+}
+
+impl BoneData {
+    #[must_use]
+    pub fn new(index: BoneId, name: impl Into<String>, parent: Option<BoneId>) -> Self {
+        Self {
+            index,
+            name: name.into(),
+            parent,
+            length: 0.0,
+            setup: BoneLocal::default(),
+            skin_required: false,
+            color: Color::new(0.61, 0.61, 0.61, 1.0),
+            icon: String::new(),
+            icon_size: 1.0,
+            icon_rotation: 0.0,
+            visible: true,
+        }
     }
 }

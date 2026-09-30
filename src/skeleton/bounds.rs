@@ -112,7 +112,7 @@ impl SkeletonBounds {
             if !skeleton.bones[bone_id.index()].active {
                 continue;
             }
-            let Some(attachment_id) = slot.attachment else {
+            let Some(attachment_id) = slot.applied().attachment else {
                 continue;
             };
             let Attachment::BoundingBox(bbox) = &skeleton.data.attachments[attachment_id.index()]
@@ -422,7 +422,6 @@ mod tests {
     /// many) updates without panicking and produces a non-empty
     /// polygon set.
     #[test]
-    #[ignore = "Spine 4.3 phase 2"]
     fn update_on_example_rig() {
         use crate::atlas::Atlas;
         use crate::load::{AtlasAttachmentLoader, SkeletonBinary};
@@ -445,8 +444,7 @@ mod tests {
         );
 
         let mut sk = Skeleton::new(Arc::clone(&data));
-        sk.update_cache();
-        sk.set_to_setup_pose();
+        sk.setup_pose();
         sk.update_world_transform(Physics::None);
 
         let mut bounds = SkeletonBounds::new();

@@ -25,108 +25,107 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Named collection of attachments plus skin-specific bone / constraint
-//! membership. A skeleton applies one skin at a time; Spine also supports
-//! merging multiple skins into a "virtual" skin at runtime via the
-//! `Skeleton` API.
+//! Named set of attachments, keyed by slot and placeholder name, plus the
+//! skin-required bones and constraints the skin brings in.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
-use crate::data::{
-    AttachmentId, BoneId, IkConstraintId, PathConstraintId, PhysicsConstraintId, SlotId,
-    TransformConstraintId,
-};
+use crate::data::{AttachmentId, BoneId, ConstraintId, SlotId};
+use crate::math::Color;
 
-/// Setup-pose skin.
-///
-/// Maintains a `(slot_index, attachment_name) -> AttachmentId` lookup so the
-/// runtime can resolve which attachment is active on a given slot when the
-/// skin is applied.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Skin {
     pub name: String,
-
-    /// Bones that this skin contributes to the skeleton. Bones with
-    /// `skin_required = true` are only included in `updateCache` when a skin
-    /// that lists them is active.
     pub bones: Vec<BoneId>,
-
-    /// Constraints brought in by this skin. Mirrors spine-cpp's flat
-    /// `Vector<ConstraintData*>`; we split by constraint kind to keep the
-    /// struct-of-arrays layout intact.
-    pub ik_constraints: Vec<IkConstraintId>,
-    pub transform_constraints: Vec<TransformConstraintId>,
-    pub path_constraints: Vec<PathConstraintId>,
-    pub physics_constraints: Vec<PhysicsConstraintId>,
-
-    /// `(slot_index, attachment_name) -> attachment_id` map.
-    ///
-    /// spine-cpp nests this as `slotIndex -> (name -> Attachment*)`. A flat
-    /// hash of tuple keys is simpler in Rust and equivalent for the lookup
-    /// patterns we care about (always a two-part key).
-    attachments: HashMap<AttachmentKey, AttachmentId>,
+    pub constraints: Vec<ConstraintId>,
+    /// Nonessential editor color.
+    pub color: Color,
+    /// Indexed by slot; each map is placeholder name to attachment.
+    slots: Vec<NameMap>,
 }
 
-/// Key for [`Skin::attachments`]. Wrapped in a struct so the hash map has a
-/// single typed key rather than a tuple; makes debug output clearer.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct AttachmentKey {
-    slot: SlotId,
-    name: String,
+/// FNV-1a: placeholder names are short, and attachment timelines look them
+/// up every frame.
+#[derive(Default)]
+struct NameHasher(u64);
+
+impl Hasher for NameHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = h;
+    }
 }
+
+type NameMap = HashMap<String, AttachmentId, BuildHasherDefault<NameHasher>>;
 
 impl Skin {
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            color: Color::new(0.996_078_43, 0.619_607_87, 0.309_803_93, 1.0),
             ..Self::default()
         }
     }
 
-    /// Record that `attachment` is named `name` on `slot` for this skin.
     pub fn set_attachment(
         &mut self,
         slot: SlotId,
-        name: impl Into<String>,
+        placeholder: impl Into<String>,
         attachment: AttachmentId,
     ) {
-        self.attachments.insert(
-            AttachmentKey {
-                slot,
-                name: name.into(),
-            },
-            attachment,
-        );
+        let i = slot.index();
+        if self.slots.len() <= i {
+            self.slots.resize_with(i + 1, NameMap::default);
+        }
+        self.slots[i].insert(placeholder.into(), attachment);
     }
 
-    /// Look up an attachment by slot index and name.
     #[must_use]
-    pub fn get_attachment(&self, slot: SlotId, name: &str) -> Option<AttachmentId> {
-        // Avoid allocating a `String` for the lookup by using a trait object
-        // key type. Simpler form: build a temporary key. The HashMap has a
-        // `get` that would take `&dyn KeyTrait`, but String-key lookup in
-        // stable Rust requires constructing the key. Skin sets are small so
-        // the extra alloc is fine.
-        self.attachments
-            .get(&AttachmentKey {
-                slot,
-                name: name.to_string(),
-            })
-            .copied()
+    pub fn get_attachment(&self, slot: SlotId, placeholder: &str) -> Option<AttachmentId> {
+        self.slots.get(slot.index())?.get(placeholder).copied()
     }
 
-    /// Number of attachment entries in this skin.
+    pub fn remove_attachment(&mut self, slot: SlotId, placeholder: &str) {
+        if let Some(map) = self.slots.get_mut(slot.index()) {
+            map.remove(placeholder);
+        }
+    }
+
     #[must_use]
     pub fn attachment_count(&self) -> usize {
-        self.attachments.len()
+        self.slots.iter().map(NameMap::len).sum()
     }
 
-    /// Iterate all attachment entries: `((slot, name), attachment_id)`.
+    /// Every `(slot, placeholder, attachment)` entry.
     pub fn attachments(&self) -> impl Iterator<Item = (SlotId, &str, AttachmentId)> + '_ {
-        self.attachments
-            .iter()
-            .map(|(k, v)| (k.slot, k.name.as_str(), *v))
+        self.slots.iter().enumerate().flat_map(|(slot, map)| {
+            map.iter()
+                .map(move |(name, id)| (SlotId(slot as u16), name.as_str(), *id))
+        })
+    }
+
+    /// Entries on one slot.
+    pub fn slot_attachments(
+        &self,
+        slot: SlotId,
+    ) -> impl Iterator<Item = (&str, AttachmentId)> + '_ {
+        self.slots
+            .get(slot.index())
+            .into_iter()
+            .flat_map(|map| map.iter().map(|(name, id)| (name.as_str(), *id)))
     }
 }
 
@@ -135,38 +134,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attachment_set_get_round_trip() {
+    fn attachment_set_get_remove() {
         let mut skin = Skin::new("default");
         skin.set_attachment(SlotId(0), "body", AttachmentId(7));
-        skin.set_attachment(SlotId(1), "head", AttachmentId(8));
-        skin.set_attachment(SlotId(0), "body-alt", AttachmentId(9));
-
+        skin.set_attachment(SlotId(3), "head", AttachmentId(8));
+        skin.set_attachment(SlotId(0), "body", AttachmentId(9));
         assert_eq!(
             skin.get_attachment(SlotId(0), "body"),
-            Some(AttachmentId(7))
-        );
-        assert_eq!(
-            skin.get_attachment(SlotId(1), "head"),
-            Some(AttachmentId(8))
-        );
-        assert_eq!(
-            skin.get_attachment(SlotId(0), "body-alt"),
             Some(AttachmentId(9))
         );
-        assert_eq!(skin.get_attachment(SlotId(0), "missing"), None);
-        assert_eq!(skin.get_attachment(SlotId(2), "body"), None);
-        assert_eq!(skin.attachment_count(), 3);
-    }
-
-    #[test]
-    fn duplicate_key_overwrites() {
-        let mut skin = Skin::new("default");
-        skin.set_attachment(SlotId(0), "body", AttachmentId(1));
-        skin.set_attachment(SlotId(0), "body", AttachmentId(2));
         assert_eq!(
-            skin.get_attachment(SlotId(0), "body"),
-            Some(AttachmentId(2))
+            skin.get_attachment(SlotId(3), "head"),
+            Some(AttachmentId(8))
         );
+        assert_eq!(skin.get_attachment(SlotId(1), "head"), None);
+        assert_eq!(skin.get_attachment(SlotId(9), "head"), None);
+        assert_eq!(skin.attachment_count(), 2);
+        skin.remove_attachment(SlotId(0), "body");
         assert_eq!(skin.attachment_count(), 1);
     }
 }

@@ -25,73 +25,169 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Runtime-mutable slot state. Mirrors `spine::Slot` from
-//! `spine-cpp/include/spine/Slot.h`: tint color, dark color, active
-//! attachment, and a per-vertex deform scratch buffer.
+//! Runtime slots and the draw order.
 
-use crate::data::{AttachmentId, SlotData, SlotId};
+use crate::data::{AttachmentId, BoneId, SkeletonData, SlotData, SlotId};
 use crate::math::Color;
+use crate::skeleton::pose::{Pose, Posed};
 
-/// Runtime-mutable slot. One per [`SlotData`] in the owning `Skeleton`.
-///
-/// The slot's bone link is immutable — read it from `data.slots[idx].bone`
-/// when needed rather than caching a second copy here.
-#[derive(Debug, Clone)]
-pub struct Slot {
-    /// Index into [`SkeletonData::slots`][crate::data::SkeletonData::slots].
-    pub data_index: SlotId,
-
-    /// Current tint color. Animations / `setToSetupPose` both write here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotPose {
     pub color: Color,
-    /// "Tint-black" secondary color; `None` when the slot was exported without
-    /// dark-color support (matches [`SlotData::dark_color`]).
-    pub dark_color: Option<Color>,
-
-    /// Resolved attachment for the current skin, or `None` for an empty slot.
-    /// Set by `Skeleton::set_slots_to_setup_pose` via the active skin +
-    /// default-skin fallback; animations change it through `AttachmentTimeline`.
+    /// Meaningful only when `has_dark_color`.
+    pub dark_color: Color,
+    pub has_dark_color: bool,
     pub attachment: Option<AttachmentId>,
-
-    /// Counter used by `AttachmentTimeline` to invalidate cached deform data
-    /// when the attachment changes mid-animation. Ported verbatim from
-    /// `spine-cpp`.
-    pub attachment_state: i32,
-
-    /// Active sequence frame for attachments that carry a [`Sequence`]. `-1`
-    /// means "use the attachment's default frame" (spine-cpp convention).
-    ///
-    /// [`Sequence`]: crate::data::Sequence
+    /// Sequence frame, or -1 for the sequence's setup frame.
     pub sequence_index: i32,
-
-    /// Scratch buffer written by `DeformTimeline` each frame, consumed by the
-    /// mesh/path attachment world-vertex computation. Empty in setup pose.
+    /// Deformed vertices for the attachment. Empty means undeformed.
     pub deform: Vec<f32>,
 }
 
-impl Slot {
-    /// Build a runtime slot initialised to `data`'s setup pose.
-    ///
-    /// Attachment resolution requires the active skin and so is not done
-    /// here — `Skeleton::set_slots_to_setup_pose` handles it.
-    #[must_use]
-    pub fn new(data: &SlotData) -> Self {
+impl Default for SlotPose {
+    fn default() -> Self {
         Self {
-            data_index: data.index,
-            color: data.color,
-            dark_color: data.dark_color,
+            color: Color::WHITE,
+            dark_color: Color::new(0.0, 0.0, 0.0, 0.0),
+            has_dark_color: false,
             attachment: None,
-            attachment_state: 0,
-            sequence_index: -1,
+            sequence_index: 0,
             deform: Vec::new(),
         }
     }
+}
 
-    /// Reset mutable state to `data`'s setup pose. Leaves attachment
-    /// resolution to the caller — see `Skeleton::set_slots_to_setup_pose`.
-    pub fn set_to_setup_pose(&mut self, data: &SlotData) {
-        debug_assert_eq!(data.index, self.data_index);
-        self.color = data.color;
-        self.dark_color = data.dark_color;
-        self.deform.clear();
+impl Pose for SlotPose {
+    fn set_from(&mut self, other: &Self) {
+        self.color = other.color;
+        if other.has_dark_color {
+            self.dark_color = other.dark_color;
+        }
+        self.has_dark_color = other.has_dark_color;
+        self.attachment = other.attachment;
+        self.sequence_index = other.sequence_index;
+        self.deform.clone_from(&other.deform);
+    }
+}
+
+impl SlotPose {
+    /// Changes the attachment, keeping deform only when both attachments
+    /// share timelines. Resets the sequence frame.
+    pub fn set_attachment(&mut self, attachment: Option<AttachmentId>, data: &SkeletonData) {
+        if self.attachment == attachment {
+            return;
+        }
+        let timeline_of = |id: AttachmentId| data.attachments[id.index()].timeline_attachment(id);
+        match (attachment, self.attachment) {
+            (Some(new), Some(old)) if timeline_of(new) == timeline_of(old) => {}
+            _ => self.deform.clear(),
+        }
+        self.attachment = attachment;
+        self.sequence_index = -1;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Slot {
+    pub data: SlotId,
+    pub bone: BoneId,
+    pub posed: Posed<SlotPose>,
+    /// Scratch state `AnimationState` uses while applying attachment timelines.
+    pub(crate) attachment_state: i32,
+}
+
+impl Slot {
+    #[must_use]
+    pub fn new(data: &SlotData) -> Self {
+        let pose = SlotPose {
+            has_dark_color: data.dark_color.is_some(),
+            ..SlotPose::default()
+        };
+        Self {
+            data: data.index,
+            bone: data.bone,
+            posed: Posed::new(pose.clone(), pose),
+            attachment_state: 0,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn applied(&self) -> &SlotPose {
+        self.posed.applied()
+    }
+
+    /// Resets color, dark color and attachment. `attachment` is the setup
+    /// attachment resolved through the skeleton's skins.
+    pub fn setup_pose(
+        &mut self,
+        data: &SlotData,
+        attachment: Option<AttachmentId>,
+        skeleton_data: &SkeletonData,
+    ) {
+        let pose = &mut self.posed.pose;
+        pose.color = data.color;
+        if pose.has_dark_color
+            && let Some(dark) = data.dark_color
+        {
+            pose.dark_color = dark;
+        }
+        pose.sequence_index = 0;
+        if data.attachment_name.is_none() {
+            pose.set_attachment(None, skeleton_data);
+        } else {
+            pose.attachment = None;
+            pose.set_attachment(attachment, skeleton_data);
+        }
+    }
+}
+
+/// Slot render order. Draw order timelines write `pose`; sliders may
+/// constrain it.
+#[derive(Debug, Clone, Default)]
+pub struct DrawOrder {
+    pub pose: Vec<SlotId>,
+    pub constrained: Vec<SlotId>,
+    is_constrained: bool,
+}
+
+impl DrawOrder {
+    #[must_use]
+    pub fn applied(&self) -> &[SlotId] {
+        if self.is_constrained {
+            &self.constrained
+        } else {
+            &self.pose
+        }
+    }
+
+    pub fn select_mut(&mut self, applied: bool) -> &mut Vec<SlotId> {
+        if applied && self.is_constrained {
+            &mut self.constrained
+        } else {
+            &mut self.pose
+        }
+    }
+
+    pub fn setup_pose(&mut self, slot_count: usize) {
+        self.pose.clear();
+        self.pose.extend((0..slot_count).map(|i| SlotId(i as u16)));
+    }
+
+    pub(crate) fn constrain(&mut self) {
+        self.is_constrained = true;
+    }
+
+    pub(crate) fn unconstrain(&mut self) {
+        self.is_constrained = false;
+    }
+
+    #[must_use]
+    pub fn is_constrained(&self) -> bool {
+        self.is_constrained
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.constrained.clone_from(&self.pose);
     }
 }

@@ -25,60 +25,31 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `SkeletonClipping` — clips triangle streams against a
-//! `ClippingAttachment`'s polygon, producing a new triangle fan per
-//! clipped triangle.
-//!
-//! Literal port of `spine-cpp/src/spine/SkeletonClipping.cpp`. The
-//! clipper is used by the render walker (6e wiring): for every slot
-//! that carries a `ClippingAttachment`, `clip_start` begins a clip
-//! region; subsequent slots' emitted triangles are routed through
-//! `clip_triangles`; `clip_end(slot)` closes the region when the
-//! `end_slot` is reached.
+//! Clipping attachments (`SkeletonClipping`, 4.3): clips triangles against
+//! a clipping polygon, splitting concave polygons into convex parts, or
+//! keeps what lies outside an inverse clip.
 
-#![allow(clippy::many_single_char_names)] // spine-cpp short names are preserved for diff parity.
+#![allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 
-use crate::data::{Attachment, SlotId};
+use crate::data::{Attachment, ClippingAttachment, SlotId};
 use crate::math::Triangulator;
 use crate::skeleton::Skeleton;
 
-/// Stateful clipper, mirroring `spine-cpp`'s `SkeletonClipping`. One
-/// instance per `SkeletonRenderer`; scratch buffers are reused across
-/// frames.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SkeletonClipping {
     triangulator: Triangulator,
-
-    /// The clipping attachment's world-space polygon (post-makeClockwise).
     clipping_polygon: Vec<f32>,
-    /// Convex decomposition of `clipping_polygon`. Each sub-polygon has
-    /// its first vertex duplicated at the end (closing the loop) so
-    /// the clip-edge walk sees `n - 4` unique edges.
     clipping_polygons: Vec<Vec<f32>>,
-
-    /// Output-accumulator for a single `clip` call — the clipped
-    /// polygon expressed as interleaved `x, y` vertices.
+    polygon_count: usize,
     clip_output: Vec<f32>,
-    /// Second scratch buffer used by `clip` to ping-pong between the
-    /// "input" (previous edge's output) and the "output" (current
-    /// edge's accumulator).
     scratch: Vec<f32>,
-
-    /// Accumulated clipped vertices / triangles / UVs across all
-    /// triangles in one `clip_triangles` call. Consumed by the
-    /// renderer to build a single post-clip `RenderCommand`.
+    inverse_vertices: Vec<f32>,
     clipped_vertices: Vec<f32>,
     clipped_triangles: Vec<u16>,
     clipped_uvs: Vec<f32>,
-
-    /// The slot that started the current clip region (`None` when no
-    /// clip is active). Used to close the clip on the matching
-    /// `end_slot`.
-    active_slot: Option<SlotId>,
-    /// Attachment-pointer surrogate: the `ClippingAttachment`'s
-    /// `end_slot` stored at `clip_start` time, consulted by
-    /// `clip_end(slot)`.
-    active_end_slot: Option<SlotId>,
+    end_slot: Option<SlotId>,
+    active: bool,
+    inverse: bool,
 }
 
 impl SkeletonClipping {
@@ -87,295 +58,256 @@ impl SkeletonClipping {
         Self::default()
     }
 
-    /// Begin clipping against the `ClippingAttachment` currently
-    /// attached to `slot`. Computes the world-space clipping polygon,
-    /// orients it clockwise, and decomposes it into convex sub-polygons.
-    ///
-    /// Returns the number of convex sub-polygons (zero if already
-    /// clipping or if the attachment isn't actually a clipping
-    /// attachment).
-    pub fn clip_start(&mut self, skeleton: &Skeleton, slot_id: SlotId) -> usize {
-        if self.active_slot.is_some() {
+    /// Starts clipping with the clipping attachment on `slot`. Returns the
+    /// number of convex polygons clipped against.
+    pub fn clip_start(
+        &mut self,
+        skeleton: &Skeleton,
+        slot: SlotId,
+        clip: &ClippingAttachment,
+    ) -> usize {
+        if self.active {
             return 0;
         }
-        let Some(attachment_id) = skeleton.slots[slot_id.index()].attachment else {
-            return 0;
-        };
-        let Attachment::Clipping(clip) = &skeleton.data.attachments[attachment_id.index()] else {
-            return 0;
-        };
-
         let n = clip.vertex_data.world_vertices_length as usize;
+        if n < 6 {
+            return 0;
+        }
+        self.active = true;
+        self.end_slot = clip.end_slot;
+        self.inverse = clip.inverse;
+        self.polygon_count = 0;
         self.clipping_polygon.clear();
         self.clipping_polygon.resize(n, 0.0);
         skeleton.compute_world_vertices(
             &clip.vertex_data,
-            slot_id,
+            slot,
             0,
             n,
             &mut self.clipping_polygon,
             0,
             2,
         );
-        make_clockwise(&mut self.clipping_polygon);
-
-        // Decompose into convex polygons. The triangulator returns a
-        // `&[u16]` triangle list, and `decompose` then merges adjacent
-        // convex fans back into the smallest set of convex polygons.
-        let triangles: Vec<u16> = self
-            .triangulator
-            .triangulate(&self.clipping_polygon)
-            .to_vec();
-        let polygons: Vec<Vec<f32>> = self
-            .triangulator
-            .decompose(&self.clipping_polygon, &triangles)
-            .to_vec();
-        self.clipping_polygons = polygons;
-
-        // Re-orient each convex sub-polygon clockwise and duplicate
-        // its first vertex at the end (closing the loop for edge
-        // iteration in `clip`).
-        for poly in &mut self.clipping_polygons {
-            make_clockwise(poly);
-            let (x0, y0) = (poly[0], poly[1]);
-            poly.push(x0);
-            poly.push(y0);
+        let convex = make_clockwise(&mut self.clipping_polygon);
+        if convex || self.inverse || clip.convex {
+            if !convex {
+                make_convex(&mut self.clipping_polygon, &mut self.clip_output);
+            }
+            let (x, y) = (self.clipping_polygon[0], self.clipping_polygon[1]);
+            self.clipping_polygon.push(x);
+            self.clipping_polygon.push(y);
+            self.push_polygon_from_own();
+        } else {
+            let max_points = self.clipping_polygon.len() + 2;
+            let polygons = self.triangulator.triangulate_convex(&self.clipping_polygon);
+            for (i, p) in polygons.iter().enumerate() {
+                if self.clipping_polygons.len() <= i {
+                    self.clipping_polygons.push(Vec::new());
+                }
+                // Sized for the largest part so later frames don't regrow it.
+                let dst = &mut self.clipping_polygons[i];
+                dst.clear();
+                dst.reserve(max_points);
+                dst.extend_from_slice(p);
+            }
+            self.polygon_count = polygons.len();
         }
-
-        self.active_slot = Some(slot_id);
-        self.active_end_slot = Some(clip.end_slot);
-        self.clipping_polygons.len()
+        self.polygon_count
     }
 
-    /// End clipping if `slot` is the active clipping region's
-    /// `end_slot` (matches spine-cpp's `clipEnd(Slot&)`).
-    pub fn clip_end_on(&mut self, slot_id: SlotId) {
-        if self.active_end_slot == Some(slot_id) {
+    fn push_polygon_from_own(&mut self) {
+        if self.clipping_polygons.is_empty() {
+            self.clipping_polygons.push(Vec::new());
+        }
+        self.clipping_polygons[0].clone_from(&self.clipping_polygon);
+        self.polygon_count = 1;
+    }
+
+    /// Ends clipping if `slot` is the clip's end slot.
+    pub fn clip_end_slot(&mut self, slot: SlotId) {
+        if self.active && self.end_slot == Some(slot) {
             self.clip_end();
         }
     }
 
-    /// Unconditionally end clipping and discard all per-region state.
     pub fn clip_end(&mut self) {
-        self.active_slot = None;
-        self.active_end_slot = None;
-        self.clipping_polygon.clear();
-        self.clipping_polygons.clear();
-        self.clipped_vertices.clear();
-        self.clipped_triangles.clear();
-        self.clipped_uvs.clear();
+        self.active = false;
+        self.polygon_count = 0;
     }
 
-    /// `true` iff a clip region is currently active.
     #[must_use]
     pub fn is_clipping(&self) -> bool {
-        self.active_slot.is_some()
+        self.active
     }
 
-    /// Clip a triangle list against the active clipping polygons.
-    /// `vertices` is interleaved `x, y` with `stride` floats between
-    /// consecutive vertices (typically 2). `uvs` has the same stride.
-    /// Outputs go into the `clipped_*` accumulators — read with
-    /// [`Self::clipped_vertices`] etc.
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+    #[must_use]
+    pub fn clipped_vertices(&self) -> &[f32] {
+        &self.clipped_vertices
+    }
+
+    #[must_use]
+    pub fn clipped_triangles(&self) -> &[u16] {
+        &self.clipped_triangles
+    }
+
+    #[must_use]
+    pub fn clipped_uvs(&self) -> &[f32] {
+        &self.clipped_uvs
+    }
+
+    /// Clips triangles (positions every `stride` floats) and their UVs into
+    /// the `clipped_*` buffers. Returns whether any triangle was clipped.
     pub fn clip_triangles(
         &mut self,
         vertices: &[f32],
         triangles: &[u16],
         uvs: &[f32],
         stride: usize,
-    ) {
+    ) -> bool {
         self.clipped_vertices.clear();
         self.clipped_triangles.clear();
         self.clipped_uvs.clear();
-
-        let polygons_count = self.clipping_polygons.len();
-        if polygons_count == 0 {
-            return;
-        }
-
         let mut index: u16 = 0;
-        let mut i = 0_usize;
-        'outer: while i < triangles.len() {
-            let vo0 = triangles[i] as usize * stride;
-            let (x1, y1) = (vertices[vo0], vertices[vo0 + 1]);
-            let (u1, v1) = (uvs[vo0], uvs[vo0 + 1]);
 
-            let vo1 = triangles[i + 1] as usize * stride;
-            let (x2, y2) = (vertices[vo1], vertices[vo1 + 1]);
-            let (u2, v2) = (uvs[vo1], uvs[vo1 + 1]);
-
-            let vo2 = triangles[i + 2] as usize * stride;
-            let (x3, y3) = (vertices[vo2], vertices[vo2 + 1]);
-            let (u3, v3) = (uvs[vo2], uvs[vo2 + 1]);
-
-            for p in 0..polygons_count {
-                let s = self.clipped_vertices.len();
-
-                // Take the clipping polygon out of self so the mutable
-                // borrow on self.clip_output / self.scratch doesn't
-                // conflict. Put it back at end of iteration.
-                let polygon = std::mem::take(&mut self.clipping_polygons[p]);
-                let clipped = clip(
+        if self.inverse {
+            for tri in triangles.chunks_exact(3) {
+                let (t0, t1, t2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+                let (x1, y1) = (vertices[t0 * stride], vertices[t0 * stride + 1]);
+                let (x2, y2) = (vertices[t1 * stride], vertices[t1 * stride + 1]);
+                let (x3, y3) = (vertices[t2 * stride], vertices[t2 * stride + 1]);
+                clip_inverse(
                     x1,
                     y1,
                     x2,
                     y2,
                     x3,
                     y3,
-                    &polygon,
+                    &self.clipping_polygons[0],
                     &mut self.clip_output,
                     &mut self.scratch,
+                    &mut self.inverse_vertices,
                 );
-                self.clipping_polygons[p] = polygon;
-
-                if clipped {
-                    let clip_len = self.clip_output.len();
-                    if clip_len == 0 {
-                        continue;
-                    }
-                    // Barycentric projection for UVs. spine-cpp:
-                    // d0=y2-y3, d1=x3-x2, d2=x1-x3, d4=y3-y1,
-                    // d = 1/(d0*d2 + d1*(y1 - y3)).
-                    let d0 = y2 - y3;
-                    let d1 = x3 - x2;
-                    let d2 = x1 - x3;
-                    let d4 = y3 - y1;
-                    let d = 1.0 / (d0 * d2 + d1 * (y1 - y3));
-
-                    let clip_count = clip_len >> 1;
-                    self.clipped_vertices.resize(s + clip_count * 2, 0.0);
-                    self.clipped_uvs.resize(s + clip_count * 2, 0.0);
-                    let mut write = s;
-                    let mut ii = 0;
-                    while ii < clip_len {
-                        let x = self.clip_output[ii];
-                        let y = self.clip_output[ii + 1];
-                        self.clipped_vertices[write] = x;
-                        self.clipped_vertices[write + 1] = y;
+                let nn = self.inverse_vertices.len();
+                if nn == 0 {
+                    continue;
+                }
+                let (u1, v1) = (uvs[t0 << 1], uvs[(t0 << 1) + 1]);
+                let (u2, v2) = (uvs[t1 << 1], uvs[(t1 << 1) + 1]);
+                let (u3, v3) = (uvs[t2 << 1], uvs[(t2 << 1) + 1]);
+                let d0 = y2 - y3;
+                let d1 = x3 - x2;
+                let d2 = x1 - x3;
+                let d4 = y3 - y1;
+                let d = 1.0 / (d0 * d2 + d1 * (y1 - y3));
+                let iv = &self.inverse_vertices;
+                let mut offset = 0;
+                while offset < nn {
+                    let polygon_size = iv[offset] as usize;
+                    offset += 1;
+                    let vertex_count = polygon_size >> 1;
+                    for ii in (0..polygon_size).step_by(2) {
+                        let (x, y) = (iv[offset + ii], iv[offset + ii + 1]);
+                        self.clipped_vertices.push(x);
+                        self.clipped_vertices.push(y);
                         let c0 = x - x3;
                         let c1 = y - y3;
                         let a = (d0 * c0 + d1 * c1) * d;
                         let b = (d4 * c0 + d2 * c1) * d;
                         let c = 1.0 - a - b;
-                        self.clipped_uvs[write] = u1 * a + u2 * b + u3 * c;
-                        self.clipped_uvs[write + 1] = v1 * a + v2 * b + v3 * c;
-                        write += 2;
-                        ii += 2;
+                        self.clipped_uvs.push(u1 * a + u2 * b + u3 * c);
+                        self.clipped_uvs.push(v1 * a + v2 * b + v3 * c);
                     }
-
-                    // Fan-triangulate the clipped polygon.
-                    let t_s = self.clipped_triangles.len();
-                    self.clipped_triangles.resize(t_s + 3 * (clip_count - 2), 0);
-                    let fan_count = clip_count - 1;
-                    let mut ts = t_s;
-                    for ii in 1..fan_count {
-                        self.clipped_triangles[ts] = index;
-                        self.clipped_triangles[ts + 1] = index + ii as u16;
-                        self.clipped_triangles[ts + 2] = index + ii as u16 + 1;
-                        ts += 3;
-                    }
-                    index += fan_count as u16 + 1;
-                } else {
-                    // Triangle lies entirely inside the clip polygon —
-                    // emit it as-is and advance past the triangle
-                    // (spine-cpp: `i += 3; goto continue_outer`).
-                    let vs = s;
-                    self.clipped_vertices.resize(vs + 6, 0.0);
-                    self.clipped_uvs.resize(vs + 6, 0.0);
-                    self.clipped_vertices[vs] = x1;
-                    self.clipped_vertices[vs + 1] = y1;
-                    self.clipped_vertices[vs + 2] = x2;
-                    self.clipped_vertices[vs + 3] = y2;
-                    self.clipped_vertices[vs + 4] = x3;
-                    self.clipped_vertices[vs + 5] = y3;
-                    self.clipped_uvs[vs] = u1;
-                    self.clipped_uvs[vs + 1] = v1;
-                    self.clipped_uvs[vs + 2] = u2;
-                    self.clipped_uvs[vs + 3] = v2;
-                    self.clipped_uvs[vs + 4] = u3;
-                    self.clipped_uvs[vs + 5] = v3;
-
-                    let ts = self.clipped_triangles.len();
-                    self.clipped_triangles.resize(ts + 3, 0);
-                    self.clipped_triangles[ts] = index;
-                    self.clipped_triangles[ts + 1] = index + 1;
-                    self.clipped_triangles[ts + 2] = index + 2;
-                    index += 3;
-                    i += 3;
-                    continue 'outer;
+                    push_fan(&mut self.clipped_triangles, index, vertex_count);
+                    index += vertex_count as u16;
+                    offset += polygon_size;
                 }
             }
-            i += 3;
+            return true;
         }
+
+        let mut clipped = false;
+        for tri in triangles.chunks_exact(3) {
+            let (t0, t1, t2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            let (x1, y1) = (vertices[t0 * stride], vertices[t0 * stride + 1]);
+            let (u1, v1) = (uvs[t0 << 1], uvs[(t0 << 1) + 1]);
+            let (x2, y2) = (vertices[t1 * stride], vertices[t1 * stride + 1]);
+            let (u2, v2) = (uvs[t1 << 1], uvs[(t1 << 1) + 1]);
+            let (x3, y3) = (vertices[t2 * stride], vertices[t2 * stride + 1]);
+            let (u3, v3) = (uvs[t2 << 1], uvs[(t2 << 1) + 1]);
+            let (mut d0, mut d1, mut d2, mut d4, mut d) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for p in 0..self.polygon_count {
+                if clip(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    x3,
+                    y3,
+                    &self.clipping_polygons[p],
+                    &mut self.clip_output,
+                    &mut self.scratch,
+                ) {
+                    let len = self.clip_output.len();
+                    if len == 0 {
+                        continue;
+                    }
+                    clipped = true;
+                    let count = len >> 1;
+                    if d == 0.0 {
+                        d0 = y2 - y3;
+                        d1 = x3 - x2;
+                        d2 = x1 - x3;
+                        d4 = y3 - y1;
+                        d = 1.0 / (d0 * d2 - d1 * d4);
+                    }
+                    for ii in (0..len).step_by(2) {
+                        let (x, y) = (self.clip_output[ii], self.clip_output[ii + 1]);
+                        self.clipped_vertices.push(x);
+                        self.clipped_vertices.push(y);
+                        let c0 = x - x3;
+                        let c1 = y - y3;
+                        let a = (d0 * c0 + d1 * c1) * d;
+                        let b = (d4 * c0 + d2 * c1) * d;
+                        let c = 1.0 - a - b;
+                        self.clipped_uvs.push(u1 * a + u2 * b + u3 * c);
+                        self.clipped_uvs.push(v1 * a + v2 * b + v3 * c);
+                    }
+                    push_fan(&mut self.clipped_triangles, index, count);
+                    index += count as u16;
+                } else {
+                    self.clipped_vertices
+                        .extend_from_slice(&[x1, y1, x2, y2, x3, y3]);
+                    self.clipped_uvs
+                        .extend_from_slice(&[u1, v1, u2, v2, u3, v3]);
+                    self.clipped_triangles
+                        .extend_from_slice(&[index, index + 1, index + 2]);
+                    index += 3;
+                    break;
+                }
+            }
+        }
+        clipped
     }
 
-    /// Clipped triangle-list output: interleaved world-space
-    /// `x, y` per vertex.
-    #[must_use]
-    pub fn clipped_vertices(&self) -> &[f32] {
-        &self.clipped_vertices
-    }
-
-    /// Clipped triangle-list index buffer into [`Self::clipped_vertices`].
-    #[must_use]
-    pub fn clipped_triangles(&self) -> &[u16] {
-        &self.clipped_triangles
-    }
-
-    /// Clipped triangle-list UVs, one pair per vertex of [`Self::clipped_vertices`].
-    #[must_use]
-    pub fn clipped_uvs(&self) -> &[f32] {
-        &self.clipped_uvs
+    /// Clips positions only, for bounds.
+    pub fn clip_triangles_positions(&mut self, vertices: &[f32], triangles: &[u16]) -> bool {
+        let uvs = vec![0.0; vertices.len()];
+        self.clip_triangles(vertices, triangles, &uvs, 2)
     }
 }
 
-/// Orient `polygon` (interleaved `x, y` pairs) clockwise. Literal
-/// port of `SkeletonClipping::makeClockwise` — computes the signed
-/// area, returns if already positive (clockwise in spine-cpp's
-/// y-down convention), otherwise reverses vertex order.
-fn make_clockwise(polygon: &mut [f32]) {
-    let vlen = polygon.len();
-    if vlen < 6 {
-        return;
-    }
-    let mut area = polygon[vlen - 2] * polygon[1] - polygon[0] * polygon[vlen - 1];
-    let mut i = 0;
-    while i + 3 < vlen - 1 {
-        let p1x = polygon[i];
-        let p1y = polygon[i + 1];
-        let p2x = polygon[i + 2];
-        let p2y = polygon[i + 3];
-        area += p1x * p2y - p2x * p1y;
-        i += 2;
-    }
-    if area < 0.0 {
-        return;
-    }
-    // Reverse x/y pairs in place.
-    let last_x = vlen - 2;
-    let mut i = 0;
-    let n = vlen >> 1;
-    while i < n {
-        let other = last_x - i;
-        polygon.swap(i, other);
-        polygon.swap(i + 1, other + 1);
-        i += 2;
+/// Triangle fan over `vertex_count` vertices starting at `index`.
+fn push_fan(triangles: &mut Vec<u16>, index: u16, vertex_count: usize) {
+    for ii in 1..vertex_count.saturating_sub(1) {
+        let ii = ii as u16;
+        triangles.extend_from_slice(&[index, index + ii, index + ii + 1]);
     }
 }
 
-/// Sutherland-Hodgman convex-polygon clip of triangle
-/// `(x1,y1)-(x2,y2)-(x3,y3)` against `clipping_area`.
-///
-/// Writes the clipped polygon into `output` as interleaved `x, y`
-/// pairs. `scratch` is an auxiliary buffer; `output` and `scratch`
-/// ping-pong each edge so neither needs per-edge allocation.
-///
-/// Returns `true` if any clipping occurred, `false` if the triangle
-/// lies entirely inside the clipping area. When the triangle is
-/// completely outside, returns `true` and leaves `output` empty.
-/// Literal port of `SkeletonClipping::clip`.
-#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+/// Sutherland-Hodgman clip of one triangle against a closed convex
+/// polygon. The result, without its closing point, is left in `output`.
+/// Returns whether the triangle was clipped; an empty `output` means it
+/// was clipped away entirely.
 fn clip(
     x1: f32,
     y1: f32,
@@ -383,178 +315,406 @@ fn clip(
     y2: f32,
     x3: f32,
     y3: f32,
-    clipping_area: &[f32],
-    output: &mut Vec<f32>,
+    polygon: &[f32],
+    clip_output: &mut Vec<f32>,
     scratch: &mut Vec<f32>,
 ) -> bool {
-    // Match spine-cpp's "avoid one final copy" trick: pick which
-    // buffer ends up holding the result based on the number of clip
-    // edges (so the last ping-pong lands in `output`).
-    let use_output_as_input = clipping_area.len() % 4 >= 2;
-
-    output.clear();
-    scratch.clear();
-
-    // Seed the "input" buffer with the triangle (first vertex
-    // duplicated at end to close the loop).
-    let (input_buf, output_buf): (&mut Vec<f32>, &mut Vec<f32>) = if use_output_as_input {
-        (output, scratch)
-    } else {
-        (scratch, output)
-    };
-    input_buf.extend_from_slice(&[x1, y1, x2, y2, x3, y3, x1, y1]);
-
-    // Shadow the named bindings so swap ops don't require re-borrowing.
-    // Swapping `Vec` contents via std::mem::swap is a pointer swap.
-    let mut input: Vec<f32> = std::mem::take(input_buf);
-    let mut current_output: Vec<f32> = std::mem::take(output_buf);
-
     let mut clipped = false;
-    let clipping_vertices_last = clipping_area.len() - 4;
-    let mut i = 0;
+    // Start so the final pass writes into `clip_output`.
+    let mut in_is_output = polygon.len() % 4 >= 2;
+    {
+        let input = if in_is_output {
+            &mut *clip_output
+        } else {
+            &mut *scratch
+        };
+        input.clear();
+        input.extend_from_slice(&[x1, y1, x2, y2, x3, y3, x1, y1]);
+    }
+    if in_is_output {
+        scratch.clear();
+    } else {
+        clip_output.clear();
+    }
+    let last = polygon.len() as isize - 4;
+    let mut i = 0usize;
     loop {
-        let edge_x = clipping_area[i];
-        let edge_y = clipping_area[i + 1];
-        let ex = edge_x - clipping_area[i + 2];
-        let ey = edge_y - clipping_area[i + 3];
-
-        let output_start = current_output.len();
-        let n = input.len() - 2;
-        let mut ii = 0;
-        while ii < n {
-            let input_x = input[ii];
-            let input_y = input[ii + 1];
-            ii += 2;
-            let input_x2 = input[ii];
-            let input_y2 = input[ii + 1];
-            let s2 = ey * (edge_x - input_x2) > ex * (edge_y - input_y2);
-            let s1 = ey * (edge_x - input_x) - ex * (edge_y - input_y);
+        let (input, output) = if in_is_output {
+            (&*clip_output, &mut *scratch)
+        } else {
+            (&*scratch, &mut *clip_output)
+        };
+        let (edge_x, edge_y) = (polygon[i], polygon[i + 1]);
+        let ex = edge_x - polygon[i + 2];
+        let ey = edge_y - polygon[i + 3];
+        let output_start = output.len();
+        let (mut px, mut py) = (input[0], input[1]);
+        let mut s1 = ey * (edge_x - px) - ex * (edge_y - py);
+        let nn = input.len() - 2;
+        let mut ii = 2;
+        while ii <= nn {
+            let (qx, qy) = (input[ii], input[ii + 1]);
+            let s2 = ey * (edge_x - qx) - ex * (edge_y - qy);
             if s1 > 0.0 {
-                if s2 {
-                    // v1 inside, v2 inside
-                    current_output.push(input_x2);
-                    current_output.push(input_y2);
-                    continue;
+                if s2 > 0.0 {
+                    output.push(qx);
+                    output.push(qy);
+                } else {
+                    let ix = qx - px;
+                    let iy = qy - py;
+                    let t = s1 / (ix * ey - iy * ex);
+                    if (0.0..=1.0).contains(&t) {
+                        output.push(px + ix * t);
+                        output.push(py + iy * t);
+                        clipped = true;
+                    } else {
+                        output.push(qx);
+                        output.push(qy);
+                    }
                 }
-                // v1 inside, v2 outside
-                let ix = input_x2 - input_x;
-                let iy = input_y2 - input_y;
+            } else if s2 > 0.0 {
+                let ix = qx - px;
+                let iy = qy - py;
                 let t = s1 / (ix * ey - iy * ex);
                 if (0.0..=1.0).contains(&t) {
-                    current_output.push(input_x + ix * t);
-                    current_output.push(input_y + iy * t);
+                    output.push(px + ix * t);
+                    output.push(py + iy * t);
+                    output.push(qx);
+                    output.push(qy);
+                    clipped = true;
                 } else {
-                    current_output.push(input_x2);
-                    current_output.push(input_y2);
+                    output.push(qx);
+                    output.push(qy);
                 }
-            } else if s2 {
-                // v1 outside, v2 inside
-                let ix = input_x2 - input_x;
-                let iy = input_y2 - input_y;
-                let t = s1 / (ix * ey - iy * ex);
-                if (0.0..=1.0).contains(&t) {
-                    current_output.push(input_x + ix * t);
-                    current_output.push(input_y + iy * t);
-                    current_output.push(input_x2);
-                    current_output.push(input_y2);
-                } else {
-                    current_output.push(input_x2);
-                    current_output.push(input_y2);
-                    continue;
-                }
+            } else {
+                clipped = true;
             }
-            clipped = true;
+            px = qx;
+            py = qy;
+            s1 = s2;
+            ii += 2;
         }
-
-        if output_start == current_output.len() {
-            // Every edge of the current polygon was culled — the
-            // triangle is entirely outside this clip region.
-            output.clear();
-            // Restore the buffers we took ownership of.
-            scratch.clear();
-            // `input` / `current_output` currently hold borrowed state;
-            // putting them back here keeps the helpers reusable.
-            let _ = input;
-            let _ = current_output;
+        if output_start == output.len() {
+            clip_output.clear();
             return true;
         }
-
-        // Close the polygon (duplicate first vertex at end) in
-        // preparation for the next edge or the final trim.
-        current_output.push(current_output[0]);
-        current_output.push(current_output[1]);
-
-        if i == clipping_vertices_last {
+        let (fx, fy) = (output[0], output[1]);
+        output.push(fx);
+        output.push(fy);
+        if i as isize == last {
             break;
         }
-        // Swap input <-> current_output. Clear the new "output" first.
-        std::mem::swap(&mut input, &mut current_output);
-        current_output.clear();
+        // Swap roles; the old input becomes the next output.
+        in_is_output = !in_is_output;
+        if in_is_output {
+            scratch.clear();
+        } else {
+            clip_output.clear();
+        }
         i += 2;
     }
-
-    // Determine which of `output` / `scratch` the caller cares about.
-    // `current_output` now holds the final ping-pong result; we need
-    // it landed in `output`.
-    let final_result = current_output;
-    let other_buf = input;
-
-    // Return the scratch/output buffers to self in the right slots.
-    // `use_output_as_input` was chosen so that the final result lands
-    // in the caller's `output`; verify and restore the buffers
-    // accordingly.
-    if use_output_as_input {
-        // output was `input` at loop entry; after swaps, `output` is
-        // now one of the two locals. We don't know which without
-        // tracking; handle both cases by writing the final result
-        // back to the output slot passed in, and any leftover to
-        // scratch.
-        *output = final_result;
-        *scratch = other_buf;
+    // The output of the last pass is the buffer that isn't the input.
+    if in_is_output {
+        clip_output.clear();
+        clip_output.extend_from_slice(&scratch[..scratch.len() - 2]);
     } else {
-        *output = final_result;
-        *scratch = other_buf;
-    }
-
-    // Trim the trailing closing vertex (duplicate of first) — matches
-    // spine-cpp's `originalOutput->setSize(size - 2, 0)`.
-    if output.len() >= 2 {
-        output.truncate(output.len() - 2);
-    }
-
-    if output.len() < 6 {
-        output.clear();
-        return false;
+        clip_output.truncate(clip_output.len() - 2);
     }
     clipped
+}
+
+/// Pieces of a triangle outside a closed convex polygon, written to
+/// `inverse` as size-prefixed runs.
+fn clip_inverse(
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    x3: f32,
+    y3: f32,
+    polygon: &[f32],
+    clip_output: &mut Vec<f32>,
+    scratch: &mut Vec<f32>,
+    inverse: &mut Vec<f32>,
+) {
+    inverse.clear();
+    let last = polygon.len() as isize - 4;
+    let mut in_is_output = polygon.len() % 4 >= 2;
+    {
+        let input = if in_is_output {
+            &mut *clip_output
+        } else {
+            &mut *scratch
+        };
+        input.clear();
+        input.extend_from_slice(&[x1, y1, x2, y2, x3, y3, x1, y1]);
+    }
+    if in_is_output {
+        scratch.clear();
+    } else {
+        clip_output.clear();
+    }
+    let mut i = 0usize;
+    loop {
+        let (input, output) = if in_is_output {
+            (&*clip_output, &mut *scratch)
+        } else {
+            (&*scratch, &mut *clip_output)
+        };
+        let (edge_x, edge_y) = (polygon[i], polygon[i + 1]);
+        let ex = edge_x - polygon[i + 2];
+        let ey = edge_y - polygon[i + 3];
+        let output_start = output.len();
+        let fragment_start = inverse.len();
+        inverse.push(0.0);
+        let (mut px, mut py) = (input[0], input[1]);
+        let mut s1 = ey * (edge_x - px) - ex * (edge_y - py);
+        let nn = input.len() - 2;
+        let mut ii = 2;
+        while ii <= nn {
+            let (qx, qy) = (input[ii], input[ii + 1]);
+            let s2 = ey * (edge_x - qx) - ex * (edge_y - qy);
+            if s1 > 0.0 {
+                if s2 > 0.0 {
+                    output.push(qx);
+                    output.push(qy);
+                } else {
+                    let ix = qx - px;
+                    let iy = qy - py;
+                    let t = s1 / (ix * ey - iy * ex);
+                    if (0.0..=1.0).contains(&t) {
+                        let (cx, cy) = (px + ix * t, py + iy * t);
+                        output.push(cx);
+                        output.push(cy);
+                        inverse.extend_from_slice(&[cx, cy, qx, qy]);
+                    } else {
+                        output.push(qx);
+                        output.push(qy);
+                    }
+                }
+            } else if s2 > 0.0 {
+                let ix = qx - px;
+                let iy = qy - py;
+                let t = s1 / (ix * ey - iy * ex);
+                if (0.0..=1.0).contains(&t) {
+                    let (cx, cy) = (px + ix * t, py + iy * t);
+                    inverse.push(cx);
+                    inverse.push(cy);
+                    output.extend_from_slice(&[cx, cy, qx, qy]);
+                } else {
+                    output.push(qx);
+                    output.push(qy);
+                }
+            } else {
+                inverse.push(qx);
+                inverse.push(qy);
+            }
+            px = qx;
+            py = qy;
+            s1 = s2;
+            ii += 2;
+        }
+        let fragment_size = inverse.len() - fragment_start - 1;
+        if fragment_size >= 6 {
+            inverse[fragment_start] = fragment_size as f32;
+        } else {
+            inverse.truncate(fragment_start);
+        }
+        if output_start == output.len() {
+            break;
+        }
+        let (fx, fy) = (output[0], output[1]);
+        output.push(fx);
+        output.push(fy);
+        if i as isize == last {
+            break;
+        }
+        in_is_output = !in_is_output;
+        if in_is_output {
+            scratch.clear();
+        } else {
+            clip_output.clear();
+        }
+        i += 2;
+    }
+}
+
+/// Makes the polygon clockwise; returns whether it is convex.
+pub(crate) fn make_clockwise(v: &mut [f32]) -> bool {
+    let n = v.len();
+    let (mut no_cw, mut no_ccw) = (true, true);
+    let mut area = 0.0;
+    let (mut prev_x, mut prev_y) = (v[n - 2], v[n - 1]);
+    let (mut curr_x, mut curr_y) = (v[0], v[1]);
+    let mut i = 2;
+    while i < n {
+        let (next_x, next_y) = (v[i], v[i + 1]);
+        area += curr_x * next_y - next_x * curr_y;
+        let cross = (curr_x - prev_x) * (next_y - curr_y) - (curr_y - prev_y) * (next_x - curr_x);
+        no_ccw &= cross <= 0.0;
+        no_cw &= cross >= 0.0;
+        prev_x = curr_x;
+        prev_y = curr_y;
+        curr_x = next_x;
+        curr_y = next_y;
+        i += 2;
+    }
+    area += curr_x * v[1] - v[0] * curr_y;
+    let cross = (curr_x - prev_x) * (v[1] - curr_y) - (curr_y - prev_y) * (v[0] - curr_x);
+    no_ccw &= cross <= 0.0;
+    no_cw &= cross >= 0.0;
+    if area >= 0.0 {
+        let last_x = n - 2;
+        let half = n >> 1;
+        let mut i = 0;
+        while i < half {
+            let other = last_x - i;
+            v.swap(i, other);
+            v.swap(i + 1, other + 1);
+            i += 2;
+        }
+        return no_cw;
+    }
+    no_ccw
+}
+
+/// Replaces the polygon with its convex hull (monotone chain).
+fn make_convex(polygon: &mut Vec<f32>, sorted: &mut Vec<f32>) {
+    let n = polygon.len();
+    sorted.clear();
+    sorted.extend_from_slice(polygon);
+    let mut i = 2;
+    while i < n {
+        let (x, y) = (sorted[i], sorted[i + 1]);
+        let mut p = i as isize - 2;
+        while p >= 0
+            && (sorted[p as usize] > x || (sorted[p as usize] == x && sorted[p as usize + 1] > y))
+        {
+            sorted[p as usize + 2] = sorted[p as usize];
+            sorted[p as usize + 3] = sorted[p as usize + 1];
+            p -= 2;
+        }
+        sorted[(p + 2) as usize] = x;
+        sorted[(p + 3) as usize] = y;
+        i += 2;
+    }
+    // The hull can briefly need a few more slots than the input.
+    polygon.resize(n + 4, 0.0);
+    let v = polygon;
+    v[..4].copy_from_slice(&sorted[..4]);
+    let turn = |v: &[f32], s: usize, x: f32, y: f32| {
+        (v[s - 2] - v[s - 4]) * (y - v[s - 3]) - (v[s - 1] - v[s - 3]) * (x - v[s - 4])
+    };
+    let mut s = 4;
+    let mut i = 4;
+    while i < n {
+        let (x, y) = (sorted[i], sorted[i + 1]);
+        while turn(v, s, x, y) >= 0.0 {
+            s -= 2;
+            if s == 2 {
+                break;
+            }
+        }
+        v[s] = x;
+        v[s + 1] = y;
+        i += 2;
+        s += 2;
+    }
+    v[s] = sorted[n - 4];
+    v[s + 1] = sorted[n - 3];
+    let t = s;
+    s += 2;
+    let mut i = n as isize - 6;
+    while i >= 0 {
+        let (x, y) = (sorted[i as usize], sorted[i as usize + 1]);
+        while turn(v, s, x, y) >= 0.0 {
+            s -= 2;
+            if s == t {
+                break;
+            }
+        }
+        v[s] = x;
+        v[s + 1] = y;
+        i -= 2;
+        s += 2;
+    }
+    v.truncate(s - 2);
+}
+
+/// Whether the attachment clips, and its data.
+#[must_use]
+pub fn as_clipping(attachment: &Attachment) -> Option<&ClippingAttachment> {
+    match attachment {
+        Attachment::Clipping(c) => Some(c),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn clipper_is_idle_by_default() {
-        let c = SkeletonClipping::new();
-        assert!(!c.is_clipping());
-        assert!(c.clipped_vertices().is_empty());
+    fn area(v: &[f32], tris: &[u16]) -> f32 {
+        tris.chunks_exact(3)
+            .map(|t| {
+                let p = |i: u16| (v[i as usize * 2], v[i as usize * 2 + 1]);
+                let ((ax, ay), (bx, by), (cx, cy)) = (p(t[0]), p(t[1]), p(t[2]));
+                ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)).abs() * 0.5
+            })
+            .sum()
+    }
+
+    /// Clipper with a closed clockwise unit square as its only polygon.
+    fn square_clipper(inverse: bool) -> SkeletonClipping {
+        let mut c = SkeletonClipping::new();
+        let mut square = vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+        assert!(make_clockwise(&mut square));
+        square.extend_from_slice(&[square[0], square[1]]);
+        c.clipping_polygons = vec![square];
+        c.polygon_count = 1;
+        c.active = true;
+        c.inverse = inverse;
+        c
     }
 
     #[test]
-    fn make_clockwise_invariant_round_trip() {
-        // Apply make_clockwise twice — whatever the first pass did,
-        // the second pass must be a no-op (the polygon is already
-        // oriented as spine expects).
-        let mut poly = vec![0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 10.0, 0.0];
-        make_clockwise(&mut poly);
-        let after = poly.clone();
-        make_clockwise(&mut poly);
-        assert_eq!(poly, after, "make_clockwise must be idempotent");
+    fn clip_and_inverse_partition_a_triangle() {
+        // Right triangle over the square's corner; [0.5, 1]² lies inside.
+        let tri = [0.5, 0.5, 1.5, 0.5, 0.5, 1.5];
+        let uvs = [0.0; 6];
+        let total = 0.5;
+
+        let mut inside = square_clipper(false);
+        assert!(inside.clip_triangles(&tri, &[0, 1, 2], &uvs, 2));
+        let a_in = area(inside.clipped_vertices(), inside.clipped_triangles());
+
+        let mut outside = square_clipper(true);
+        assert!(outside.clip_triangles(&tri, &[0, 1, 2], &uvs, 2));
+        let a_out = area(outside.clipped_vertices(), outside.clipped_triangles());
+
+        assert!((a_in - 0.25).abs() < 1e-5, "inside {a_in}");
+        assert!(
+            (a_in + a_out - total).abs() < 1e-5,
+            "inside {a_in} outside {a_out}"
+        );
     }
 
-    // The clip() algorithm and orientation-specific behaviour of
-    // make_clockwise are validated by the render_smoke + render goldens
-    // (Phase 6g). Unit-testing them in isolation requires mirroring
-    // spine-cpp's y-down CW convention precisely — easier to diff
-    // against captured output than to re-derive the invariant here.
+    #[test]
+    fn inverse_keeps_triangle_fully_outside() {
+        let tri = [2.0, 2.0, 3.0, 2.0, 2.0, 3.0];
+        let mut outside = square_clipper(true);
+        outside.clip_triangles(&tri, &[0, 1, 2], &[0.0; 6], 2);
+        let a = area(outside.clipped_vertices(), outside.clipped_triangles());
+        assert!((a - 0.5).abs() < 1e-5, "{a}");
+    }
+
+    #[test]
+    fn make_convex_takes_the_hull() {
+        // Square with a notch; the hull is the square.
+        let mut notched = vec![0.0, 0.0, 0.5, 0.2, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+        let mut scratch = Vec::new();
+        assert!(!make_clockwise(&mut notched));
+        make_convex(&mut notched, &mut scratch);
+        assert_eq!(notched.len(), 8, "{notched:?}");
+    }
 }

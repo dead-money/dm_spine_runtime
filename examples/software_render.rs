@@ -106,8 +106,7 @@ fn main() {
     let data = Arc::new(data);
 
     let mut skeleton = Skeleton::new(Arc::clone(&data));
-    skeleton.update_cache();
-    skeleton.set_to_setup_pose();
+    skeleton.setup_pose();
     skeleton.update_world_transform(Physics::None);
 
     let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
@@ -166,15 +165,12 @@ fn main() {
             );
             continue;
         }
-        let page = match pages.get(cmd.texture.0 as usize) {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "software_render: no page for texture {:?} (commands will be dropped)",
-                    cmd.texture
-                );
-                continue;
-            }
+        let Some(page) = pages.get(cmd.texture.0 as usize) else {
+            eprintln!(
+                "software_render: no page for texture {:?} (commands will be dropped)",
+                cmd.texture
+            );
+            continue;
         };
 
         // Runtime packs colors as 0xAARRGGBB. For spineboy setup the light
@@ -228,10 +224,10 @@ fn load_atlas_pages(atlas: &Atlas, dir: &Path) -> Vec<RgbaImage> {
             // can blend uniformly.
             let mut pma = img;
             for p in pma.pixels_mut() {
-                let a = p[3] as f32 / 255.0;
-                p[0] = (p[0] as f32 * a) as u8;
-                p[1] = (p[1] as f32 * a) as u8;
-                p[2] = (p[2] as f32 * a) as u8;
+                let a = f32::from(p[3]) / 255.0;
+                p[0] = (f32::from(p[0]) * a) as u8;
+                p[1] = (f32::from(p[1]) * a) as u8;
+                p[2] = (f32::from(p[2]) * a) as u8;
             }
             pages.push(pma);
         }
@@ -307,10 +303,10 @@ fn rasterize_triangle(
             let tx = (u * tex_w).clamp(0.0, tex_w - 1.0) as u32;
             let ty = (v * tex_h).clamp(0.0, tex_h - 1.0) as u32;
             let sample = page.get_pixel(tx, ty);
-            let sr = sample[0] as f32 / 255.0;
-            let sg = sample[1] as f32 / 255.0;
-            let sb = sample[2] as f32 / 255.0;
-            let sa = sample[3] as f32 / 255.0;
+            let sr = f32::from(sample[0]) / 255.0;
+            let sg = f32::from(sample[1]) / 255.0;
+            let sb = f32::from(sample[2]) / 255.0;
+            let sa = f32::from(sample[3]) / 255.0;
             // Already-PMA sample × already-PMA light → still PMA.
             let fr = sr * light[0];
             let fg = sg * light[1];
@@ -321,10 +317,10 @@ fn rasterize_triangle(
             }
             let dst = img.get_pixel_mut(x, y);
             // OVER (PMA): dst = src + dst * (1 - src.a)
-            let dr = dst[0] as f32 / 255.0;
-            let dg = dst[1] as f32 / 255.0;
-            let db = dst[2] as f32 / 255.0;
-            let da = dst[3] as f32 / 255.0;
+            let dr = f32::from(dst[0]) / 255.0;
+            let dg = f32::from(dst[1]) / 255.0;
+            let db = f32::from(dst[2]) / 255.0;
+            let da = f32::from(dst[3]) / 255.0;
             let inv_sa = 1.0 - fa;
             let out_r = (fr + dr * inv_sa).clamp(0.0, 1.0);
             let out_g = (fg + dg * inv_sa).clamp(0.0, 1.0);

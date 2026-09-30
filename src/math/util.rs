@@ -36,6 +36,15 @@
 //! `f32` inherent methods (`f32::clamp`, `f32::abs`, `f32::signum`, `%`) and
 //! are not re-exported.
 
+/// spine-cpp's float constants, computed the same way so rounding matches.
+pub const PI: f32 = std::f32::consts::PI;
+pub const PI_2: f32 = PI * 2.0;
+pub const INV_PI_2: f32 = 1.0 / PI_2;
+pub const DEG_RAD: f32 = PI / 180.0;
+pub const RAD_DEG: f32 = 180.0 / PI;
+pub const EPSILON: f32 = 0.00001;
+pub const EPSILON_SQ: f32 = EPSILON * EPSILON;
+
 /// `sin(degrees)`.
 #[inline]
 #[must_use]

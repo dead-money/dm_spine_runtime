@@ -1,6 +1,6 @@
 # dm_spine_runtime
 
-Full-native Rust port of the Spine runtime. `main` is moving from **Spine 4.2 to 4.3** per `docs/SPINE_4_3_UPGRADE.md`; the last 4.2 state is tagged `v0.1.0`. The goal is to replace spine-godot's spine-cpp in `~/deadmoney/hommlet`, where it's too slow.
+Full-native Rust port of the Spine 4.3 runtime. The upgrade from 4.2 is tracked in `docs/SPINE_4_3_UPGRADE.md`; the last 4.2 state is tagged `v0.1.0`. The goal is to replace spine-godot's spine-cpp in `~/deadmoney/hommlet`, where it's too slow.
 
 - **This crate** (`~/deadmoney/dm_spine_runtime/`) is the core runtime: data types, loaders, skeleton pose, animation state, constraints, clipping, bounds, render-command emission. **No GPU or windowing deps.**
 - **`~/deadmoney/hommlet/`** is the primary consumer, reached through a C-ABI crate under its `Native/`, the same pattern as `Native/sorting`. The engine-facing work lives there; this crate stays engine-agnostic.
@@ -86,11 +86,14 @@ Goldens diff against JSON dumps captured from `spine-cpp` by `tools/spine_captur
 
 ## Status
 
-The 4.2 port is complete and tagged `v0.1.0`. The 4.3 upgrade phases are tracked in `docs/SPINE_4_3_UPGRADE.md`. Update this section as they land. Final 4.2 parity:
+The 4.2 port is tagged `v0.1.0`. The 4.3 port has reached parity and passed its performance gate (upgrade phases 0–6); phases 7–9 (hommlet runtime surface, hommlet adoption, release) remain. Update this section as they land. 4.3 parity:
 
-- Setup pose: 25/25 rigs at 1e-4.
-- Animation samples: 34/35 at 1e-3. The outlier is a <0.05° applied-rotation drift on raptor-pro/roar front-bracer.
-- Render-command headers: 25/25 rigs exact. Per-vertex positions/UVs are covered transitively by `golden_pose` and the literal `updateRegion` port.
+- Setup pose: 43/43 rigs at 1e-4.
+- Animation samples: 45/45 at 1e-3, with raptor-pro/roar front-bracer `a_rotation` in `KNOWN_DRIFT` (IK softness `acos` amplifies rounding).
+- `AnimationState` scenarios (`golden_state`): 8/8.
+- Render commands, including vertex positions and UVs: 43/43 rigs.
+- Steady-state frames allocate nothing (`tests/alloc.rs`).
+- hommlet rigs run at 0.51–0.63× spine-cpp's frame time. World transform on humanoid rigs is still about 1.1× spine-cpp; the difference is in transform constraints, which hommlet's rigs carry in the hundreds.
 
 
 ## Commands

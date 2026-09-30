@@ -25,23 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Attachment data types.
-//!
-//! In spine-cpp these form a virtual class hierarchy rooted at `Attachment`
-//! with a `VertexAttachment` base for mesh-like variants. We flatten to a
-//! tagged enum: each variant owns its full data inline, and vertex-based
-//! variants embed a common [`VertexData`] struct instead of inheriting from
-//! one.
+//! Attachment data. spine-cpp's class hierarchy flattens to a tagged enum;
+//! vertex-based variants embed [`VertexData`].
 
-use crate::data::AttachmentId;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+use crate::data::{AttachmentId, SlotId};
 use crate::math::Color;
 
-/// Index constants for the 8-float `vertex_offset` / `uvs` arrays on a
-/// `RegionAttachment`. Memory layout matches spine-cpp: bottom-left,
-/// upper-left, upper-right, bottom-right, each with an (x, y) pair.
-///
-/// Exposed so the render walker can index into the same arrays using the
-/// same names.
+/// Indices into a region's 8-float quad (`offsets` / `uvs`).
 pub mod quad_corner {
     pub const BLX: usize = 0;
     pub const BLY: usize = 1;
@@ -53,14 +45,10 @@ pub mod quad_corner {
     pub const BRY: usize = 7;
 }
 
-/// Kind tag for an [`Attachment`]. Useful when the concrete variant has
-/// already been resolved elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttachmentType {
     Region,
     Mesh,
-    /// Only appears transiently during binary parsing; resolved to `Mesh`
-    /// with `parent_mesh = Some(_)` by end of load.
     LinkedMesh,
     BoundingBox,
     Path,
@@ -68,10 +56,6 @@ pub enum AttachmentType {
     Clipping,
 }
 
-/// Tagged attachment union. Every skin's attachment slot references an
-/// [`AttachmentId`] which indexes into [`SkeletonData::attachments`].
-///
-/// [`SkeletonData::attachments`]: crate::data::SkeletonData::attachments
 #[derive(Debug, Clone, PartialEq)]
 pub enum Attachment {
     Region(RegionAttachment),
@@ -82,8 +66,17 @@ pub enum Attachment {
     Clipping(ClippingAttachment),
 }
 
+/// Which attachment's timelines drive this one, and which other slots those
+/// timelines also apply to. Linked meshes that inherit timelines point at
+/// their source mesh, possibly in another slot.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TimelineLink {
+    /// `None` means the attachment itself.
+    pub attachment: Option<AttachmentId>,
+    pub slots: Vec<SlotId>,
+}
+
 impl Attachment {
-    /// The attachment's name (unique within its skin+slot scope).
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
@@ -96,7 +89,6 @@ impl Attachment {
         }
     }
 
-    /// Kind tag for `match`-free dispatch on the variant.
     #[must_use]
     pub fn kind(&self) -> AttachmentType {
         match self {
@@ -108,44 +100,72 @@ impl Attachment {
             Attachment::Clipping(_) => AttachmentType::Clipping,
         }
     }
+
+    #[must_use]
+    pub fn timeline_link(&self) -> Option<&TimelineLink> {
+        match self {
+            Attachment::Region(a) => Some(&a.timeline),
+            Attachment::Mesh(a) => Some(&a.vertex_data.timeline),
+            Attachment::BoundingBox(a) => Some(&a.vertex_data.timeline),
+            Attachment::Path(a) => Some(&a.vertex_data.timeline),
+            Attachment::Clipping(a) => Some(&a.vertex_data.timeline),
+            Attachment::Point(_) => None,
+        }
+    }
+
+    pub fn timeline_link_mut(&mut self) -> Option<&mut TimelineLink> {
+        match self {
+            Attachment::Region(a) => Some(&mut a.timeline),
+            Attachment::Mesh(a) => Some(&mut a.vertex_data.timeline),
+            Attachment::BoundingBox(a) => Some(&mut a.vertex_data.timeline),
+            Attachment::Path(a) => Some(&mut a.vertex_data.timeline),
+            Attachment::Clipping(a) => Some(&mut a.vertex_data.timeline),
+            Attachment::Point(_) => None,
+        }
+    }
+
+    /// The attachment whose timelines apply to this one; `id` is this
+    /// attachment's own id.
+    #[must_use]
+    pub fn timeline_attachment(&self, id: AttachmentId) -> AttachmentId {
+        self.timeline_link()
+            .and_then(|t| t.attachment)
+            .unwrap_or(id)
+    }
+
+    #[must_use]
+    pub fn vertex_data(&self) -> Option<&VertexData> {
+        match self {
+            Attachment::Mesh(a) => Some(&a.vertex_data),
+            Attachment::BoundingBox(a) => Some(&a.vertex_data),
+            Attachment::Path(a) => Some(&a.vertex_data),
+            Attachment::Clipping(a) => Some(&a.vertex_data),
+            Attachment::Region(_) | Attachment::Point(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn sequence(&self) -> Option<&Sequence> {
+        match self {
+            Attachment::Region(a) => Some(&a.sequence),
+            Attachment::Mesh(a) => Some(&a.sequence),
+            _ => None,
+        }
+    }
 }
 
-// --- VertexData (shared by Mesh / BoundingBox / Path / Clipping) -----------
-
-/// Shared vertex storage layout for vertex-based attachments.
-///
-/// Mirrors spine-cpp's `VertexAttachment` fields. The encoding in `bones`
-/// and `vertices` follows the same convention Spine uses for mesh deform:
-///
-/// - If `bones` is empty, the mesh is not weighted: `vertices` stores
-///   `2 * N` floats as `(x, y)` pairs in local space.
-/// - Otherwise the mesh is weighted. For each vertex, `bones` contains a
-///   count `k` followed by `k` bone indices, and `vertices` contains `k`
-///   tuples of `(bone-local x, bone-local y, weight)` — 4 floats per weight
-///   entry when colocated.
-///
-/// This encoding is preserved on the wire because the animation `Deform`
-/// timeline blends raw vertex arrays, and decoding would complicate that.
+/// Shared by Mesh, `BoundingBox`, Path and Clipping.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct VertexData {
-    /// When empty: unweighted vertices. When non-empty: flattened
-    /// run-length-encoded `(count, bone_index, …)` stream.
+    /// Empty when unweighted. Otherwise, per vertex: bone count, then that
+    /// many bone indices.
     pub bones: Vec<i32>,
-    /// Interleaved f32 values; interpretation depends on `bones` being
-    /// empty vs weighted.
+    /// Unweighted: x,y pairs. Weighted: x,y,weight triples per bone.
     pub vertices: Vec<f32>,
-    /// Total number of `f32` values emitted by
-    /// `computeWorldVertices`, which is always `2 * vertex_count`.
     pub world_vertices_length: u32,
-    /// Link to another attachment that provides timeline data (used by
-    /// linked meshes to share the parent mesh's deform keyframes).
-    pub timeline_attachment: Option<AttachmentId>,
+    pub timeline: TimelineLink,
 }
 
-// --- Sequence (4.2) ---------------------------------------------------------
-
-/// Per-sequence cycling mode. Determines which frame is displayed when an
-/// animation's progress exceeds the sequence length.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SequenceMode {
     #[default]
@@ -158,77 +178,122 @@ pub enum SequenceMode {
     PingPongReverse,
 }
 
-/// Describes a numbered sequence of atlas regions driven by a `SequenceTimeline`.
-///
-/// When a region or mesh attachment carries a `Sequence`, the renderer
-/// swaps between atlas regions whose filenames follow a zero-padded numeric
-/// naming pattern — `start`, `start+1`, …, `start+count-1`, each written
-/// with `digits` digits.
+impl SequenceMode {
+    #[must_use]
+    pub fn from_index(v: i32) -> Option<Self> {
+        Some(match v {
+            0 => Self::Hold,
+            1 => Self::Once,
+            2 => Self::Loop,
+            3 => Self::PingPong,
+            4 => Self::OnceReverse,
+            5 => Self::LoopReverse,
+            6 => Self::PingPongReverse,
+            _ => return None,
+        })
+    }
+}
+
+static NEXT_SEQUENCE_ID: AtomicI32 = AtomicI32::new(0);
+
+/// Frames of a region or mesh attachment. Every region and mesh has one; a
+/// plain attachment is a one-frame sequence without a path suffix. Per-frame
+/// UVs (and region vertex offsets) are precomputed by `update_sequence`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sequence {
-    /// Unique ID assigned at load (monotonic counter; matches spine-cpp's
-    /// `_id`).
+    /// Unique per sequence; timelines use it as their property id.
     pub id: i32,
-    /// First frame number in the sequence. Usually 0.
     pub start: i32,
-    /// Number of zero-padded digits in frame filenames.
     pub digits: i32,
-    /// Frame index shown in the setup pose.
     pub setup_index: i32,
-    /// Number of frames in the sequence.
-    pub count: i32,
-    /// Resolved atlas regions, one per frame. Populated by the
-    /// `AttachmentLoader` during skeleton load. Frames where the region
-    /// couldn't be found are `None`.
+    pub path_suffix: bool,
     pub regions: Vec<Option<TextureRegionRef>>,
+    /// Frame-major; each frame is `uvs.len() / regions.len()` floats.
+    uvs: Vec<f32>,
+    /// Region attachments only.
+    offsets: Vec<[f32; 8]>,
 }
 
 impl Sequence {
     #[must_use]
-    pub fn new(count: i32) -> Self {
+    pub fn new(count: usize, path_suffix: bool) -> Self {
         Self {
-            id: 0,
+            id: NEXT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
             start: 0,
             digits: 0,
             setup_index: 0,
-            count,
-            regions: Vec::new(),
+            path_suffix,
+            regions: vec![None; count],
+            uvs: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 
-    /// Format the atlas region name for frame `index` in this sequence —
-    /// matches `spine-cpp/Sequence::getPath`.
-    ///
-    /// Returns `base_path` + `(start + index)` as a decimal, left-padded
-    /// with zeros to at least `digits` characters.
+    /// Copy with a fresh id, matching spine-cpp's copy constructor.
     #[must_use]
-    pub fn frame_path(&self, base_path: &str, index: i32) -> String {
-        let frame = (self.start + index).to_string();
-        let digits = self.digits.max(0) as usize;
-        let pad = digits.saturating_sub(frame.len());
+    pub fn copy(&self) -> Self {
+        Self {
+            id: NEXT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
+            ..self.clone()
+        }
+    }
+
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.regions.len()
+    }
+
+    /// The frame to show for a slot's `sequence_index` (-1 means setup).
+    #[must_use]
+    pub fn resolve_index(&self, sequence_index: i32) -> usize {
+        let mut index = sequence_index;
+        if index == -1 {
+            index = self.setup_index;
+        }
+        let last = self.regions.len() as i32 - 1;
+        if index >= last {
+            index = last;
+        }
+        index.max(0) as usize
+    }
+
+    #[must_use]
+    pub fn region(&self, index: usize) -> Option<&TextureRegionRef> {
+        self.regions.get(index).and_then(Option::as_ref)
+    }
+
+    #[must_use]
+    pub fn uvs(&self, index: usize) -> &[f32] {
+        let stride = self.uvs.len() / self.regions.len().max(1);
+        &self.uvs[index * stride..(index + 1) * stride]
+    }
+
+    #[must_use]
+    pub fn offsets(&self, index: usize) -> &[f32; 8] {
+        &self.offsets[index]
+    }
+
+    /// Atlas path of frame `index`.
+    #[must_use]
+    pub fn path(&self, base_path: &str, index: usize) -> String {
+        if !self.path_suffix {
+            return base_path.to_owned();
+        }
+        let frame = (self.start + index as i32).to_string();
+        let pad = (self.digits.max(0) as usize).saturating_sub(frame.len());
         let mut out = String::with_capacity(base_path.len() + pad + frame.len());
         out.push_str(base_path);
-        for _ in 0..pad {
-            out.push('0');
-        }
+        out.extend(std::iter::repeat_n('0', pad));
         out.push_str(&frame);
         out
     }
 }
 
-// --- RegionAttachment -------------------------------------------------------
-
-/// Rectangular textured quad pinned to a slot. Four corner positions are
-/// derived from `x/y/rotation/scale/width/height` and written into
-/// `offsets[0..8]` during `update_region`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAttachment {
     pub name: String,
-    /// Atlas region name (often equal to `name`, but can be overridden e.g.
-    /// when a skin replaces the default region).
     pub path: String,
     pub color: Color,
-
     pub x: f32,
     pub y: f32,
     pub rotation: f32,
@@ -236,24 +301,13 @@ pub struct RegionAttachment {
     pub scale_y: f32,
     pub width: f32,
     pub height: f32,
-
-    /// World-space corner offsets, recomputed by `update_region`. Layout:
-    /// BLX, BLY, ULX, ULY, URX, URY, BRX, BRY.
-    pub vertex_offset: [f32; 8],
-    /// Per-vertex UVs in atlas space. Recomputed when the attached region
-    /// changes rotation / bounds.
-    pub uvs: [f32; 8],
-
-    /// Optional sequence-driven frame cycling.
-    pub sequence: Option<Sequence>,
-
-    /// Resolved atlas region reference.
-    pub region: Option<TextureRegionRef>,
+    pub sequence: Sequence,
+    pub timeline: TimelineLink,
 }
 
 impl RegionAttachment {
     #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, sequence: Sequence) -> Self {
         Self {
             name: name.into(),
             path: String::new(),
@@ -265,234 +319,258 @@ impl RegionAttachment {
             scale_y: 1.0,
             width: 0.0,
             height: 0.0,
-            vertex_offset: [0.0; 8],
-            uvs: [0.0; 8],
-            sequence: None,
-            region: None,
+            sequence,
+            timeline: TimelineLink::default(),
         }
     }
 
-    /// Recompute `vertex_offset` (the four corners in attachment-local
-    /// space) and `uvs` (atlas-space coords) from the attachment's
-    /// `x`/`y`/`rotation`/`scale`/`width`/`height` and its currently
-    /// resolved `region`. Literal port of
-    /// `spine-cpp/src/spine/RegionAttachment.cpp::updateRegion`.
-    ///
-    /// Must be called after the attachment's pose / region fields are
-    /// populated (at load time by the binary loader, and again if a
-    /// `Sequence` cycles the region). If `region` is `None`, only the UVs
-    /// are reset to a unit square.
-    pub fn update_region(&mut self) {
-        use quad_corner::{BLX, BLY, BRX, BRY, ULX, ULY, URX, URY};
-
-        let Some(region) = self.region.as_ref() else {
-            self.uvs[BLX] = 0.0;
-            self.uvs[BLY] = 0.0;
-            self.uvs[ULX] = 0.0;
-            self.uvs[ULY] = 1.0;
-            self.uvs[URX] = 1.0;
-            self.uvs[URY] = 1.0;
-            self.uvs[BRX] = 1.0;
-            self.uvs[BRY] = 0.0;
-            return;
-        };
-
-        let region_scale_x = self.width / region.original_width * self.scale_x;
-        let region_scale_y = self.height / region.original_height * self.scale_y;
-        let local_x = -self.width / 2.0 * self.scale_x + region.offset_x * region_scale_x;
-        let local_y = -self.height / 2.0 * self.scale_y + region.offset_y * region_scale_y;
-        let local_x2 = local_x + region.width * region_scale_x;
-        let local_y2 = local_y + region.height * region_scale_y;
-
-        let rot_rad = self.rotation.to_radians();
-        let cos = rot_rad.cos();
-        let sin = rot_rad.sin();
-        let local_x_cos = local_x * cos + self.x;
-        let local_x_sin = local_x * sin;
-        let local_y_cos = local_y * cos + self.y;
-        let local_y_sin = local_y * sin;
-        let local_x2_cos = local_x2 * cos + self.x;
-        let local_x2_sin = local_x2 * sin;
-        let local_y2_cos = local_y2 * cos + self.y;
-        let local_y2_sin = local_y2 * sin;
-
-        self.vertex_offset[BLX] = local_x_cos - local_y_sin;
-        self.vertex_offset[BLY] = local_y_cos + local_x_sin;
-        self.vertex_offset[ULX] = local_x_cos - local_y2_sin;
-        self.vertex_offset[ULY] = local_y2_cos + local_x_sin;
-        self.vertex_offset[URX] = local_x2_cos - local_y2_sin;
-        self.vertex_offset[URY] = local_y2_cos + local_x2_sin;
-        self.vertex_offset[BRX] = local_x2_cos - local_y_sin;
-        self.vertex_offset[BRY] = local_y_cos + local_x2_sin;
-
-        if region.degrees == 90 {
-            self.uvs[URX] = region.u;
-            self.uvs[URY] = region.v2;
-            self.uvs[BRX] = region.u;
-            self.uvs[BRY] = region.v;
-            self.uvs[BLX] = region.u2;
-            self.uvs[BLY] = region.v;
-            self.uvs[ULX] = region.u2;
-            self.uvs[ULY] = region.v2;
-        } else {
-            self.uvs[ULX] = region.u;
-            self.uvs[ULY] = region.v2;
-            self.uvs[URX] = region.u;
-            self.uvs[URY] = region.v;
-            self.uvs[BRX] = region.u2;
-            self.uvs[BRY] = region.v;
-            self.uvs[BLX] = region.u2;
-            self.uvs[BLY] = region.v2;
+    /// Recomputes every frame's vertex offsets and UVs.
+    pub fn update_sequence(&mut self) {
+        let n = self.sequence.regions.len();
+        self.sequence.uvs.clear();
+        self.sequence.uvs.resize(n * 8, 0.0);
+        self.sequence.offsets.clear();
+        self.sequence.offsets.resize(n, [0.0; 8]);
+        for i in 0..n {
+            let region = self.sequence.regions[i];
+            let mut offsets = [0.0; 8];
+            let mut uvs = [0.0; 8];
+            compute_region_uvs(region.as_ref(), self, &mut offsets, &mut uvs);
+            self.sequence.offsets[i] = offsets;
+            self.sequence.uvs[i * 8..i * 8 + 8].copy_from_slice(&uvs);
         }
     }
 }
 
-// --- MeshAttachment ---------------------------------------------------------
+/// `RegionAttachment::computeUVs`.
+fn compute_region_uvs(
+    region: Option<&TextureRegionRef>,
+    a: &RegionAttachment,
+    offset: &mut [f32; 8],
+    uvs: &mut [f32; 8],
+) {
+    use quad_corner::{BLX, BLY, BRX, BRY, ULX, ULY, URX, URY};
 
-/// Triangle-mesh attachment. Vertices are either local-space xy pairs (when
-/// unweighted) or weighted bone-space offsets (see [`VertexData`]).
+    let (width, height) = (a.width, a.height);
+    let mut local_x2 = width / 2.0;
+    let mut local_y2 = height / 2.0;
+    let mut local_x = -local_x2;
+    let mut local_y = -local_y2;
+    let mut rotated = false;
+    if let Some(r) = region.filter(|r| r.atlas) {
+        local_x += r.offset_x / r.original_width * width;
+        local_y += r.offset_y / r.original_height * height;
+        if r.degrees == 90 {
+            rotated = true;
+            local_x2 -=
+                (r.original_width - r.offset_x - r.packed_height) / r.original_width * width;
+            local_y2 -=
+                (r.original_height - r.offset_y - r.packed_width) / r.original_height * height;
+        } else {
+            local_x2 -= (r.original_width - r.offset_x - r.packed_width) / r.original_width * width;
+            local_y2 -=
+                (r.original_height - r.offset_y - r.packed_height) / r.original_height * height;
+        }
+    }
+    local_x *= a.scale_x;
+    local_y *= a.scale_y;
+    local_x2 *= a.scale_x;
+    local_y2 *= a.scale_y;
+    let rad = a.rotation.to_radians();
+    let cos = rad.cos();
+    let sin = rad.sin();
+    let local_x_cos = local_x * cos + a.x;
+    let local_x_sin = local_x * sin;
+    let local_y_cos = local_y * cos + a.y;
+    let local_y_sin = local_y * sin;
+    let local_x2_cos = local_x2 * cos + a.x;
+    let local_x2_sin = local_x2 * sin;
+    let local_y2_cos = local_y2 * cos + a.y;
+    let local_y2_sin = local_y2 * sin;
+    offset[BLX] = local_x_cos - local_y_sin;
+    offset[BLY] = local_y_cos + local_x_sin;
+    offset[ULX] = local_x_cos - local_y2_sin;
+    offset[ULY] = local_y2_cos + local_x_sin;
+    offset[URX] = local_x2_cos - local_y2_sin;
+    offset[URY] = local_y2_cos + local_x2_sin;
+    offset[BRX] = local_x2_cos - local_y_sin;
+    offset[BRY] = local_y_cos + local_x2_sin;
+    match region {
+        None => {
+            uvs[BLX] = 0.0;
+            uvs[BLY] = 0.0;
+            uvs[ULX] = 0.0;
+            uvs[ULY] = 1.0;
+            uvs[URX] = 1.0;
+            uvs[URY] = 1.0;
+            uvs[BRX] = 1.0;
+            uvs[BRY] = 0.0;
+        }
+        Some(r) => {
+            uvs[BLX] = r.u2;
+            uvs[ULY] = r.v2;
+            uvs[URX] = r.u;
+            uvs[BRY] = r.v;
+            if rotated {
+                uvs[BLY] = r.v;
+                uvs[ULX] = r.u2;
+                uvs[URY] = r.v2;
+                uvs[BRX] = r.u;
+            } else {
+                uvs[BLY] = r.v2;
+                uvs[ULX] = r.u;
+                uvs[URY] = r.v;
+                uvs[BRX] = r.u2;
+            }
+        }
+    }
+}
+
+/// `MeshAttachment::computeUVs`.
+fn compute_mesh_uvs(region: Option<&TextureRegionRef>, region_uvs: &[f32], uvs: &mut [f32]) {
+    let n = uvs.len();
+    let (u, v, width, height);
+    match region {
+        Some(r) if r.atlas => {
+            let mut u0 = r.u;
+            let mut v0 = r.v;
+            let texture_width = r.page_width;
+            let texture_height = r.page_height;
+            match r.degrees {
+                90 => {
+                    u0 -= (r.original_height - r.offset_y - r.packed_width) / texture_width;
+                    v0 -= (r.original_width - r.offset_x - r.packed_height) / texture_height;
+                    let w = r.original_height / texture_width;
+                    let h = r.original_width / texture_height;
+                    for i in (0..n).step_by(2) {
+                        uvs[i] = u0 + region_uvs[i + 1] * w;
+                        uvs[i + 1] = v0 + (1.0 - region_uvs[i]) * h;
+                    }
+                    return;
+                }
+                180 => {
+                    u0 -= (r.original_width - r.offset_x - r.packed_width) / texture_width;
+                    v0 -= r.offset_y / texture_height;
+                    let w = r.original_width / texture_width;
+                    let h = r.original_height / texture_height;
+                    for i in (0..n).step_by(2) {
+                        uvs[i] = u0 + (1.0 - region_uvs[i]) * w;
+                        uvs[i + 1] = v0 + (1.0 - region_uvs[i + 1]) * h;
+                    }
+                    return;
+                }
+                270 => {
+                    u0 -= r.offset_y / texture_width;
+                    v0 -= r.offset_x / texture_height;
+                    let w = r.original_height / texture_width;
+                    let h = r.original_width / texture_height;
+                    for i in (0..n).step_by(2) {
+                        uvs[i] = u0 + (1.0 - region_uvs[i + 1]) * w;
+                        uvs[i + 1] = v0 + region_uvs[i] * h;
+                    }
+                    return;
+                }
+                _ => {
+                    u0 -= r.offset_x / texture_width;
+                    v0 -= (r.original_height - r.offset_y - r.packed_height) / texture_height;
+                    u = u0;
+                    v = v0;
+                    width = r.original_width / texture_width;
+                    height = r.original_height / texture_height;
+                }
+            }
+        }
+        None => {
+            u = 0.0;
+            v = 0.0;
+            width = 1.0;
+            height = 1.0;
+        }
+        Some(r) => {
+            u = r.u;
+            v = r.v;
+            width = r.u2 - u;
+            height = r.v2 - v;
+        }
+    }
+    for i in (0..n).step_by(2) {
+        uvs[i] = u + region_uvs[i] * width;
+        uvs[i + 1] = v + region_uvs[i + 1] * height;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshAttachment {
     pub name: String,
     pub path: String,
     pub color: Color,
-
     pub vertex_data: VertexData,
-
-    /// Per-vertex UVs as stored in the mesh (before remapping into atlas
-    /// space to account for region rotation or atlas packing).
     pub region_uvs: Vec<f32>,
-    /// Per-vertex UVs remapped into atlas space. Recomputed whenever the
-    /// resolved region changes.
-    pub uvs: Vec<f32>,
-
     pub triangles: Vec<u16>,
+    /// In floats (vertex count × 2).
     pub hull_length: u32,
+    pub sequence: Sequence,
+    /// Set for linked meshes; geometry is copied from it at link time.
+    pub source_mesh: Option<AttachmentId>,
 
-    // Non-essential data (only present when nonessential flag was set on export).
+    // Nonessential.
     pub edges: Vec<u16>,
     pub width: f32,
     pub height: f32,
-
-    /// If set, this mesh reuses another mesh's vertex data. Spine's linked-
-    /// mesh feature lets skins swap textures without duplicating geometry.
-    pub parent_mesh: Option<AttachmentId>,
-
-    pub sequence: Option<Sequence>,
-    pub region: Option<TextureRegionRef>,
 }
 
 impl MeshAttachment {
     #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, sequence: Sequence) -> Self {
         Self {
             name: name.into(),
             path: String::new(),
             color: Color::WHITE,
             vertex_data: VertexData::default(),
             region_uvs: Vec::new(),
-            uvs: Vec::new(),
             triangles: Vec::new(),
             hull_length: 0,
+            sequence,
+            source_mesh: None,
             edges: Vec::new(),
             width: 0.0,
             height: 0.0,
-            parent_mesh: None,
-            sequence: None,
-            region: None,
         }
     }
 
-    /// Recompute atlas-space [`Self::uvs`] from the attachment's
-    /// mesh-local [`Self::region_uvs`] and its currently resolved
-    /// [`Self::region`]. Literal port of
-    /// `spine-cpp/src/spine/MeshAttachment.cpp::updateRegion` — handles
-    /// the four `degrees` cases (0 / 90 / 180 / 270) and the
-    /// atlas-packing offset/crop math exactly.
-    ///
-    /// Called at load time (so stored `uvs` are valid for the initial
-    /// region) and again by the renderer when a `Sequence` cycles the
-    /// active region.
-    pub fn update_region(&mut self) {
-        if self.uvs.len() != self.region_uvs.len() {
-            self.uvs.resize(self.region_uvs.len(), 0.0);
+    /// Recomputes every frame's UVs from `region_uvs`.
+    pub fn update_sequence(&mut self) {
+        let n = self.sequence.regions.len();
+        let stride = self.region_uvs.len();
+        self.sequence.offsets.clear();
+        self.sequence.uvs.clear();
+        self.sequence.uvs.resize(n * stride, 0.0);
+        for i in 0..n {
+            compute_mesh_uvs(
+                self.sequence.regions[i].as_ref(),
+                &self.region_uvs,
+                &mut self.sequence.uvs[i * stride..(i + 1) * stride],
+            );
         }
-        let Some(region) = self.region.as_ref() else {
-            return;
-        };
+    }
 
-        let n = self.region_uvs.len();
-        let u = region.u;
-        let v = region.v;
-
-        match region.degrees {
-            90 => {
-                let texture_width = region.height / (region.u2 - region.u);
-                let texture_height = region.width / (region.v2 - region.v);
-                let u =
-                    u - (region.original_height - region.offset_y - region.height) / texture_width;
-                let v =
-                    v - (region.original_width - region.offset_x - region.width) / texture_height;
-                let width = region.original_height / texture_width;
-                let height = region.original_width / texture_height;
-                let mut i = 0;
-                while i < n {
-                    self.uvs[i] = u + self.region_uvs[i + 1] * width;
-                    self.uvs[i + 1] = v + (1.0 - self.region_uvs[i]) * height;
-                    i += 2;
-                }
-            }
-            180 => {
-                let texture_width = region.width / (region.u2 - region.u);
-                let texture_height = region.height / (region.v2 - region.v);
-                let u =
-                    u - (region.original_width - region.offset_x - region.width) / texture_width;
-                let v = v - region.offset_y / texture_height;
-                let width = region.original_width / texture_width;
-                let height = region.original_height / texture_height;
-                let mut i = 0;
-                while i < n {
-                    self.uvs[i] = u + (1.0 - self.region_uvs[i]) * width;
-                    self.uvs[i + 1] = v + (1.0 - self.region_uvs[i + 1]) * height;
-                    i += 2;
-                }
-            }
-            270 => {
-                let texture_height = region.height / (region.v2 - region.v);
-                let texture_width = region.width / (region.u2 - region.u);
-                let u = u - region.offset_y / texture_width;
-                let v = v - region.offset_x / texture_height;
-                let width = region.original_height / texture_width;
-                let height = region.original_width / texture_height;
-                let mut i = 0;
-                while i < n {
-                    self.uvs[i] = u + (1.0 - self.region_uvs[i + 1]) * width;
-                    self.uvs[i + 1] = v + self.region_uvs[i] * height;
-                    i += 2;
-                }
-            }
-            _ => {
-                let texture_width = region.width / (region.u2 - region.u);
-                let texture_height = region.height / (region.v2 - region.v);
-                let u = u - region.offset_x / texture_width;
-                let v =
-                    v - (region.original_height - region.offset_y - region.height) / texture_height;
-                let width = region.original_width / texture_width;
-                let height = region.original_height / texture_height;
-                let mut i = 0;
-                while i < n {
-                    self.uvs[i] = u + self.region_uvs[i] * width;
-                    self.uvs[i + 1] = v + self.region_uvs[i + 1] * height;
-                    i += 2;
-                }
-            }
-        }
+    /// Links to `source`, copying its geometry.
+    pub fn set_source_mesh(&mut self, id: AttachmentId, source: &MeshAttachment) {
+        self.source_mesh = Some(id);
+        self.vertex_data.bones.clone_from(&source.vertex_data.bones);
+        self.vertex_data
+            .vertices
+            .clone_from(&source.vertex_data.vertices);
+        self.vertex_data.world_vertices_length = source.vertex_data.world_vertices_length;
+        self.region_uvs.clone_from(&source.region_uvs);
+        self.triangles.clone_from(&source.triangles);
+        self.hull_length = source.hull_length;
+        self.edges.clone_from(&source.edges);
+        self.width = source.width;
+        self.height = source.height;
     }
 }
 
-// --- BoundingBoxAttachment --------------------------------------------------
-
-/// Non-rendered polygon used for hit-testing or gameplay queries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundingBoxAttachment {
     pub name: String,
@@ -506,27 +584,18 @@ impl BoundingBoxAttachment {
         Self {
             name: name.into(),
             vertex_data: VertexData::default(),
-            color: Color::WHITE,
+            color: Color::new(0.38, 0.94, 0.0, 1.0),
         }
     }
 }
 
-// --- PathAttachment ---------------------------------------------------------
-
-/// Cubic bezier path used as a target by path constraints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathAttachment {
     pub name: String,
     pub vertex_data: VertexData,
     pub color: Color,
-
-    /// True when the last cubic segment loops back to the first control
-    /// point.
     pub closed: bool,
-    /// When true, constrained bones advance at a constant speed along the
-    /// path regardless of curvature.
     pub constant_speed: bool,
-    /// Per-cubic-segment arc lengths (one value per cubic).
     pub lengths: Vec<f32>,
 }
 
@@ -536,17 +605,14 @@ impl PathAttachment {
         Self {
             name: name.into(),
             vertex_data: VertexData::default(),
-            color: Color::WHITE,
+            color: Color::new(0.0, 0.0, 0.0, 0.0),
             closed: false,
-            constant_speed: true,
+            constant_speed: false,
             lengths: Vec::new(),
         }
     }
 }
 
-// --- PointAttachment --------------------------------------------------------
-
-/// Single point + rotation, useful for spawning effects or marking hitboxes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointAttachment {
     pub name: String,
@@ -564,108 +630,92 @@ impl PointAttachment {
             x: 0.0,
             y: 0.0,
             rotation: 0.0,
-            color: Color::WHITE,
+            color: Color::new(0.9451, 0.9451, 0.0, 1.0),
         }
     }
 }
 
-// --- ClippingAttachment -----------------------------------------------------
-
-/// Polygonal mask. While a clipping attachment is active on its slot, all
-/// subsequent slots in draw order are clipped against the polygon until the
-/// `end_slot` is reached.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClippingAttachment {
     pub name: String,
     pub vertex_data: VertexData,
     pub color: Color,
-    /// Slot whose rendering ends the clipping scope. When rendering reaches
-    /// this slot, the clip is popped.
-    pub end_slot: crate::data::SlotId,
+    pub end_slot: Option<SlotId>,
+    pub convex: bool,
+    pub inverse: bool,
 }
 
 impl ClippingAttachment {
     #[must_use]
-    pub fn new(name: impl Into<String>, end_slot: crate::data::SlotId) -> Self {
+    pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             vertex_data: VertexData::default(),
-            color: Color::WHITE,
-            end_slot,
+            color: Color::new(0.0, 0.0, 0.0, 0.0),
+            end_slot: None,
+            convex: false,
+            inverse: false,
         }
     }
 }
 
-// --- Resolved texture region reference -------------------------------------
-
-/// Atlas region metadata copied out of [`crate::atlas::AtlasRegion`] during
-/// attachment loading. We copy rather than reference because skeleton data
-/// and atlas data often have different lifetimes and we want
-/// [`SkeletonData`][crate::data::SkeletonData] to be self-contained after
-/// load.
-///
-/// Bevy integration resolves `page_index` to a `Handle<Image>` via a parallel
-/// atlas-managed asset.
+/// A resolved texture region. `atlas` regions carry packing data (offsets,
+/// original size, rotation); plain regions map straight to `u..u2, v..v2`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextureRegionRef {
     pub page_index: u32,
+    pub atlas: bool,
     pub u: f32,
     pub v: f32,
     pub u2: f32,
     pub v2: f32,
-    pub width: f32,
-    pub height: f32,
+    /// Packed size with width and height swapped for 90° regions, as
+    /// spine-cpp's atlas loader leaves them.
+    pub packed_width: f32,
+    pub packed_height: f32,
     pub original_width: f32,
     pub original_height: f32,
     pub offset_x: f32,
     pub offset_y: f32,
     pub degrees: i32,
+    pub page_width: f32,
+    pub page_height: f32,
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // Literal default comparisons only.
 mod tests {
     use super::*;
-    use crate::data::SlotId;
 
     #[test]
-    fn enum_dispatch_by_kind() {
-        let a = Attachment::Region(RegionAttachment::new("foo"));
-        assert_eq!(a.kind(), AttachmentType::Region);
-        assert_eq!(a.name(), "foo");
-
-        let m = Attachment::Mesh(MeshAttachment::new("mesh"));
-        assert_eq!(m.kind(), AttachmentType::Mesh);
-
-        let c = Attachment::Clipping(ClippingAttachment::new("clip", SlotId(5)));
-        assert_eq!(c.kind(), AttachmentType::Clipping);
+    fn sequence_ids_are_unique_and_copy_renews() {
+        let a = Sequence::new(1, false);
+        let b = Sequence::new(1, false);
+        assert_ne!(a.id, b.id);
+        assert_ne!(a.copy().id, a.id);
     }
 
     #[test]
-    fn region_defaults_unit_scale() {
-        let r = RegionAttachment::new("x");
-        assert_eq!(r.scale_x, 1.0);
-        assert_eq!(r.scale_y, 1.0);
-        assert_eq!(r.color, Color::WHITE);
-        assert!(r.region.is_none());
+    fn sequence_path_suffix() {
+        let mut s = Sequence::new(3, true);
+        s.start = 1;
+        s.digits = 2;
+        assert_eq!(s.path("run", 0), "run01");
+        assert_eq!(Sequence::new(1, false).path("run", 0), "run");
     }
 
     #[test]
-    fn mesh_defaults_empty_vertex_data() {
-        let m = MeshAttachment::new("m");
-        assert!(m.vertex_data.bones.is_empty());
-        assert!(m.vertex_data.vertices.is_empty());
-        assert!(m.triangles.is_empty());
-        assert!(m.parent_mesh.is_none());
+    fn resolve_index_uses_setup_and_clamps() {
+        let mut s = Sequence::new(3, true);
+        s.setup_index = 1;
+        assert_eq!(s.resolve_index(-1), 1);
+        assert_eq!(s.resolve_index(7), 2);
     }
 
     #[test]
-    fn sequence_defaults() {
-        let s = Sequence::new(8);
-        assert_eq!(s.count, 8);
-        assert_eq!(s.setup_index, 0);
-        assert_eq!(s.start, 0);
-        assert_eq!(s.digits, 0);
-        assert_eq!(SequenceMode::default(), SequenceMode::Hold);
+    fn regionless_mesh_uvs_pass_through() {
+        let mut m = MeshAttachment::new("m", Sequence::new(1, false));
+        m.region_uvs = vec![0.25, 0.5, 1.0, 0.0];
+        m.update_sequence();
+        assert_eq!(m.sequence.uvs(0), &[0.25, 0.5, 1.0, 0.0]);
     }
 }

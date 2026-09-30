@@ -33,7 +33,8 @@
 //! `HOMMLET_SPINE_ASSETS` (its `Assets/Spine`) when set, each with a walk
 //! cycle and a real skin. `SPINE_BENCH_FRAMES` overrides the frame count.
 //! An atlas spec `a.atlas+b.atlas` concatenates pages, which is how hommlet
-//! pairs a rig atlas with its body atlas.
+//! pairs a rig atlas with its body atlas. `SPINE_BENCH_RIG` keeps only rigs
+//! whose skeleton path contains it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -122,8 +123,7 @@ fn bench_rig(rig: &Rig, frames: u32) -> Result<(), String> {
     if let Some(skin) = &rig.skin {
         skeleton.set_skin_by_name(skin).map_err(|e| e.to_string())?;
     }
-    skeleton.update_cache();
-    skeleton.set_to_setup_pose();
+    skeleton.setup_pose();
     let mut state = AnimationState::new(Arc::new(AnimationStateData::new(Arc::clone(&data))));
     state
         .set_animation_by_name(0, rig.anim, true)
@@ -179,7 +179,11 @@ fn main() {
     } else {
         1
     };
+    let filter = std::env::var("SPINE_BENCH_RIG").unwrap_or_default();
     for rig in rigs() {
+        if !rig.skel.to_string_lossy().contains(&filter) {
+            continue;
+        }
         if let Err(e) = bench_rig(&rig, frames) {
             eprintln!("skip {}: {e}", rig.skel.display());
         }

@@ -51,12 +51,15 @@ pub mod slot;
 pub use animation::{Animation, AnimationEvent, CurveFrames, PhysicsProperty, Timeline};
 pub use attachment::{
     Attachment, AttachmentType, BoundingBoxAttachment, ClippingAttachment, MeshAttachment,
-    PathAttachment, PointAttachment, RegionAttachment, Sequence, SequenceMode, VertexData,
+    PathAttachment, PointAttachment, RegionAttachment, Sequence, SequenceMode, TextureRegionRef,
+    TimelineLink, VertexData,
 };
-pub use bone::{BoneData, Inherit};
+pub use bone::{BoneData, BoneLocal, Inherit};
 pub use constraint::{
-    IkConstraintData, PathConstraintData, PhysicsConstraintData, PositionMode, RotateMode,
-    SpacingMode, TransformConstraintData,
+    ConstraintData, FromProperty, IkConstraintData, IkConstraintPose, PathConstraintData,
+    PathConstraintPose, PhysicsConstraintData, PhysicsConstraintPose, PositionMode, RotateMode,
+    ScaleYMode, SliderData, SliderPose, SliderProperty, SpacingMode, ToProperty,
+    TransformConstraintData, TransformConstraintPose, TransformProperty,
 };
 pub use event::EventData;
 pub use skeleton::SkeletonData;
@@ -108,20 +111,8 @@ define_id!(
     pub EventId(u16)
 );
 define_id!(
-    /// Index into [`SkeletonData::ik_constraints`].
-    pub IkConstraintId(u16)
-);
-define_id!(
-    /// Index into [`SkeletonData::transform_constraints`].
-    pub TransformConstraintId(u16)
-);
-define_id!(
-    /// Index into [`SkeletonData::path_constraints`].
-    pub PathConstraintId(u16)
-);
-define_id!(
-    /// Index into [`SkeletonData::physics_constraints`].
-    pub PhysicsConstraintId(u16)
+    /// Index into [`SkeletonData::constraints`], which is also update order.
+    pub ConstraintId(u16)
 );
 define_id!(
     /// Index into [`SkeletonData::animations`].
