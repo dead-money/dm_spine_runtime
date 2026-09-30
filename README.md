@@ -89,10 +89,10 @@ The crate has no GPU, windowing, or shader dependency, and it doesn't plan to gr
 
 ## Building
 
-The tests and examples load the canonical rigs from a sibling clone of [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes). Those exports have to be 4.2; upstream's default branch now ships 4.3 exports, so check out the `4.2` branch:
+The tests and examples load the canonical rigs from a sibling clone of [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes), or from wherever `SPINE_EXAMPLES` points. `main` is mid-upgrade to 4.3: the fixtures are captured from upstream `4.3` at the commit pinned in CI, and tests for parts not yet ported are `#[ignore]`d with the upgrade phase that restores them. For the 4.2 runtime, check out the `v0.1.0` tag with the `4.2` branch of `spine-runtimes`.
 
 ```sh
-git clone -b 4.2 https://github.com/EsotericSoftware/spine-runtimes ../spine-runtimes
+git clone -b 4.3 https://github.com/EsotericSoftware/spine-runtimes ../spine-runtimes
 cargo test
 ```
 
