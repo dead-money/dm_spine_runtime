@@ -24,6 +24,10 @@ serde = { version = "1", features = ["derive"] }
 # leak into the library's dep graph.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[[bench]]
+name = "frame"
+harness = false
+
 [lints.rust]
 unsafe_code = "forbid"
 
