@@ -1,13 +1,32 @@
 [package]
 name = "spine_runtime"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
+authors = ["Brandon Reinhart <brandon@deadmoney.gg>"]
 description = "Unofficial native Rust port of the Spine 4.3 runtime. Renderer-agnostic."
 license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/dead-money/spine_runtime"
+documentation = "https://docs.rs/spine_runtime"
 categories = ["game-development", "graphics"]
 keywords = ["spine", "2d", "animation", "skeletal"]
+# Not cleared for crates.io until Esoteric Software signs off on publishing a
+# spine-cpp derivative there. Flipping this is the only gate; see RELEASING.md.
+publish = false
+# The tests need the sibling spine-runtimes checkout and can't run from the
+# published crate.
+exclude = [
+  ".github/",
+  ".claude/",
+  "scripts/",
+  "tools/",
+  "tests/",
+  "CLAUDE.md",
+  "RELEASING.md",
+  "release.toml",
+  "docs/SPINE_4_3_UPGRADE.md",
+]
 
 [dependencies]
 glam = "0.32"
