@@ -2058,7 +2058,7 @@ pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
             // Deform uses CurveFrames; stride 2 (time + packed vertex index
             // into the per-frame `vertices[i]`). Last frame's time sits at
             // `frames[len - 2]`.
-            Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 2),
+            Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 1),
 
             // Sequence frames are interleaved (time, packed, delay); stride 3.
             Timeline::Sequence { frames, .. } => last_time_stride(frames, 3),
