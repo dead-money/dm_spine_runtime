@@ -25,8 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Ear-clipping triangulation and convex decomposition (`Triangulator`,
-//! 4.3), used to split concave clipping polygons.
+//! Ear-clipping triangulation and convex decomposition, used to split
+//! concave clipping polygons.
 
 #![allow(clippy::many_single_char_names)]
 
@@ -286,7 +286,7 @@ impl Triangulator {
         &self.convex_polygons
     }
 
-    /// Triangle vertex offsets (index × 2) per polygon from the last
+    /// Vertex offsets (index × 2) of each polygon from the last
     /// [`Self::decompose`].
     #[must_use]
     pub fn convex_polygon_indices(&self) -> &[Vec<u16>] {
@@ -337,7 +337,7 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
-    /// Shoelace formula — returns signed area of polygon from interleaved verts.
+    /// Shoelace signed area of interleaved `x, y` vertices.
     fn signed_area(vertices: &[f32]) -> f32 {
         let n = vertices.len() / 2;
         let mut area = 0.0;

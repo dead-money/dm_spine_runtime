@@ -25,11 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Runtime-mutable skeleton pose.
-//!
-//! Counterpart to [`crate::data`]: where `data` is the immutable,
-//! `Arc`-shared setup-pose asset, this module owns the per-instance mutable
-//! state every `Skeleton` needs to animate and be rendered.
+//! Per-instance skeleton state: bones, slots, constraints and their poses.
+//! The immutable, shared setup data lives in [`crate::data`].
 
 pub mod bone;
 pub mod bounds;
@@ -58,8 +55,8 @@ pub use skeleton::{Skeleton, SkinNotFound};
 pub use slot::{DrawOrder, Slot, SlotPose};
 pub use update_cache::{ResetEntry, UpdateCacheEntry};
 
-/// Controls how physics constraints behave on this `update_world_transform`
-/// pass. Ported verbatim from `spine-cpp/include/spine/Physics.h`.
+/// How physics constraints behave during one
+/// [`Skeleton::update_world_transform`] call.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Physics {
     /// Physics are not updated or applied.

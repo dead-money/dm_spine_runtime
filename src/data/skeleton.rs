@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Top-level immutable data container for a single Spine skeleton.
+//! [`SkeletonData`], the loaded form of one Spine skeleton.
 
 use std::sync::Arc;
 
@@ -34,32 +34,28 @@ use crate::data::{
     EventData, Skin, SkinId, SkinKeys, SlotData, SlotId, Timeline,
 };
 
-/// Stores the setup pose and every piece of stateless data the runtime needs
-/// to animate a skeleton.
+/// The setup pose and all stateless data needed to animate a skeleton.
 ///
-/// Intended lifecycle: parse once from a `.skel` file, wrap in an
-/// `Arc<SkeletonData>`, hand out to many `Skeleton` instances. All fields
-/// are public because this is pure data — invariants are upheld during
-/// loading, not enforced on the struct.
+/// Load once, wrap in an `Arc`, and share across `Skeleton`s. Fields are
+/// public; the loaders establish the invariants, nothing enforces them
+/// afterwards.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SkeletonData {
     pub name: String,
     pub version: String,
     pub hash: String,
 
-    /// Bones sorted with parents before children; the root bone is always
-    /// first. This ordering is relied on by `Skeleton::update_cache`.
+    /// Parents precede children; the root bone is first.
     pub bones: Vec<BoneData>,
     /// Slots in setup-pose draw order.
     pub slots: Vec<SlotData>,
-    /// All skins, including the default skin (if present, always at index 0
-    /// when the skeleton has one). Shared so skeletons can wear them as is.
+    /// Every skin, including the default skin. Shared so skeletons can wear
+    /// them as is.
     pub skins: Vec<Arc<Skin>>,
     /// Every `(slot, placeholder)` pair the skins, setup pose and attachment
     /// timelines mention.
     pub skin_keys: SkinKeys,
-    /// Index of the default skin in [`Self::skins`], or `None` if no default
-    /// skin was defined.
+    /// Index of the default skin in [`Self::skins`], if any.
     pub default_skin: Option<SkinId>,
     pub events: Vec<EventData>,
     pub animations: Vec<Animation>,
@@ -67,30 +63,27 @@ pub struct SkeletonData {
     /// Every constraint in update order.
     pub constraints: Vec<ConstraintData>,
 
-    /// Flat store for every [`Attachment`] referenced by any skin. Skins
-    /// hold [`AttachmentId`] indices into this
-    /// vector — keeps the struct-of-arrays invariant.
+    /// Every data [`Attachment`], indexed by [`AttachmentId`].
     pub attachments: Vec<Attachment>,
 
-    /// Skeleton-local origin and dimensions (bounding box in setup pose).
+    /// Setup-pose bounding box, in skeleton space.
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// Scale factor written by the editor for certain render modes (e.g.
-    /// physics simulations tuned for a particular unit scale). Defaults to
-    /// 100 in spine-cpp.
+    /// Skeleton units per meter, used by physics. Multiplied by the load
+    /// scale; JSON defaults it to 100.
     pub reference_scale: f32,
 
-    // Non-essential fields (only populated when non-essential data was
-    // exported; safe defaults otherwise).
+    // Nonessential: populated only when exported with nonessential data.
     pub fps: f32,
     pub images_path: String,
     pub audio_path: String,
 }
 
 impl SkeletonData {
-    /// Linear-scan lookup by name. Cache the result when called repeatedly.
+    /// Linear scan by name, as are the other `find_*` methods. Cache the
+    /// result when calling repeatedly.
     #[must_use]
     pub fn find_bone(&self, name: &str) -> Option<&BoneData> {
         self.bones.iter().find(|b| b.name == name)
@@ -124,7 +117,12 @@ impl SkeletonData {
             .map(|i| ConstraintId(i as u16))
     }
 
-    /// The data attachment a data skin holds for a placeholder name.
+    /// The data attachment `skin` holds for a placeholder name. `None` if
+    /// absent or owned by the skin.
+    ///
+    /// # Panics
+    ///
+    /// If `skin` is out of range.
     #[must_use]
     pub fn skin_attachment(
         &self,
@@ -160,7 +158,7 @@ impl SkeletonData {
         }
     }
 
-    /// Convenience for grabbing the default skin, if any.
+    /// The default skin, if any.
     #[must_use]
     pub fn default_skin(&self) -> Option<&Arc<Skin>> {
         self.default_skin.and_then(|id| self.skins.get(id.index()))

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Dump a fixed set of animation samples per (rig, animation) into
-# tests/fixtures/animations/{rig}[-variant]/{anim}/t{idx}.json for Phase 3's
-# golden diff. Keeping this set small on purpose: covers enough timeline
-# variety to catch regressions without bloating the fixture tree.
+# Captures animation samples into
+# tests/fixtures/animations/<rig>-<variant>/<anim>/t<ms>.json. The set is kept
+# small: enough timeline variety to catch regressions without bloating the
+# fixture tree.
 #
-# Each (rig, anim) is sampled at t in {0.00, 0.25, 0.50, 0.75, 0.99}
-# multiplied by the animation duration. `spine_capture` handles the
-# end-state calculation (setup pose + Animation::apply + bones-only
-# world transforms).
+# Each animation is sampled at 0, 25, 50, 75 and 99% of its duration, applied
+# from the setup pose (see `spine_capture --anim`).
 
 set -euo pipefail
 
@@ -22,9 +20,8 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
-# Rig → (variant, animation, duration_in_seconds).
-# Durations were pulled from each animation's last-keyframe time; keep this
-# table in sync with data.animations[].duration.
+# rig variant animation duration_seconds
+# Durations must match each animation's duration in the export.
 declare -a ROWS=(
     "spineboy pro walk 1.0"
     "spineboy pro run 0.6666667"

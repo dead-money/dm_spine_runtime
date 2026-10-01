@@ -25,14 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Smoke-test `SkeletonRenderer::render` on every example rig: every
-//! rig loads + renders at setup pose without panicking, every emitted
-//! command has internally-consistent buffer lengths, and every world
-//! position / uv is finite.
-//!
-//! This doesn't check output correctness — that's `golden_render`'s job
-//! (Phase 6g). It catches walker-level regressions: out-of-bounds
-//! indexing, attachment-kind mismatches, stray NaN/Inf propagation.
+//! Every example rig renders at the setup pose without panicking, with
+//! consistent buffer lengths, finite positions and UVs, and no command
+//! collapsed to a point. `RegionGeometry::map` must also map each vertex's
+//! region UV back onto that vertex. Output values are checked by
+//! `golden_render`.
 
 mod common;
 
@@ -113,7 +110,6 @@ fn renders_every_example_rig_at_setup_pose() {
         sk.setup_pose();
         sk.update_world_transform(Physics::None);
 
-        // Each vertex's own region coordinate maps back onto it.
         let mut geometry = RegionGeometry::new();
         for slot in 0..sk.slots.len() {
             if !geometry.update(&sk, SlotId(slot as u16)) {
@@ -130,9 +126,6 @@ fn renders_every_example_rig_at_setup_pose() {
         }
 
         let mut renderer = SkeletonRenderer::new();
-        // Render unbatched so degenerate-command regressions surface per-slot
-        // — the batcher would otherwise merge a zero-area slot into an
-        // adjacent real command and hide the problem.
         let cmds = renderer.render(&sk);
 
         for (i, cmd) in cmds.iter().enumerate() {
@@ -155,9 +148,8 @@ fn renders_every_example_rig_at_setup_pose() {
                 assert!(v.is_finite(), "{rig}: cmd[{i}].uvs[{k}] = {v}");
             }
 
-            // Regression guard against attachments whose `vertex_offset` or
-            // world vertices never got populated — those emit valid-looking
-            // commands whose quads have collapsed to a single point.
+            // Catches attachments whose world vertices were never computed:
+            // their commands look valid but collapse to a point.
             if let Some((xmin, xmax, ymin, ymax)) = cmd.position_bounds() {
                 let degenerate = (xmax - xmin).abs() < 1e-4 && (ymax - ymin).abs() < 1e-4;
                 assert!(

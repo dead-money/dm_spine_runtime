@@ -25,10 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Pluggable attachment construction during skeleton load
-//! (`AttachmentLoader` / `AtlasAttachmentLoader`). Loaders receive the skin
-//! placeholder name and the attachment's own name, and may return `None` to
-//! leave an attachment out.
+//! Pluggable attachment construction during skeleton load.
 
 use thiserror::Error;
 
@@ -38,6 +35,8 @@ use crate::data::attachment::{
     RegionAttachment, Sequence, TextureRegionRef,
 };
 
+/// Errors an [`AttachmentLoader`] can report. [`AtlasAttachmentLoader`] never
+/// fails; these are for custom loaders.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AttachmentLoaderError {
     #[error("atlas region not found: {path:?} (attachment {attachment:?})")]
@@ -46,9 +45,11 @@ pub enum AttachmentLoaderError {
     Unsupported { attachment: String },
 }
 
-/// Builds attachments while a skeleton loads. The loader fills in texture
-/// regions; the skeleton reader fills in everything else and then calls
-/// `update_sequence`. Returning `Ok(None)` omits the attachment.
+/// Builds attachments while a skeleton loads. `skin` is the skin's name,
+/// `placeholder` the key the attachment is stored under in that skin, and
+/// `name` the attachment's own name. The loader resolves texture regions; the
+/// skeleton reader fills in the remaining fields and then calls
+/// `update_sequence`. Returning `Ok(None)` leaves the attachment out.
 pub trait AttachmentLoader {
     /// `sequence` has one entry per frame; resolve each frame's region.
     ///

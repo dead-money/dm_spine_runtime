@@ -25,6 +25,16 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+//! Prints a rig's data counts, one animation's timeline kinds, and how many
+//! transform constraints are live 0.3 s into that animation.
+//!
+//! ```text
+//! cargo run --example rig_info -- <dir> <rig> <animation>
+//! ```
+//!
+//! Loads `<dir>/<rig>.skel` and `<dir>/<rig>.atlas`, appends
+//! `<dir>/<rig>_Body.atlas` if present, and sets skin `<rig>01` if it exists.
+
 use spine_runtime::atlas::Atlas;
 use spine_runtime::data::ConstraintData;
 use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};

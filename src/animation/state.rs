@@ -25,14 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `AnimationState` (4.3): plays animations on tracks with crossfades,
-//! queuing and events. Track entries live in a slab addressed by
-//! generation-checked [`EntryId`]s.
+//! [`AnimationState`]: plays animations on tracks with crossfades, queuing
+//! and events. Track entries live in a slab addressed by generation-checked
+//! [`EntryId`]s.
 //!
-//! Keyframe events are pushed to the `events` out-parameter of
-//! [`AnimationState::apply`]; lifecycle events (start, interrupt, end,
-//! complete, dispose) and keyframe events tagged with their entry are
-//! collected for [`AnimationState::drain_events`].
+//! Keyframe events from each track's current entry are pushed to the
+//! `events` out-parameter of [`AnimationState::apply`]. Lifecycle events
+//! (start, interrupt, end, complete, dispose) and all keyframe events,
+//! including those from entries mixing out, are collected with their entry
+//! for [`AnimationState::drain_events`].
 
 #![allow(clippy::float_cmp)]
 
@@ -82,6 +83,7 @@ pub enum Interpolation {
 }
 
 impl Interpolation {
+    /// Eases `a`, a mix percentage in 0..=1.
     #[must_use]
     pub fn apply(self, a: f32) -> f32 {
         match self {
@@ -102,6 +104,8 @@ impl Interpolation {
     }
 }
 
+/// Kind of [`StateEvent`]. `End` is always followed by `Dispose` for the
+/// same entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     Start,
@@ -131,7 +135,7 @@ pub struct EntryId {
     generation: u32,
 }
 
-/// Playback of one animation on a track (`TrackEntry`).
+/// Playback of one animation on a track. Times are in seconds.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct TrackEntry {
@@ -407,8 +411,8 @@ impl AnimationState {
         }
     }
 
-    /// Sets the entry's mix duration and, when `delay <= 0`, its delay
-    /// relative to when the previous entry completes.
+    /// Sets the entry's mix duration and delay. `delay <= 0` is relative to
+    /// when the previous entry completes, minus the mix.
     pub fn set_mix_duration(&mut self, id: EntryId, mix_duration: f32, mut delay: f32) {
         let previous_complete = self.e(id).previous.map(|p| self.e(p).track_complete());
         if delay <= 0.0 {
@@ -643,8 +647,9 @@ impl AnimationState {
         false
     }
 
-    /// Poses the skeleton from every track. Keyframe events that fire are
-    /// pushed to `events`. Returns whether any track was applied.
+    /// Poses the skeleton from every track. Keyframe events from each
+    /// track's current entry are pushed to `events`. Returns whether any
+    /// track was applied.
     pub fn apply(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) -> bool {
         if self.animations_changed {
             self.animations_changed();
@@ -676,7 +681,8 @@ impl AnimationState {
 
     /// Poses the skeleton as [`Self::apply`] would at the current track
     /// times, without firing events or touching anything a later
-    /// [`Self::update`] or [`Self::apply`] reads.
+    /// [`Self::update`] or [`Self::apply`] reads. Returns whether any track
+    /// was applied.
     pub fn pose(&mut self, skeleton: &mut Skeleton) -> bool {
         let pending = self.animations_changed;
         if pending {
@@ -1066,7 +1072,7 @@ impl AnimationState {
         mix
     }
 
-    /// `applyAttachmentTimeline`: tracks which slots the animation keyed so
+    /// Records in `attachment_state` which slots the animation keyed, so
     /// unkeyed ones can return to setup.
     fn apply_attachment_timeline(
         &mut self,
@@ -1516,8 +1522,8 @@ impl AnimationState {
         e.timeline_hold_mix = hold_mix;
     }
 
-    /// `from`: which pose a timeline mixes from, by which track first keyed
-    /// its properties.
+    /// Mode bits for which pose a timeline mixes from, decided by which
+    /// track first keyed its properties.
     fn mix_from_for(&mut self, track: EntryId, t: &Timeline, ids: &[PropertyId]) -> u8 {
         let mut mode = SETUP;
         let mut owners = std::mem::take(&mut self.property_owners);
@@ -1566,8 +1572,8 @@ fn animation(sd: &SkeletonData, id: AnimationId) -> &Animation {
     }
 }
 
-/// `applyRotateTimeline`: mixes rotation the shortest way on the first
-/// frame, then keeps that direction.
+/// Mixes rotation the shortest way on the first frame, then keeps that
+/// direction.
 fn apply_rotate_timeline(
     t: &Timeline,
     skeleton: &mut Skeleton,
@@ -1652,6 +1658,7 @@ fn apply_rotate_timeline(
     pose.rotation = r1 + total * alpha;
 }
 
+/// An `*_by_name` call was given an unknown animation name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("no animation named `{0}`")]
 pub struct AnimationNotFound(pub String);

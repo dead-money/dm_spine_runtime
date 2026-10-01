@@ -25,9 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Linear RGBA color with clamp-on-mutate semantics matching `spine-cpp/Color.h`.
+//! RGBA color whose constructors and mutators clamp channels to `[0, 1]`.
 
-#![allow(clippy::many_single_char_names)] // `r`, `g`, `b`, `a` are the natural names for color components.
+#![allow(clippy::many_single_char_names)]
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -57,7 +57,7 @@ impl Color {
         a: 0.0,
     };
 
-    /// Construct an RGBA color, clamping each channel to `[0, 1]`.
+    /// Clamps each channel to `[0, 1]`.
     #[must_use]
     pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
         let mut c = Self { r, g, b, a };
@@ -65,7 +65,7 @@ impl Color {
         c
     }
 
-    /// Overwrite all four channels and clamp.
+    /// Sets all four channels, then clamps.
     pub fn set(&mut self, r: f32, g: f32, b: f32, a: f32) -> &mut Self {
         self.r = r;
         self.g = g;
@@ -74,7 +74,7 @@ impl Color {
         self.clamp()
     }
 
-    /// Overwrite RGB only (alpha unchanged) and clamp.
+    /// Sets RGB, leaving alpha, then clamps.
     pub fn set_rgb(&mut self, r: f32, g: f32, b: f32) -> &mut Self {
         self.r = r;
         self.g = g;
@@ -82,7 +82,7 @@ impl Color {
         self.clamp()
     }
 
-    /// Copy from another color and clamp.
+    /// Copies `other`, then clamps.
     pub fn set_from(&mut self, other: &Color) -> &mut Self {
         self.r = other.r;
         self.g = other.g;
@@ -91,7 +91,7 @@ impl Color {
         self.clamp()
     }
 
-    /// Add another color component-wise and clamp.
+    /// Adds per channel, then clamps.
     pub fn add(&mut self, r: f32, g: f32, b: f32, a: f32) -> &mut Self {
         self.r += r;
         self.g += g;
@@ -100,7 +100,7 @@ impl Color {
         self.clamp()
     }
 
-    /// Add another color's RGB component-wise (alpha unchanged) and clamp.
+    /// Adds to RGB, leaving alpha, then clamps.
     pub fn add_rgb(&mut self, r: f32, g: f32, b: f32) -> &mut Self {
         self.r += r;
         self.g += g;
@@ -108,7 +108,7 @@ impl Color {
         self.clamp()
     }
 
-    /// Add another color component-wise and clamp.
+    /// Adds `other` per channel, then clamps.
     pub fn add_color(&mut self, other: &Color) -> &mut Self {
         self.r += other.r;
         self.g += other.g;
@@ -128,7 +128,7 @@ impl Color {
 }
 
 impl Default for Color {
-    /// Matches `spine::Color()` which zero-initializes all channels including alpha.
+    /// Transparent black (alpha 0), as spine-cpp's `Color()` initializes.
     fn default() -> Self {
         Self {
             r: 0.0,
@@ -147,7 +147,6 @@ mod tests {
 
     #[test]
     fn default_matches_spine_cpp() {
-        // spine-cpp Color() initializes all fields to 0 including alpha.
         let c = Color::default();
         assert_eq!(
             c,
@@ -236,7 +235,6 @@ mod tests {
     }
 
     proptest! {
-        /// After any `new`, all channels must be in [0, 1] — the Spine invariant.
         #[test]
         fn new_always_in_unit_range(
             r in -10.0f32..10.0, g in -10.0f32..10.0,
@@ -249,7 +247,6 @@ mod tests {
             prop_assert!((0.0..=1.0).contains(&c.a));
         }
 
-        /// After any `add`, all channels must stay in [0, 1].
         #[test]
         fn add_preserves_unit_range(
             r0 in 0.0f32..=1.0, g0 in 0.0f32..=1.0, b0 in 0.0f32..=1.0, a0 in 0.0f32..=1.0,

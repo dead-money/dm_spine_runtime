@@ -25,13 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Setup-pose event definition. Runtime `Event` instances produced during
-//! animation apply inherit these defaults and may override them per-keyframe.
+//! Event definitions. Event keys in animations reference one and may
+//! override its values.
 
 use crate::data::EventId;
 
-/// Named event declared on the skeleton. Animations fire runtime events that
-/// reference one of these by index.
+/// A named event declared on the skeleton.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventData {
     pub index: EventId,

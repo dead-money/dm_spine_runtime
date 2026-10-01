@@ -26,15 +26,16 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Per-frame cost of `AnimationState` update + apply, world transform and
-//! render, in the same JSON-line shape as `spine_capture --bench` so
-//! `tools/spine_capture/bench_compare.sh` can pair the two runtimes.
+//! render, printed as JSON lines in the same shape as `spine_capture --bench`
+//! so `tools/spine_capture/bench_compare.sh` can pair the two runtimes.
 //!
-//! Rigs: a few `SPINE_EXAMPLES` rigs, plus hommlet's creature rigs under
-//! `HOMMLET_SPINE_ASSETS` (its `Assets/Spine`) when set, each with a walk
-//! cycle and a real skin. `SPINE_BENCH_FRAMES` overrides the frame count.
-//! An atlas spec `a.atlas+b.atlas` concatenates pages, which is how hommlet
-//! pairs a rig atlas with its body atlas. `SPINE_BENCH_RIG` keeps only rigs
-//! whose skeleton path contains it.
+//! Rigs: spineboy, raptor and diamond from `SPINE_EXAMPLES`, plus hommlet's
+//! creature rigs (walk cycle, real skin) when `HOMMLET_SPINE_ASSETS` points at
+//! its `Assets/Spine`. An atlas spec `a.atlas+b.atlas` concatenates both files,
+//! which is how hommlet pairs a rig atlas with its body atlas.
+//!
+//! `SPINE_BENCH_FRAMES` sets the frame count (default 2000).
+//! `SPINE_BENCH_RIG` keeps only rigs whose skeleton path contains it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

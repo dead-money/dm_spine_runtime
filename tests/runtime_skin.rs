@@ -152,8 +152,8 @@ fn check(label: &str, sd: &Arc<SkeletonData>, template: &str, animation: &str) {
 
 #[test]
 fn copied_skins_render_like_their_templates() {
-    // Goblins walk keys deform and diamond rotation keys sequences, so
-    // copies must keep the timelines of the attachments they came from.
+    // goblins' walk keys deforms and diamond's rotation keys sequences, so
+    // copies must still be driven by their source attachments' timelines.
     for (rig, skel, skin, animation) in [
         (
             "mix-and-match",
@@ -217,8 +217,8 @@ fn skin_changes_and_compaction_keep_slots_valid() {
     let shown = names(&sk);
     assert!(shown.iter().any(Option::is_some));
 
-    // Replacing every entry with a fresh copy strands the old copies; slots
-    // still show them until compaction proves they survive it.
+    // Replacing every entry with a fresh copy strands the old copies, but
+    // slots still show them, so the first compaction must keep them.
     let before = sk.skin().unwrap().owned().len();
     let entries: Vec<_> = sk.skin().unwrap().entries().collect();
     let skin = sk.skin_mut().unwrap();

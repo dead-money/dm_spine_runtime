@@ -25,9 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Clipping attachments (`SkeletonClipping`, 4.3): clips triangles against
-//! a clipping polygon, splitting concave polygons into convex parts, or
-//! keeps what lies outside an inverse clip.
+//! Clipping attachments: clips triangles against a clipping polygon,
+//! splitting concave polygons into convex parts, or keeps what lies outside
+//! an inverse clip.
 
 #![allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 
@@ -59,7 +59,8 @@ impl SkeletonClipping {
     }
 
     /// Starts clipping with the clipping attachment on `slot`. Returns the
-    /// number of convex polygons clipped against.
+    /// number of convex polygons clipped against, or 0 without starting if a
+    /// clip is already active or the polygon has fewer than 3 points.
     pub fn clip_start(
         &mut self,
         skeleton: &Skeleton,

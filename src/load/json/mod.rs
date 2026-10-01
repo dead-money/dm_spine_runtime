@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! JSON skeleton loader, ported from `spine-cpp/SkeletonJson.cpp`.
+//! Loader for `.json` skeleton exports.
 
 mod parse;
 

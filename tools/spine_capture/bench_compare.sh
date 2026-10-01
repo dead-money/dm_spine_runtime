@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs `cargo bench --bench frame`, then times spine-cpp on the same rig,
 # animation and frame count, and prints ns/frame side by side.
-# Honors SPINE_EXAMPLES, HOMMLET_SPINE_ASSETS (hommlet Assets/Spine) and
-# SPINE_BENCH_FRAMES.
+# Honors SPINE_EXAMPLES, HOMMLET_SPINE_ASSETS (hommlet's Assets/Spine),
+# SPINE_BENCH_FRAMES and SPINE_BENCH_RIG.
 
 set -euo pipefail
 

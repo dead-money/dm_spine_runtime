@@ -41,6 +41,7 @@ use crate::skeleton::constraint::Constraint;
 use crate::skeleton::slot::{DrawOrder, Slot};
 use crate::skeleton::update_cache::{ResetEntry, UpdateCacheEntry};
 
+/// A posed instance of a shared [`SkeletonData`].
 #[derive(Debug, Clone)]
 pub struct Skeleton {
     pub(crate) data: Arc<SkeletonData>,
@@ -134,8 +135,9 @@ impl Skeleton {
         }
     }
 
-    /// Rebuilds the update order. Call after changing the skin or which
-    /// bones and constraints are active.
+    /// Recomputes which bones and constraints are active for the worn skin
+    /// and rebuilds the update order. [`Self::set_skin`] calls it; call it
+    /// after editing the worn skin's bones or constraints.
     pub fn update_cache(&mut self) {
         let data = Arc::clone(&self.data);
         self.update_cache.clear();
@@ -258,7 +260,8 @@ impl Skeleton {
         }
     }
 
-    /// Poses every bone and runs constraints in update order.
+    /// Resets constrained poses from their unconstrained poses, then updates
+    /// bones and constraints in update order.
     pub fn update_world_transform(&mut self, physics: Physics) {
         self.update = self.update.wrapping_add(1);
         if self.update == 0 {
@@ -293,11 +296,13 @@ impl Skeleton {
         }
     }
 
+    /// Resets bones, constraints, slots and draw order to the setup pose.
     pub fn setup_pose(&mut self) {
         self.setup_pose_bones();
         self.setup_pose_slots();
     }
 
+    /// Resets bones and constraints to the setup pose.
     pub fn setup_pose_bones(&mut self) {
         let data = Arc::clone(&self.data);
         for (bone, bone_data) in self.bones.iter_mut().zip(&data.bones) {
@@ -308,6 +313,7 @@ impl Skeleton {
         }
     }
 
+    /// Resets slots and draw order to the setup pose.
     pub fn setup_pose_slots(&mut self) {
         let data = Arc::clone(&self.data);
         self.draw_order.setup_pose(self.slots.len());
@@ -321,6 +327,7 @@ impl Skeleton {
         }
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_bone(&self, name: &str) -> Option<BoneId> {
         self.data
@@ -330,6 +337,7 @@ impl Skeleton {
             .map(|i| BoneId(i as u16))
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_slot(&self, name: &str) -> Option<SlotId> {
         self.data
@@ -573,6 +581,7 @@ impl Skeleton {
     }
 }
 
+/// Returned by [`Skeleton::set_skin_by_name`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("skeleton has no skin named `{0}`")]
 pub struct SkinNotFound(pub String);

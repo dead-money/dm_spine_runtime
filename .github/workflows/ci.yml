@@ -9,9 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Opt in to Node 24 for any JS-based actions. Node 20 is deprecated
-  # and will be forced off by GitHub in June 2026; this flips the
-  # switch early so we're running on the same Node they'll default to.
+  # Run JavaScript actions on Node 24; GitHub deprecated Node 20.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
@@ -24,8 +22,7 @@ jobs:
         with:
           path: spine_runtime
 
-      # Goldens + render_smoke load rigs from a sibling spine-runtimes/
-      # clone; mirror the repo-layout assumption documented in CLAUDE.md.
+      # Tests load example rigs from a sibling spine-runtimes/ checkout.
       - name: Checkout spine-runtimes (upstream)
         uses: actions/checkout@v6
         with:

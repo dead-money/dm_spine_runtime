@@ -25,9 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Animation data types: [`Animation`], [`Timeline`], [`CurveFrames`],
-//! and supporting enums. Evaluation of these timelines lives in the
-//! [`crate::animation`] module.
+//! Animation data: [`Animation`] and its [`Timeline`]s. Applying them lives
+//! in [`crate::animation`].
 
 use crate::data::{
     Attachment, AttachmentId, BoneId, ConstraintId, EventId, Inherit, SkinKey, SlotId,
@@ -68,8 +67,9 @@ impl Animation {
         }
     }
 
-    /// Sets the timelines and caches their property ids. `attachments` are
-    /// the skeleton's, which deform and sequence ids depend on.
+    /// Sets the timelines and caches their property ids. `attachments` is
+    /// [`SkeletonData::attachments`](crate::data::SkeletonData::attachments);
+    /// sequence property ids read it.
     pub fn set_timelines(&mut self, timelines: Vec<Timeline>, attachments: &[Attachment]) {
         self.property_ids.clear();
         self.property_ends.clear();
@@ -149,21 +149,26 @@ pub enum Property {
     DrawOrderFolder,
 }
 
+/// Packs a property kind and its target (bone, slot, constraint, ...) into
+/// a [`PropertyId`].
 #[inline]
 #[must_use]
 pub fn property_id(property: Property, payload: i64) -> PropertyId {
     ((property as i64) << 32) | payload
 }
 
+/// Keyframes of a curve timeline, in spine-cpp's `CurveTimeline` layout.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CurveFrames {
+    /// Per key: time, then the timeline's values.
     pub frames: Vec<f32>,
+    /// One curve type per key, then 18-float bezier segments that bezier
+    /// types point at.
     pub curves: Vec<f32>,
 }
 
-/// An event firing keyed to a moment in an animation. Each frame can
-/// override the default int / float / string / volume / balance from the
-/// parent [`EventData`][crate::data::EventData].
+/// An event key. Its values override the defaults of its
+/// [`EventData`](crate::data::EventData).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationEvent {
     pub time: f32,
@@ -176,11 +181,7 @@ pub struct AnimationEvent {
     pub balance: f32,
 }
 
-/// Which physics-constraint property a [`Timeline::Physics`] entry drives.
-///
-/// spine-cpp splits these into separate `InertiaTimeline`, `StrengthTimeline`,
-/// … subclasses; we collapse them into one variant discriminated by
-/// [`PhysicsProperty`].
+/// The physics-constraint property a [`Timeline::Physics`] drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicsProperty {
     Inertia,
@@ -192,11 +193,9 @@ pub enum PhysicsProperty {
     Mix,
 }
 
-/// Tagged union of every kind of animation timeline. Evaluation is performed
-/// by the [`crate::animation`] apply path.
+/// Every kind of animation timeline. Applied by [`crate::animation`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Timeline {
-    // --- Bone timelines ----------------------------------------------------
     Rotate {
         bone: BoneId,
         curves: CurveFrames,
@@ -237,22 +236,20 @@ pub enum Timeline {
         bone: BoneId,
         curves: CurveFrames,
     },
-    /// Animates a bone's [`Inherit`] mode. No interpolation — each frame is
-    /// a discrete mode value. Added in Spine 4.2.
+    /// Steps a bone's [`Inherit`] mode; no interpolation.
     Inherit {
         bone: BoneId,
-        /// `frames[i] = time_i` — one entry per keyframe.
+        /// Key times.
         frames: Vec<f32>,
-        /// Matches `frames` 1-to-1.
+        /// One per key.
         inherits: Vec<Inherit>,
     },
 
-    // --- Slot timelines ----------------------------------------------------
     Attachment {
         slot: SlotId,
-        /// `frames[i] = time_i`.
+        /// Key times.
         frames: Vec<f32>,
-        /// Attachment name per frame, or `None` to clear the slot's attachment.
+        /// Attachment name per key, or `None` to clear the slot's attachment.
         names: Vec<Option<String>>,
         /// `names` interned; `None` for no or an empty name.
         keys: Vec<Option<SkinKey>>,
@@ -277,28 +274,27 @@ pub enum Timeline {
         slot: SlotId,
         curves: CurveFrames,
     },
-    /// Vertex-level deform blended against the mesh's setup-pose vertices.
+    /// Vertex offsets blended against the attachment's setup vertices.
     Deform {
         slot: SlotId,
         attachment: AttachmentId,
         curves: CurveFrames,
-        /// One per-frame vertex-offset array. Each inner `Vec<f32>` has the
-        /// same length as the mesh's vertex list.
+        /// Offsets per key: `vertex_data.vertices.len()` floats, or
+        /// `len() / 3 * 2` for weighted attachments.
         vertices: Vec<Vec<f32>>,
     },
-    /// Drives a sequence-backed region/mesh attachment to cycle frames.
+    /// Picks the frame of a region or mesh attachment's [`Sequence`].
+    ///
+    /// [`Sequence`]: crate::data::Sequence
     Sequence {
         slot: SlotId,
         attachment: AttachmentId,
-        /// Interleaved `(time, mode + index)` — the mode + index is packed
-        /// into a single `f32` following spine-cpp's binary layout.
+        /// Per key: time, `index << 4 | mode` as an `f32`, and frame delay.
         frames: Vec<f32>,
     },
 
-    // --- Skeleton-wide timelines ------------------------------------------
-    /// Permutes the skeleton's draw order. `draw_orders[i]` is `None` if the
-    /// frame restores the setup-pose order, otherwise a complete
-    /// permutation.
+    /// Sets the draw order. Per key, `None` restores the setup order;
+    /// otherwise a full permutation of slots.
     DrawOrder {
         frames: Vec<f32>,
         draw_orders: Vec<Option<Vec<SlotId>>>,
@@ -310,13 +306,12 @@ pub enum Timeline {
         draw_orders: Vec<Option<Vec<u16>>>,
     },
     Event {
-        /// `frames[i]` is redundant with `events[i].time`; kept as a
-        /// dedicated vector so searches use a clean f32 binary search.
+        /// Duplicates `events[i].time` so key search runs over a plain
+        /// `f32` slice.
         frames: Vec<f32>,
         events: Vec<AnimationEvent>,
     },
 
-    // --- Constraint timelines ---------------------------------------------
     IkConstraint {
         constraint: ConstraintId,
         curves: CurveFrames,
@@ -337,17 +332,15 @@ pub enum Timeline {
         constraint: ConstraintId,
         curves: CurveFrames,
     },
-    /// A single physics-property curve. One constraint can have multiple
-    /// timeline instances — one per animated property. `constraint = None`
-    /// means the timeline applies to every physics constraint in the
-    /// skeleton (matches spine-cpp's `index = -1` sentinel).
+    /// One physics property's curve. `None` drives every physics
+    /// constraint, spine-cpp's `index = -1`.
     Physics {
         constraint: Option<ConstraintId>,
         property: PhysicsProperty,
         curves: CurveFrames,
     },
-    /// Reset the physics solver's integrator state. `None` means reset all
-    /// physics constraints in the skeleton.
+    /// Resets physics constraint state at each key. `None` resets every
+    /// physics constraint.
     PhysicsReset {
         constraint: Option<ConstraintId>,
         frames: Vec<f32>,
@@ -507,7 +500,7 @@ impl Timeline {
         )
     }
 
-    /// The bone a bone timeline keys.
+    /// The bone a bone timeline keys; `None` for other timelines.
     #[must_use]
     pub fn bone(&self) -> Option<BoneId> {
         match self {
@@ -542,9 +535,6 @@ mod tests {
 
     #[test]
     fn timeline_variants_compile_and_clone() {
-        // Exercise every variant at least once: build a representative
-        // value and round-trip through Clone. Catches any drift between
-        // the enum and its helper types.
         let variants = vec![
             Timeline::Rotate {
                 bone: BoneId(0),

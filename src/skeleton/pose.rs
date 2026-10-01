@@ -25,10 +25,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Unconstrained and constrained poses (`Posed` in spine-cpp). Animations
-//! and application code write `pose`; constraints write `constrained`,
-//! which is a per-frame copy of `pose`. The applied pose is whichever one
-//! the update cache chose for this object.
+//! Unconstrained and constrained poses. Animations and application code
+//! write `pose`. An object a constraint affects is marked constrained by
+//! `Skeleton::update_cache`; its `constrained` pose is reset from `pose`
+//! each frame and is the applied pose.
 
 /// A pose type that can be reset from another instance.
 pub trait Pose {
@@ -71,7 +71,8 @@ impl<P: Pose> Posed<P> {
         }
     }
 
-    /// `pose` or the applied pose, as timelines select with `appliedPose`.
+    /// The applied pose if `applied`, else `pose`. Timelines applied by a
+    /// slider pass `applied = true`.
     #[inline]
     pub fn select_mut(&mut self, applied: bool) -> &mut P {
         if applied {
