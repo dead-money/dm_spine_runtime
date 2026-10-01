@@ -1,21 +1,11 @@
 # Releasing
 
-How `spine_runtime` gets to crates.io. **It isn't cleared to publish yet.**
+How `spine_runtime` gets to crates.io.
 
 ## Rust version
 
 `rust-version` in `Cargo.toml` tracks recent stable Rust; we don't hold the code
 to older compilers. Bump it when the crate starts using something newer.
-
-## The gate
-
-`publish = false` in `Cargo.toml` blocks every path to crates.io: `cargo
-publish` refuses, and so does the tag-triggered `release.yml`. Flip it only
-once Esoteric Software has agreed to a spine-cpp derivative being published
-there. Their written OK, and any conditions on it, belong in this file.
-
-Everything else is ready: the manifest, the package contents, CI's `cargo
-package` and `doc` checks, and the release workflow.
 
 ## CI
 
@@ -30,29 +20,17 @@ package` and `doc` checks, and the release workflow.
 The published crate leaves out `tests/` and `tools/`, which need a sibling
 `spine-runtimes` checkout and can't run from crates.io.
 
-## First release (manual)
+## First release
 
 crates.io can't set up Trusted Publishing for a crate that doesn't exist yet,
-so the first version is published by hand.
+so 0.2.0 was published by hand with a `publish-new` API token, then tagged
+`v0.2.0`. `release.yml` ran on the tag, saw 0.2.0 already published, and
+skipped.
 
-1. On a branch, remove `publish = false` from `Cargo.toml` and stamp
-   `CHANGELOG.md`: under `## [Unreleased]`, add `## [0.2.0] - <date>` above the
-   notes. Merge it.
-2. From a clean `main` with CI green:
-
-   ```sh
-   cargo publish --dry-run
-   CARGO_REGISTRY_TOKEN=<token> cargo publish
-   git tag v0.2.0 && git push origin v0.2.0
-   ```
-
-   Create the token at crates.io → Account → API Tokens with the
-   `publish-new` scope, and revoke it afterward. `release.yml` runs on the tag,
-   sees 0.2.0 is already published, and skips.
-3. On crates.io → `spine_runtime` → Settings → Trusted Publishing, add a GitHub
-   publisher: repository `dead-money/spine_runtime`, workflow `release.yml`,
-   environment blank. Later releases use GitHub's OIDC identity, so there's no
-   token to store.
+Trusted Publishing is configured on crates.io → `spine_runtime` → Settings →
+Trusted Publishing: repository `dead-money/spine_runtime`, workflow
+`release.yml`, environment blank. Later releases use GitHub's OIDC identity, so
+there's no token to store.
 
 ## Later releases
 

@@ -1,8 +1,7 @@
 name: Release
 
 # Publishes to crates.io when cargo-release pushes a vX.Y.Z tag (see
-# RELEASING.md). While Cargo.toml has `publish = false`, `cargo publish` refuses
-# and this run fails.
+# RELEASING.md).
 
 on:
   push:
