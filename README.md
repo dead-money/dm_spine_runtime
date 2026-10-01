@@ -1,6 +1,8 @@
 # spine_runtime
 
 [![CI](https://github.com/dead-money/spine_runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/dead-money/spine_runtime/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/spine_runtime.svg)](https://crates.io/crates/spine_runtime)
+[![docs.rs](https://docs.rs/spine_runtime/badge.svg)](https://docs.rs/spine_runtime)
 
 An unofficial Rust port of the [Spine](https://esotericsoftware.com/) 4.3 runtime. You load skeletons exported from the Spine editor, play and blend their animations, and get back triangles your own renderer can draw.
 
@@ -21,10 +23,10 @@ This release reads **Spine 4.3** exports, binary (`.skel`) or JSON, each paired 
 
 ```toml
 [dependencies]
-spine_runtime = { git = "https://github.com/dead-money/spine_runtime" }
+spine_runtime = "0.2"
 ```
 
-The crate isn't on crates.io yet. It needs Rust 1.99 or newer.
+It needs Rust 1.99 or newer.
 
 ```rust
 use std::sync::Arc;
