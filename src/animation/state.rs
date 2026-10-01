@@ -310,6 +310,15 @@ type IdMap<V> = HashMap<PropertyId, V, BuildHasherDefault<IdHasher>>;
 struct Slot {
     generation: u32,
     entry: Option<TrackEntry>,
+    spare: EntryBuffers,
+}
+
+/// A disposed entry's emptied buffers, handed to the next entry in its slot.
+#[derive(Default)]
+struct EntryBuffers {
+    timeline_mode: Vec<u8>,
+    timeline_hold_mix: Vec<Option<EntryId>>,
+    timelines_rotation: Vec<f32>,
 }
 
 struct Queued {
@@ -338,6 +347,8 @@ pub struct AnimationState {
     queue: Vec<Queued>,
     drain_disabled: bool,
     drained: Vec<StateEvent>,
+    pose_rotation: Vec<f32>,
+    pose_modes: Vec<(Vec<u8>, Vec<Option<EntryId>>)>,
 }
 
 impl AnimationState {
@@ -357,6 +368,8 @@ impl AnimationState {
             queue: Vec::new(),
             drain_disabled: false,
             drained: Vec::new(),
+            pose_rotation: Vec::new(),
+            pose_modes: Vec::new(),
         }
     }
 
@@ -433,9 +446,13 @@ impl AnimationState {
             .expect("live track entry")
     }
 
-    fn alloc(&mut self, entry: TrackEntry) -> EntryId {
+    fn alloc(&mut self, mut entry: TrackEntry) -> EntryId {
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
+            let spare = std::mem::take(&mut slot.spare);
+            entry.timeline_mode = spare.timeline_mode;
+            entry.timeline_hold_mix = spare.timeline_hold_mix;
+            entry.timelines_rotation = spare.timelines_rotation;
             slot.entry = Some(entry);
             EntryId {
                 index,
@@ -445,6 +462,7 @@ impl AnimationState {
             self.slots.push(Slot {
                 generation: 0,
                 entry: Some(entry),
+                spare: EntryBuffers::default(),
             });
             EntryId {
                 index: (self.slots.len() - 1) as u32,
@@ -455,8 +473,18 @@ impl AnimationState {
 
     fn dispose(&mut self, id: EntryId) {
         let slot = &mut self.slots[id.index as usize];
-        if slot.generation == id.generation && slot.entry.is_some() {
-            slot.entry = None;
+        if slot.generation != id.generation {
+            return;
+        }
+        if let Some(entry) = slot.entry.take() {
+            slot.spare = EntryBuffers {
+                timeline_mode: entry.timeline_mode,
+                timeline_hold_mix: entry.timeline_hold_mix,
+                timelines_rotation: entry.timelines_rotation,
+            };
+            slot.spare.timeline_mode.clear();
+            slot.spare.timeline_hold_mix.clear();
+            slot.spare.timelines_rotation.clear();
             slot.generation = slot.generation.wrapping_add(1);
             self.free.push(id.index);
         }
@@ -622,6 +650,65 @@ impl AnimationState {
         if self.animations_changed {
             self.animations_changed();
         }
+        let applied = self.apply_tracks(skeleton, Some(events));
+        self.drain();
+        applied
+    }
+
+    /// Poses the skeleton as [`Self::apply`] would at the current track
+    /// times, without firing events or touching anything a later
+    /// [`Self::update`] or [`Self::apply`] reads.
+    pub fn pose(&mut self, skeleton: &mut Skeleton) -> bool {
+        let pending = self.animations_changed;
+        if pending {
+            self.stash_modes(false);
+            self.animations_changed();
+        }
+        let applied = self.apply_tracks(skeleton, None);
+        if pending {
+            self.stash_modes(true);
+            self.animations_changed = true;
+        }
+        applied
+    }
+
+    /// Copies the applied entries' timeline modes aside (or back), so a pose
+    /// can compute pending modes and leave the next apply's `keep_hold` input
+    /// untouched.
+    fn stash_modes(&mut self, restore: bool) {
+        let mut k = 0;
+        for i in 0..self.tracks.len() {
+            let mut next = self.tracks[i];
+            while let Some(id) = next {
+                if k == self.pose_modes.len() {
+                    self.pose_modes.push((Vec::new(), Vec::new()));
+                }
+                let entry = self.slots[id.index as usize]
+                    .entry
+                    .as_mut()
+                    .expect("live track entry");
+                let (modes, hold_mix) = &mut self.pose_modes[k];
+                if restore {
+                    entry.timeline_mode.clone_from(modes);
+                    entry.timeline_hold_mix.clone_from(hold_mix);
+                } else {
+                    modes.clone_from(&entry.timeline_mode);
+                    hold_mix.clone_from(&entry.timeline_hold_mix);
+                }
+                next = entry.mixing_from;
+                k += 1;
+            }
+        }
+    }
+
+    /// `events` is `None` when posing: no events, and entries keep their
+    /// last-applied times, rotation history and total alpha.
+    fn apply_tracks(
+        &mut self,
+        skeleton: &mut Skeleton,
+        mut events: Option<&mut Vec<Event>>,
+    ) -> bool {
+        let record = events.is_some();
         let sd = Arc::clone(skeleton.data());
         debug_assert!(
             Arc::ptr_eq(&sd, &self.skeleton_data),
@@ -637,7 +724,7 @@ impl AnimationState {
 
             let mut alpha = self.e(cur).alpha;
             if self.e(cur).mixing_from.is_some() {
-                alpha *= self.apply_mixing_from(cur, skeleton, &sd);
+                alpha *= self.apply_mixing_from(cur, skeleton, &sd, record);
             } else {
                 let c = self.e(cur);
                 if c.track_time >= c.track_end && c.next.is_none() {
@@ -669,7 +756,7 @@ impl AnimationState {
                             true,
                         );
                     } else {
-                        let mut ev = (!reverse).then_some(&mut event_buf);
+                        let mut ev = (record && !reverse).then_some(&mut event_buf);
                         apply_timeline(
                             skeleton,
                             &sd,
@@ -692,7 +779,7 @@ impl AnimationState {
                 let shortest = add || c.shortest_rotation;
                 let n = anim.timelines.len();
                 let first_frame = !shortest && c.timelines_rotation.len() != n << 1;
-                let mut rotation = std::mem::take(&mut self.e_mut(cur).timelines_rotation);
+                let mut rotation = self.take_rotation(cur, record);
                 if first_frame {
                     rotation.clear();
                     rotation.resize(n << 1, 0.0);
@@ -715,7 +802,7 @@ impl AnimationState {
                     } else if let Timeline::Attachment { .. } = t {
                         self.apply_attachment_timeline(t, skeleton, &sd, apply_time, from, retain);
                     } else {
-                        let mut ev = (!reverse).then_some(&mut event_buf);
+                        let mut ev = (record && !reverse).then_some(&mut event_buf);
                         apply_timeline(
                             skeleton,
                             &sd,
@@ -731,15 +818,17 @@ impl AnimationState {
                         );
                     }
                 }
-                let e = self.e_mut(cur);
-                e.timelines_rotation = rotation;
-                e.timeline_mode = modes;
+                self.e_mut(cur).timeline_mode = modes;
+                self.put_rotation(cur, rotation, record);
             }
             self.events = event_buf;
+            let Some(events) = events.as_deref_mut() else {
+                continue;
+            };
             if reverse {
                 self.events_reverse(anim, animation_last, animation_time);
             }
-            self.queue_events(cur, animation_time, events);
+            self.queue_events(cur, animation_time, Some(events));
             self.events.clear();
             let c = self.e_mut(cur);
             c.next_animation_last = animation_time;
@@ -755,8 +844,24 @@ impl AnimationState {
             }
         }
         self.unkeyed_state += 2;
-        self.drain();
         applied
+    }
+
+    fn take_rotation(&mut self, entry: EntryId, record: bool) -> Vec<f32> {
+        if record {
+            return std::mem::take(&mut self.e_mut(entry).timelines_rotation);
+        }
+        let mut rotation = std::mem::take(&mut self.pose_rotation);
+        rotation.clone_from(&self.e(entry).timelines_rotation);
+        rotation
+    }
+
+    fn put_rotation(&mut self, entry: EntryId, rotation: Vec<f32>, record: bool) {
+        if record {
+            self.e_mut(entry).timelines_rotation = rotation;
+        } else {
+            self.pose_rotation = rotation;
+        }
     }
 
     fn apply_mixing_from(
@@ -764,10 +869,11 @@ impl AnimationState {
         to: EntryId,
         skeleton: &mut Skeleton,
         sd: &Arc<SkeletonData>,
+        record: bool,
     ) -> f32 {
         let from = self.e(to).mixing_from.expect("mixing from");
         let from_mix = if self.e(from).mixing_from.is_some() {
-            self.apply_mixing_from(from, skeleton, sd)
+            self.apply_mixing_from(from, skeleton, sd, record)
         } else {
             1.0
         };
@@ -795,9 +901,9 @@ impl AnimationState {
         } else {
             animation_time
         };
-        let use_events = !reverse && mix < f.event_threshold;
+        let use_events = record && !reverse && mix < f.event_threshold;
 
-        let mut rotation = std::mem::take(&mut self.e_mut(from).timelines_rotation);
+        let mut rotation = self.take_rotation(from, record);
         if first_frame {
             rotation.clear();
             rotation.resize(n << 1, 0.0);
@@ -868,17 +974,19 @@ impl AnimationState {
         self.events = event_buf;
         {
             let f = self.e_mut(from);
-            f.timelines_rotation = rotation;
             f.timeline_mode = modes;
             f.timeline_hold_mix = hold_mix;
-            f.total_alpha = total_alpha;
         }
+        self.put_rotation(from, rotation, record);
+        if !record {
+            return mix;
+        }
+        self.e_mut(from).total_alpha = total_alpha;
         if reverse && mix < self.e(from).event_threshold {
             self.events_reverse(anim, animation_last, animation_time);
         }
         if to_mix_duration > 0.0 {
-            let mut sink = Vec::new();
-            self.queue_events(from, animation_time, &mut sink);
+            self.queue_events(from, animation_time, None);
         }
         self.events.clear();
         let f = self.e_mut(from);
@@ -931,7 +1039,12 @@ impl AnimationState {
         }
     }
 
-    fn queue_events(&mut self, entry: EntryId, animation_time: f32, out: &mut Vec<Event>) {
+    fn queue_events(
+        &mut self,
+        entry: EntryId,
+        animation_time: f32,
+        mut out: Option<&mut Vec<Event>>,
+    ) {
         let e = self.e(entry);
         let (start, end) = (e.animation_start, e.animation_end);
         let duration = end - start;
@@ -961,7 +1074,7 @@ impl AnimationState {
                 break;
             }
             if ev.time >= start && ev.time <= end {
-                self.queue_keyframe(entry, ev, out);
+                self.queue_keyframe(entry, ev, out.as_deref_mut());
             }
             i += 1;
         }
@@ -970,14 +1083,16 @@ impl AnimationState {
         }
         for ev in &events[i..] {
             if ev.time >= start && ev.time <= end {
-                self.queue_keyframe(entry, ev, out);
+                self.queue_keyframe(entry, ev, out.as_deref_mut());
             }
         }
         self.events = events;
     }
 
-    fn queue_keyframe(&mut self, entry: EntryId, event: &Event, out: &mut Vec<Event>) {
-        out.push(event.clone());
+    fn queue_keyframe(&mut self, entry: EntryId, event: &Event, out: Option<&mut Vec<Event>>) {
+        if let Some(out) = out {
+            out.push(event.clone());
+        }
         self.queue.push(Queued {
             kind: EventType::Event,
             entry,
