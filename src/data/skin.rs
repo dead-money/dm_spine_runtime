@@ -66,7 +66,8 @@ impl SkinKeys {
         key
     }
 
-    /// Slots carry a handful of placeholders, so this is a short scan.
+    /// The key for `(slot, placeholder)`, if interned. Scans the slot's keys,
+    /// which are few.
     #[must_use]
     pub fn find(&self, slot: SlotId, placeholder: &str) -> Option<SkinKey> {
         self.slot_keys(slot)

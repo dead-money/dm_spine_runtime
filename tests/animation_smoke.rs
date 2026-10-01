@@ -25,12 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Smoke-test: for every example rig and every animation in it, apply the
-//! animation at several time points via `AnimationState` + the full pose
-//! pipeline, and check nothing panics (array-index OOB, division by zero,
-//! NaN propagation, etc.). Value correctness is Phase 3f's golden-diff
-//! test — this one just keeps regressions to the integration plumbing
-//! visible.
+//! Every animation of every example rig applies through `AnimationState` and
+//! the world transform at several times without panicking or producing
+//! non-finite bone transforms. Values are checked by `golden_animation`.
 
 mod common;
 
@@ -103,7 +100,6 @@ fn all_animations_apply_without_panic() {
                     state.apply(&mut sk, &mut events);
                     sk.update_world_transform(Physics::None);
 
-                    // Light sanity checks: bone world matrices are finite.
                     for (i, bone) in sk.bones.iter().enumerate() {
                         let bone = bone.applied();
                         assert!(

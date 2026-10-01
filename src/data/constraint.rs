@@ -85,8 +85,6 @@ impl ScaleYMode {
     }
 }
 
-// IK
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct IkConstraintPose {
     pub bend_direction: i32,
@@ -119,8 +117,6 @@ impl IkConstraintData {
         }
     }
 }
-
-// Transform
 
 /// A bone transform channel a transform constraint reads from its source
 /// or writes to its targets. Discriminants are the wire values.
@@ -216,8 +212,6 @@ impl TransformConstraintData {
     }
 }
 
-// Path
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PositionMode {
     #[default]
@@ -281,8 +275,6 @@ impl PathConstraintData {
     }
 }
 
-// Physics
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct PhysicsConstraintPose {
     pub inertia: f32,
@@ -345,8 +337,6 @@ impl PhysicsConstraintData {
     }
 }
 
-// Slider
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct SliderPose {
     pub time: f32,
@@ -364,7 +354,7 @@ pub struct SliderProperty {
 pub struct SliderData {
     pub name: String,
     pub skin_required: bool,
-    /// Resolved after the animations section is read.
+    /// Set after the animations are loaded.
     pub animation: Option<AnimationId>,
     pub additive: bool,
     pub looping: bool,
@@ -397,7 +387,7 @@ impl SliderData {
     }
 }
 
-/// Resolves a unified constraint id for callers that know its kind.
+/// Defines `as_*`, which returns the inner data if `self` is that kind.
 macro_rules! constraint_accessor {
     ($fn:ident, $variant:ident, $ty:ty) => {
         #[must_use]

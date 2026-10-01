@@ -40,8 +40,8 @@ jobs:
         working-directory: spine_runtime
         run: cargo test --all-targets
 
-      # Makes a re-run of the tag idempotent and lets the manual first publish
-      # be tagged after the fact.
+      # Skips publishing a version already on crates.io, so re-running the
+      # workflow on a tag is safe.
       - name: Check if version already published
         id: check
         working-directory: spine_runtime

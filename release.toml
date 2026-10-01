@@ -1,7 +1,7 @@
-# cargo-release configuration. `cargo release <level|version>` bumps the
-# version, stamps CHANGELOG.md, commits, tags vX.Y.Z, and pushes. The tag
-# triggers .github/workflows/release.yml, which publishes; nothing publishes
-# from this machine.
+# `cargo release <level|version>` bumps the version, stamps CHANGELOG.md,
+# commits, tags vX.Y.Z, and pushes. The tag triggers
+# .github/workflows/release.yml, which does the publishing; cargo-release
+# never publishes itself.
 
 publish = false
 tag = true

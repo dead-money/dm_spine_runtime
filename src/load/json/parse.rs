@@ -25,15 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! JSON `.json` skeleton parser — port of `spine-cpp/SkeletonJson.cpp`.
-//!
-//! The public entry point is [`SkeletonJson`]. Instantiate with a mutable
-//! [`AttachmentLoader`] and call [`SkeletonJson::read`] on a JSON byte slice
-//! or string to produce a [`SkeletonData`].
-//!
-//! The implementation mirrors the spine-cpp single-file approach so that a
-//! reader comparing line-for-line sees roughly matching structure. Sections
-//! are tagged with `// --- Section name` banners.
+//! `.json` skeleton parser. [`SkeletonJson`] reads an export into a
+//! [`SkeletonData`], creating attachments through an [`AttachmentLoader`].
 
 #![allow(
     clippy::too_many_lines,
@@ -78,8 +71,8 @@ use crate::load::AttachmentLoaderError;
 use crate::load::binary::timeline_duration;
 use crate::math::Color;
 
-/// Spine editor version this runtime is built for. Must prefix the skeleton's
-/// embedded `spine` version field.
+/// Spine version this loader accepts. A non-empty `skeleton.spine` field must
+/// start with it.
 pub const TARGET_VERSION: &str = "4.3";
 
 const CURVE_LINEAR: f32 = 0.0;
@@ -114,8 +107,8 @@ pub enum JsonError {
     AttachmentLoader(#[from] AttachmentLoaderError),
 }
 
-/// Record of a mesh attachment whose vertex data is inherited from a parent
-/// mesh in another skin. Resolved after all skins load.
+/// A mesh that takes its vertex data from a `source` mesh, possibly in another
+/// skin. Resolved after all skins load.
 struct LinkedMesh {
     mesh: AttachmentId,
     skin_name: Option<String>,
@@ -125,8 +118,8 @@ struct LinkedMesh {
     inherit_timelines: bool,
 }
 
-/// Stateful parser for the JSON format. Keeps scratch state for linked-mesh
-/// resolution between top-level sections.
+/// Parser for `.json` skeleton exports. `read_slice`, `read_str` and
+/// `read_value` consume it.
 pub struct SkeletonJson<'loader> {
     loader: &'loader mut dyn AttachmentLoader,
     scale: f32,
@@ -143,7 +136,7 @@ impl<'loader> SkeletonJson<'loader> {
         }
     }
 
-    /// Override the load-time world-space scale (default `1.0`).
+    /// Scale applied to positions, lengths, and vertices at load (default `1.0`).
     #[must_use]
     pub fn with_scale(mut self, scale: f32) -> Self {
         self.scale = scale;
@@ -179,7 +172,6 @@ impl<'loader> SkeletonJson<'loader> {
         let mut sd = SkeletonData::default();
         self.linked_meshes.clear();
 
-        // --- Header (skeleton object) --------------------------------------
         if let Some(sk) = root.get("skeleton") {
             sd.hash = get_str(sk, "hash").unwrap_or("").to_string();
             sd.version = get_str(sk, "spine").unwrap_or("").to_string();
@@ -199,7 +191,6 @@ impl<'loader> SkeletonJson<'loader> {
             sd.images_path = get_str(sk, "images").unwrap_or("").to_string();
         }
 
-        // Bones.
         if let Some(bones) = root.get("bones").and_then(Value::as_array) {
             sd.bones.reserve(bones.len());
             for (i, bone) in bones.iter().enumerate() {
@@ -231,7 +222,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // Slots.
         if let Some(slots) = root.get("slots").and_then(Value::as_array) {
             sd.slots.reserve(slots.len());
             for (i, slot) in slots.iter().enumerate() {
@@ -280,7 +270,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Skins ---------------------------------------------------------
         if let Some(skins) = root.get("skins").and_then(Value::as_array) {
             sd.skins.reserve(skins.len());
             for skin_map in skins {
@@ -288,10 +277,8 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Linked mesh resolution ---------------------------------------
         self.resolve_linked_meshes(&mut sd)?;
 
-        // Events.
         if let Some(events) = root.get("events").and_then(Value::as_object) {
             sd.events.reserve(events.len());
             for (i, (name, e)) in events.iter().enumerate() {
@@ -308,7 +295,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // Animations.
         if let Some(anims) = root.get("animations").and_then(Value::as_object) {
             sd.animations.reserve(anims.len());
             for (name, a) in anims {
@@ -341,10 +327,6 @@ impl<'loader> SkeletonJson<'loader> {
         sd.intern_attachment_keys();
         Ok(sd)
     }
-
-    // -----------------------------------------------------------------------
-    // Skins + attachments
-    // -----------------------------------------------------------------------
 
     fn read_constraint(&self, c: &Value, sd: &SkeletonData) -> Result<ConstraintData, JsonError> {
         let scale = self.scale;
@@ -805,8 +787,8 @@ impl<'loader> SkeletonJson<'loader> {
         })
     }
 
-    /// `vertices_length` is the unweighted float count; a longer array means
-    /// weighted `(boneCount, then bone, x, y, weight per bone)` entries.
+    /// `vertices_length` is the unweighted float count. A longer array is
+    /// weighted: per vertex, a bone count then `(bone, x, y, weight)` per bone.
     fn read_vertices(&self, map: &Value, vertices_length: usize) -> Result<VertexData, JsonError> {
         let raw = map
             .get("vertices")
@@ -880,10 +862,6 @@ impl<'loader> SkeletonJson<'loader> {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Animations
-    // -----------------------------------------------------------------------
-
     fn read_animation(
         &self,
         name: &str,
@@ -892,7 +870,6 @@ impl<'loader> SkeletonJson<'loader> {
     ) -> Result<Animation, JsonError> {
         let mut anim = Animation::new(name.to_string(), 0.0);
 
-        // --- Slot timelines ------------------------------------------------
         if let Some(slots) = root.get("slots").and_then(Value::as_object) {
             for (slot_name, slot_timelines) in slots {
                 let slot_idx = sd
@@ -961,7 +938,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Bone timelines -----------------------------------------------
         if let Some(bones) = root.get("bones").and_then(Value::as_object) {
             for (bone_name, bone_timelines) in bones {
                 let bone_idx = sd
@@ -1055,7 +1031,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // IK constraint timelines.
         if let Some(ik) = root.get("ik").and_then(Value::as_object) {
             for (cname, keys_val) in ik {
                 let keys = keys_val.as_array().map_or(&[][..], Vec::as_slice);
@@ -1070,7 +1045,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // Transform constraint timelines.
         if let Some(tc) = root.get("transform").and_then(Value::as_object) {
             for (cname, keys_val) in tc {
                 let keys = keys_val.as_array().map_or(&[][..], Vec::as_slice);
@@ -1086,7 +1060,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Path constraint timelines ------------------------------------
         if let Some(paths) = root.get("path").and_then(Value::as_object) {
             for (cname, sub) in paths {
                 let constraint =
@@ -1141,7 +1114,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // --- Physics constraint timelines ---------------------------------
         if let Some(phys) = root.get("physics").and_then(Value::as_object) {
             for (cname, sub) in phys {
                 let constraint = if cname.is_empty() {
@@ -1192,7 +1164,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // Slider timelines.
         if let Some(sliders) = root.get("slider").and_then(Value::as_object) {
             for (cname, sub) in sliders {
                 let constraint = find_constraint(sd, cname, "slider", |c| c.as_slider().is_some())?;
@@ -1213,7 +1184,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // Attachment timelines.
         if let Some(skins) = root.get("attachments").and_then(Value::as_object) {
             for (skin_name, slots_obj) in skins {
                 let skin = sd
@@ -1309,9 +1279,8 @@ impl<'loader> SkeletonJson<'loader> {
                                                 });
                                             }
                                         };
-                                        // Pack mode + index into a single f32
-                                        // using the same bit layout as the
-                                        // binary reader: `(index << 4) | mode`.
+                                        // `(index << 4) | mode`, the layout the
+                                        // sequence timeline decodes.
                                         let packed = ((index << 4) as u32 | mode) as i32;
                                         frames.push(time);
                                         frames.push(packed as f32);
@@ -1331,7 +1300,6 @@ impl<'loader> SkeletonJson<'loader> {
             }
         }
 
-        // Draw order timeline.
         if let Some(keys) = root.get("drawOrder").and_then(Value::as_array) {
             let mut frames = Vec::with_capacity(keys.len());
             let mut draw_orders = Vec::with_capacity(keys.len());
@@ -1348,7 +1316,6 @@ impl<'loader> SkeletonJson<'loader> {
             });
         }
 
-        // Draw order folder timelines.
         for folder in root
             .get("drawOrderFolder")
             .and_then(Value::as_array)
@@ -1381,7 +1348,6 @@ impl<'loader> SkeletonJson<'loader> {
             });
         }
 
-        // --- Event timeline -----------------------------------------------
         if let Some(events) = root.get("events").and_then(Value::as_array) {
             let mut frames = Vec::with_capacity(events.len());
             let mut out = Vec::with_capacity(events.len());
@@ -1432,10 +1398,6 @@ impl<'loader> SkeletonJson<'loader> {
         Ok(anim)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Free helpers
-// ---------------------------------------------------------------------------
 
 fn get_str<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
@@ -1497,8 +1459,8 @@ fn find_constraint(
         })
 }
 
-/// Full order from `offsets` changes. With `folder`, slot names resolve to
-/// positions within the folder.
+/// Builds the full draw order from a key's `offsets`, or `None` when the key
+/// has none. With `folder`, slot names resolve to positions within the folder.
 fn read_draw_order(
     sd: &SkeletonData,
     key: &Value,
@@ -1607,8 +1569,7 @@ fn parse_inherit(s: &str) -> Result<Inherit, JsonError> {
     })
 }
 
-/// Parse a spine hex color. With `has_alpha`, the string is 8 hex chars
-/// ("RRGGBBAA"); otherwise 6 ("RRGGBB") with alpha defaulting to 1.
+/// Parses `RRGGBBAA` when `has_alpha`, else `RRGGBB` with alpha 1.
 fn parse_color(s: &str, has_alpha: bool) -> Result<Color, JsonError> {
     fn component(src: &str, i: usize) -> Result<f32, JsonError> {
         let start = i * 2;
@@ -1643,9 +1604,8 @@ fn read_sequence(v: Option<&Value>) -> Sequence {
     seq
 }
 
-/// Extract a single bezier segment `(cx1, cy1, cx2, cy2)` for channel
-/// `value_index` from a curve field. The `curve` array, when set, lays out
-/// control points channel-major: `[cx1_0, cy1_0, cx2_0, cy2_0, cx1_1, ...]`.
+/// Control points `(cx1, cy1, cx2, cy2)` for channel `value_index` of a
+/// `curve` array laid out `[cx1_0, cy1_0, cx2_0, cy2_0, cx1_1, ...]`.
 fn curve_segment(curve: &Value, value_index: usize) -> Option<(f32, f32, f32, f32)> {
     let arr = curve.as_array()?;
     let base = value_index * 4;
@@ -1659,7 +1619,6 @@ fn curve_segment(curve: &Value, value_index: usize) -> Option<(f32, f32, f32, f3
     Some((cx1, cy1, cx2, cy2))
 }
 
-/// Mark frame `frame` as linear in the given curves tail.
 fn set_linear(curves: &mut [f32], frame: usize) {
     curves[frame] = CURVE_LINEAR;
 }
@@ -1668,10 +1627,9 @@ fn set_stepped(curves: &mut [f32], frame: usize) {
     curves[frame] = CURVE_STEPPED;
 }
 
-/// Record a bezier for `frame`/`value_index` at `bezier_seg_idx` slot into
-/// `curves`. Returns the new `bezier_seg_idx` if this was the first channel
-/// of the frame (caller increments once per frame after all channels are
-/// written), otherwise ignores.
+/// Writes `samples` for channel `value_index` of the bezier starting at segment
+/// `bezier_seg_idx`. Channel 0 also points `curves[frame]` at it. The caller
+/// advances `bezier_seg_idx` by the channel count after each bezier frame.
 fn set_bezier_sample(
     curves: &mut [f32],
     frame_count: usize,
@@ -1688,8 +1646,8 @@ fn set_bezier_sample(
     curves[dst..dst + BEZIER_SIZE].copy_from_slice(&samples);
 }
 
-/// Process a single-channel CurveTimeline1 by reading `time`/`value_key` from
-/// each key. `default` matches `spine-cpp`'s `defaultValue`.
+/// Single-channel curve timeline from each key's `time` and `value_key`.
+/// Values, including bezier control-point values, are multiplied by `scale`.
 fn read_timeline1(
     keys: &[Value],
     value_key: &str,
@@ -1702,7 +1660,6 @@ fn read_timeline1(
         Vec::<f32>::new(),
         0usize,
     );
-    // First pass: count bezier channels to size the curves tail.
     for k in keys.iter().take(frame_count.saturating_sub(1)) {
         if let Some(curve) = k.get("curve") {
             if !curve.is_string() {
@@ -1755,9 +1712,8 @@ fn read_timeline1(
     Ok(CurveFrames { frames, curves })
 }
 
-/// Two-channel CurveTimeline2. `name1` / `name2` select which JSON fields are
-/// the channel values (e.g. "x", "y"). `default` is the fallback for missing
-/// channel keys.
+/// Two-channel curve timeline whose values are the `name1` and `name2` fields
+/// (e.g. `x`, `y`), each defaulting to `default`.
 fn read_timeline2(
     keys: &[Value],
     name1: &str,
@@ -1833,7 +1789,7 @@ fn read_timeline2(
     Ok(CurveFrames { frames, curves })
 }
 
-/// Color timelines with per-frame hex string. `channels` is 3 (RGB) or 4 (RGBA).
+/// Color timeline from each key's hex `color_field`. `channels` is 3 (RGB) or 4 (RGBA).
 fn read_color_timeline_json(
     keys: &[Value],
     channels: usize,
@@ -1919,10 +1875,8 @@ fn read_color_timeline_json(
 }
 
 fn read_alpha_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError> {
-    // spine-cpp reads alpha via readTimeline (single-channel) with default 0
-    // and scale 1, but pulls `value` from a color-like field. Spine 4.2's
-    // JSON for alpha timelines actually uses `color` (single-channel hex).
-    // Detect either: numeric `value` (shape from readTimeline) or string `color`.
+    // spine-cpp reads a numeric `value` (default 0). A hex `color` string with
+    // alpha in its first pair is also accepted.
     let frame_count = keys.len();
     let mut bezier_count = 0usize;
     for k in keys.iter().take(frame_count.saturating_sub(1)) {
@@ -1944,7 +1898,6 @@ fn read_alpha_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError> {
             return Ok(v as f32);
         }
         if let Some(s) = get_str(k, "color") {
-            // Single-channel alpha encoded as first hex pair.
             let byte = u32::from_str_radix(s.get(0..2).unwrap_or("00"), 16).map_err(|_| {
                 JsonError::InvalidColor {
                     value: s.to_string(),
@@ -1987,8 +1940,8 @@ fn read_alpha_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError> {
     Ok(CurveFrames { frames, curves })
 }
 
-/// Dual-color timelines (rgba2/rgb2). `has_alpha` true = rgba2 (7 channels:
-/// light RGBA + dark RGB), false = rgb2 (6 channels).
+/// Two-color timeline: `rgba2` (light RGBA + dark RGB, 7 channels) when
+/// `has_alpha`, else `rgb2` (6 channels).
 fn read_rgb2_timeline_json(keys: &[Value], has_alpha: bool) -> Result<CurveFrames, JsonError> {
     let channels = if has_alpha { 7 } else { 6 };
     let frame_count = keys.len();
@@ -2070,8 +2023,8 @@ fn read_rgb2_timeline_json(keys: &[Value], has_alpha: bool) -> Result<CurveFrame
     Ok(CurveFrames { frames, curves })
 }
 
-/// IK constraint timeline: stride-6 frames (time + mix + softness + flags
-/// bend/compress/stretch). Two bezier channels on bezier frames (mix, softness).
+/// IK timeline frames are `(time, mix, softness, bend, compress, stretch)`.
+/// Only mix and softness have bezier curves.
 fn read_ik_timeline_json(keys: &[Value], scale: f32) -> Result<CurveFrames, JsonError> {
     let frame_count = keys.len();
     let mut bezier_count = 0usize;
@@ -2154,7 +2107,7 @@ fn read_ik_timeline_json(keys: &[Value], scale: f32) -> Result<CurveFrames, Json
     Ok(CurveFrames { frames, curves })
 }
 
-/// Transform constraint timeline — stride 7 (time + 6 mixes).
+/// Transform constraint timeline: time plus six mixes per frame.
 fn read_transform_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError> {
     let frame_count = keys.len();
     let mut bezier_count = 0usize;
@@ -2179,8 +2132,7 @@ fn read_transform_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError
         let mix_y = get_f32(k, "mixY", mix_x);
         let mix_scale_x = get_f32(k, "mixScaleX", 1.0);
         let mix_scale_y = get_f32(k, "mixScaleY", mix_scale_x);
-        // Frame order matches spine-cpp's setFrame signature:
-        // (time, mixRotate, mixX, mixY, mixScaleX, mixScaleY, mixShearY).
+        // mixShearY last, matching spine-cpp's setFrame.
         [
             mix_rotate,
             mix_x,
@@ -2243,7 +2195,7 @@ fn read_transform_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError
     Ok(CurveFrames { frames, curves })
 }
 
-/// Path-constraint mix timeline — stride 4 (time + mixRotate + mixX + mixY).
+/// Path constraint mix timeline: `(time, mixRotate, mixX, mixY)` per frame.
 fn read_path_mix_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError> {
     let frame_count = keys.len();
     let mut bezier_count = 0usize;
@@ -2320,8 +2272,9 @@ fn read_path_mix_timeline_json(keys: &[Value]) -> Result<CurveFrames, JsonError>
     Ok(CurveFrames { frames, curves })
 }
 
-/// Deform timeline. Returns `(frame_times, curve_data, per_frame_vertices)`
-/// in the same layout used by `load::binary::parse::read_deform_timeline`.
+/// Returns `(frame_times, curves, per_frame_vertices)`, the layout the binary
+/// reader's `read_deform_timeline` produces. Unweighted frames are absolute
+/// (setup vertices added); weighted frames are offsets.
 fn read_deform_timeline_json(
     keys: &[Value],
     deform_length: usize,
@@ -2391,8 +2344,8 @@ fn read_deform_timeline_json(
             Some(v) if v.as_str() == Some("stepped") => set_stepped(&mut curves, frame),
             Some(v) => {
                 let (cx1, cy1, cx2, cy2) = curve_segment(v, 0).unwrap_or((time, 0.0, time2, 1.0));
-                // Deform timelines pass (value1=0, value2=1) so the bezier
-                // samples carry a 0→1 progression across the segment.
+                // Samples run 0 to 1 across the segment; values come from
+                // interpolating the vertex arrays.
                 let samples = compute_bezier_samples(time, 0.0, cx1, cy1, cx2, cy2, time2, 1.0);
                 let tail_offset = frame_count + bezier_seg_idx * BEZIER_SIZE;
                 curves[frame] = CURVE_BEZIER + tail_offset as f32;
@@ -2405,8 +2358,8 @@ fn read_deform_timeline_json(
     Ok((frames, curves, vertices))
 }
 
-/// Pull the deform-relevant `(weighted, setup_vertices_clone)` from an
-/// attachment. Mirrors the helper in `load::binary::parse`.
+/// `(weighted, setup vertices)` for a deform target. Weighted attachments
+/// return no vertices.
 fn deform_context(sd: &SkeletonData, att: AttachmentId) -> (bool, Vec<f32>) {
     let Some(attachment) = sd.attachments.get(att.index()) else {
         return (false, Vec::new());

@@ -24,31 +24,26 @@
 // ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-// ============================================================================
-//
-// Reference implementation of a software renderer that consumes
-// `SkeletonRenderer::commands()` and rasterizes each `RenderCommand` to a
-// PNG — no GPU, no windowing, no render backend. Useful to confirm the
-// runtime's output is structurally correct independent of any engine
-// integration (e.g. spine_bevy).
-//
-// Keep it simple:
-// - Scanline barycentric triangle fill
-// - Nearest-neighbour UV sample
-// - Premultiplied-alpha blend in 0..1 float space
-// - Only the `Normal` blend mode (enough for spineboy / most example rigs)
-//
-// Usage: `cargo run --example software_render`
-// Env overrides:
-//   SPINE_RIG             name under spine-runtimes/examples (default spineboy)
-//   SPINE_SKEL            .skel filename stem (default spineboy-pro)
-//   SPINE_ATLAS           .atlas filename stem, no extension (default spineboy-pma)
-//   SPINE_ANIM            animation name or "" for setup pose (default walk)
-//   SPINE_TIME            seconds of animation to advance (default 1.0)
-//   SPINE_OUT             output PNG path (default software_render.png)
-//   SPINE_W / SPINE_H     output dimensions (default 1280x720)
-//   SPINE_CAM_Y           world Y placed at the vertical centre (default 300)
+
+//! CPU rasterizer that renders a skeleton's `RenderCommand`s to a PNG, with no
+//! GPU or windowing. Checks the runtime's output independent of any engine.
+//!
+//! Nearest-neighbour sampling, premultiplied-alpha OVER blending, and only the
+//! `Normal` blend mode; commands with other blend modes are skipped.
+//!
+//! Usage: `cargo run --example software_render`
+//!
+//! Environment:
+//! - `SPINE_RIG`: directory under `../spine-runtimes/examples` (default `spineboy`)
+//! - `SPINE_SKEL`: `.skel` file stem (default `spineboy-pro`)
+//! - `SPINE_ATLAS`: `.atlas` file stem (default `spineboy-pma`)
+//! - `SPINE_ANIM`: animation name, or empty for the setup pose (default `walk`)
+//! - `SPINE_TIME`: seconds to advance, in 1/60 s steps (default `1.0`)
+//! - `SPINE_OUT`: output PNG path (default `software_render.png`)
+//! - `SPINE_W`, `SPINE_H`: output size in pixels (default 1280x720)
+//! - `SPINE_CAM_Y`: world Y placed at the vertical centre (default `300`)
+//! - `SPINE_UNBATCHED`: if set, render one command per slot and print each
+//!   command's vertex count and bounds
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -116,8 +111,7 @@ fn main() {
         if let Err(e) = animation_state.set_animation_by_name(0, &anim, true) {
             panic!("set_animation_by_name({anim:?}): {e:?}");
         }
-        // Advance in fixed steps so events / physics that depend on dt are
-        // stable across runs.
+        // Fixed steps keep physics output identical across runs.
         let mut remaining = total_time;
         while remaining > 0.0 {
             let step = remaining.min(FIXED_STEP);
@@ -130,9 +124,6 @@ fn main() {
     }
 
     let mut renderer = SkeletonRenderer::new();
-    // Skip the batcher so one command = one slot when `SPINE_UNBATCHED` is
-    // set. Makes bugs that drop slots entirely visible via per-command
-    // counts / bounds.
     let unbatched = std::env::var("SPINE_UNBATCHED").is_ok();
     let cmds: &[_] = if unbatched {
         renderer.render_unbatched(&skeleton)
@@ -173,8 +164,8 @@ fn main() {
             continue;
         };
 
-        // Runtime packs colors as 0xAARRGGBB. For spineboy setup the light
-        // is 0xffffffff (premultiplied white).
+        // Default batching only merges slots with equal colors, so the first
+        // vertex's color tints the whole command.
         let light = cmd.colors.first().copied().unwrap_or(0xffff_ffff);
         let lc = unpack_argb(light);
 
@@ -220,8 +211,7 @@ fn load_atlas_pages(atlas: &Atlas, dir: &Path) -> Vec<RgbaImage> {
         if page.pma {
             pages.push(img);
         } else {
-            // Straight-alpha page: premultiply in place so the renderer
-            // can blend uniformly.
+            // Premultiply straight-alpha pages so blending is uniform.
             let mut pma = img;
             for p in pma.pixels_mut() {
                 let a = f32::from(p[3]) / 255.0;
@@ -235,12 +225,10 @@ fn load_atlas_pages(atlas: &Atlas, dir: &Path) -> Vec<RgbaImage> {
     pages
 }
 
-/// Barycentric scanline rasterizer for a single triangle. Samples the atlas
-/// page at the interpolated UV (nearest-neighbour), multiplies by `light`
-/// (premultiplied), blends with PMA OVER.
+/// Fills one world-space triangle, sampling `page` nearest-neighbour,
+/// multiplying each channel by `light`, and blending premultiplied OVER.
 ///
-/// Returns `false` when the triangle is fully off-screen or degenerate
-/// (zero-area) — lets the caller count those for diagnostic purposes.
+/// Returns `false` if the triangle is degenerate or draws no pixels.
 #[allow(clippy::too_many_arguments)]
 fn rasterize_triangle(
     img: &mut RgbaImage,
@@ -256,8 +244,8 @@ fn rasterize_triangle(
     page: &RgbaImage,
     light: [f32; 4],
 ) -> bool {
-    // World → screen: center X at width/2, flip Y (spine +Y up, image +Y down),
-    // translate so cam_y sits at vertical centre of the frame.
+    // Spine is y-up and the image is y-down. World x = 0 and y = cam_y land
+    // at the image centre.
     let wx = width as f32 * 0.5;
     let hy = height as f32 * 0.5;
     let to_screen = |p: [f32; 2]| [p[0] + wx, hy - (p[1] - cam_y)];
@@ -266,7 +254,7 @@ fn rasterize_triangle(
     let s1 = to_screen(p1);
     let s2 = to_screen(p2);
 
-    // Edge function for barycentric rasterization (Pineda's algorithm).
+    // Pineda edge function.
     let edge = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
         (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
     };
@@ -290,7 +278,6 @@ fn rasterize_triangle(
     let mut any_drawn = false;
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            // Sample at pixel centre.
             let pc = [x as f32 + 0.5, y as f32 + 0.5];
             let w0 = edge(s1, s2, pc) * inv_area;
             let w1 = edge(s2, s0, pc) * inv_area;
@@ -307,7 +294,6 @@ fn rasterize_triangle(
             let sg = f32::from(sample[1]) / 255.0;
             let sb = f32::from(sample[2]) / 255.0;
             let sa = f32::from(sample[3]) / 255.0;
-            // Already-PMA sample × already-PMA light → still PMA.
             let fr = sr * light[0];
             let fg = sg * light[1];
             let fb = sb * light[2];
@@ -316,7 +302,6 @@ fn rasterize_triangle(
                 continue;
             }
             let dst = img.get_pixel_mut(x, y);
-            // OVER (PMA): dst = src + dst * (1 - src.a)
             let dr = f32::from(dst[0]) / 255.0;
             let dg = f32::from(dst[1]) / 255.0;
             let db = f32::from(dst[2]) / 255.0;

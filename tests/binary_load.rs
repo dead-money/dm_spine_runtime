@@ -25,9 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Integration tests: load every example skeleton shipped in
-//! `~/deadmoney/spine-runtimes/examples/` and assert basic structural
-//! invariants. Also spot-checks spineboy against known counts.
+//! Every example `.skel` under `SPINE_EXAMPLES` loads with non-empty bones,
+//! slots and animations; spineboy is spot-checked in more detail.
 
 mod common;
 
@@ -40,9 +39,8 @@ fn examples_root() -> PathBuf {
     common::examples_root()
 }
 
-/// Walk `examples/<name>/export/` directories and yield every .skel path
-/// along with its sibling .atlas. Some rigs have multiple skels (ess/pro
-/// variants); each pairs with the single shared .atlas for the rig.
+/// Every `examples/<rig>/export/*.skel` paired with an atlas from the same
+/// directory (see [`pick_atlas`]). Rigs without an atlas are left out.
 fn collect_skels() -> Vec<(PathBuf, PathBuf)> {
     let mut out = Vec::new();
     let root = examples_root();
@@ -55,7 +53,6 @@ fn collect_skels() -> Vec<(PathBuf, PathBuf)> {
         if !export_dir.is_dir() {
             continue;
         }
-        // Gather .skel and .atlas files in export/.
         let mut skels = Vec::new();
         let mut atlases = Vec::new();
         let Ok(exp_entries) = std::fs::read_dir(&export_dir) else {
@@ -69,9 +66,6 @@ fn collect_skels() -> Vec<(PathBuf, PathBuf)> {
                 _ => {}
             }
         }
-        // Pair each skel with an atlas. If there's only one atlas, every
-        // skel shares it. If multiple, prefer a non-pma atlas whose stem
-        // shares a prefix with the skel's stem.
         for skel in skels {
             let atlas = pick_atlas(&skel, &atlases);
             if let Some(atlas) = atlas {
@@ -87,15 +81,13 @@ fn pick_atlas(skel: &Path, atlases: &[PathBuf]) -> Option<PathBuf> {
         return None;
     }
     let skel_stem = skel.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    // Strip common rig-variant suffixes to reach the shared atlas base.
-    // `spineboy-pro.skel` + `spineboy.atlas`, `raptor-pro.skel` + `raptor.atlas`, etc.
+    // `spineboy-pro.skel` pairs with `spineboy.atlas`.
     let base = ["-pro", "-ess", "-ios"]
         .into_iter()
         .find_map(|sfx| skel_stem.strip_suffix(sfx))
         .unwrap_or(skel_stem);
-    // Prefer an exact `<base>.atlas` match (not `<base>-run.atlas`, which
-    // some rigs ship as an animation-specific subset). Fall back to any
-    // non-pma atlas, then anything.
+    // Exact `<base>.atlas` first: some rigs also ship subset atlases such as
+    // `<base>-run.atlas`. Then any non-PMA atlas, then anything.
     atlases
         .iter()
         .find(|a| a.file_stem().and_then(|s| s.to_str()) == Some(base))
@@ -187,8 +179,6 @@ fn spineboy_pro_has_expected_structure() {
         &root.join("spineboy-pro.skel"),
     );
 
-    // Spot-check values cross-referenced against the corresponding
-    // .json export (which is much easier to read by eye).
     assert!(sd.version.starts_with("4.3"));
     assert!(sd.bones.iter().any(|b| b.name == "root"));
     assert!(sd.bones.iter().any(|b| b.name == "hip"));
@@ -197,7 +187,6 @@ fn spineboy_pro_has_expected_structure() {
     assert!(sd.animations.iter().any(|a| a.name == "run"));
     assert!(sd.animations.iter().any(|a| a.name == "jump"));
 
-    // Skeleton-wide invariants.
     assert!(
         sd.bones.len() > 50,
         "spineboy has >50 bones, got {}",
@@ -210,8 +199,7 @@ fn spineboy_pro_has_expected_structure() {
     );
     assert!(sd.default_skin.is_some(), "spineboy has a default skin");
 
-    // Bones are sorted parent-first: every non-root bone's parent index is
-    // strictly less than its own.
+    // Bones are stored parent-first.
     for b in &sd.bones {
         if let Some(parent) = b.parent {
             assert!(

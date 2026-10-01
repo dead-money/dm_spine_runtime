@@ -25,15 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Diffs Rust-computed animation samples against spine-cpp fixtures from
-//! `tools/spine_capture/capture_animations.sh`. The capture harness applies
-//! each animation at a specific time using `Animation::apply` + bones-only
-//! `Bone::updateWorldTransform` in spine-cpp; the Rust side does the same
-//! through `AnimationState` + `Skeleton::update_world_transform`.
-//!
-//! Phase 3 stubs constraint solvers, so any animation that would rely on an
-//! IK or transform constraint running at evaluation time will diverge.
-//! The fixtures don't exercise those paths yet.
+//! Diffs animation samples against spine-cpp fixtures from
+//! `tools/spine_capture/capture_animations.sh`. Both sides apply one animation
+//! from the setup pose at the sample time (`Animation::apply` /
+//! `Skeleton::apply_animation`, `MixFrom::Setup`), then run the full world
+//! transform with `Physics::None` and validate local transforms.
 
 mod common;
 
@@ -53,7 +49,7 @@ const TOLERANCE: f32 = 1e-3;
 /// few ulps below 1 where `acos` has unbounded slope. spine-cpp rounds to
 /// `cos >= 1` and gets exactly 0; we get 0.045 degrees. World transforms
 /// agree.
-const KNOWN_DRIFT: &[(&str, &str, &str)] = &[("raptor-pro/roar", "front-bracer", "a_rotation")]; // animations integrate accumulated trig, 1e-3 is spine-cpp convention
+const KNOWN_DRIFT: &[(&str, &str, &str)] = &[("raptor-pro/roar", "front-bracer", "a_rotation")];
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
@@ -89,8 +85,8 @@ fn fixtures_root() -> PathBuf {
     PathBuf::from("tests/fixtures/animations")
 }
 
-/// `(rig, variant, animation, [sample_path, …])` — one entry per
-/// animation, with all time-sample paths grouped together.
+/// One `(rig, variant, animation, sample paths)` entry per animation, read
+/// from `tests/fixtures/animations/<rig>-<variant>/<animation>/*.json`.
 fn collect_fixture_samples() -> Vec<(String, String, String, Vec<PathBuf>)> {
     let mut out = Vec::new();
     let root = fixtures_root();
@@ -102,7 +98,6 @@ fn collect_fixture_samples() -> Vec<(String, String, String, Vec<PathBuf>)> {
         if !rig_dir.is_dir() {
             continue;
         }
-        // Dir name is "rig-variant".
         let rigvar = rig_dir.file_name().unwrap().to_string_lossy().into_owned();
         let Some((rig, variant)) = rigvar.split_once('-') else {
             panic!("fixture dir not in rig-variant form: {rigvar}")
@@ -212,11 +207,6 @@ fn check_bone(label: &str, expected: &BoneFixture, actual: &spine_runtime::skele
     }
 }
 
-// Phase 5e: fixtures regenerated with the full constraint pipeline.
-// Phase 5 acceptance: most samples match. Constraint-heavy rigs (tank,
-// mix-and-match) may diverge on specific bones pending targeted solver
-// debugging. The test passes as long as ≥ half of the sampled bone
-// states match; the eprintln summary lets follow-ups spot regressions.
 #[test]
 fn animation_samples_match_spine_cpp() {
     let groups = collect_fixture_samples();

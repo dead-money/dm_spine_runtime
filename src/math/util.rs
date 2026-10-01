@@ -25,18 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Degree-based trig helpers matching `spine-cpp/MathUtil`.
+//! Degree-based trig and spine-cpp's float constants.
 //!
-//! Spine stores bone rotations and constraint mixes in degrees, so the runtime
-//! calls `sinDeg` / `cosDeg` / `atan2Deg` pervasively. The spine-cpp versions
-//! are thin wrappers over libm despite the "lookup table" doc comments, so the
-//! Rust ports here just delegate to `f32::sin` / `f32::cos` / `f32::atan2`.
-//!
-//! `clamp`, `abs`, `signum`, and `rem` in Spine's `MathUtil` map 1:1 to the
-//! `f32` inherent methods (`f32::clamp`, `f32::abs`, `f32::signum`, `%`) and
-//! are not re-exported.
+//! spine-cpp's `sinDeg` / `cosDeg` / `atan2Deg` call libm despite their
+//! "lookup table" doc comments, so these delegate to the `f32` methods.
 
-/// spine-cpp's float constants, computed the same way so rounding matches.
+// Computed the same way as spine-cpp's so rounding matches.
 pub const PI: f32 = std::f32::consts::PI;
 pub const PI_2: f32 = PI * 2.0;
 pub const INV_PI_2: f32 = 1.0 / PI_2;
@@ -66,9 +60,7 @@ pub fn atan2_deg(y: f32, x: f32) -> f32 {
     y.atan2(x).to_degrees()
 }
 
-/// Wraps an angle in degrees into `[-180, 180)` — useful for computing the
-/// shortest-path rotation between two angles, as Spine does in several
-/// constraint solvers.
+/// Wraps an angle in degrees into `[-180, 180)`.
 #[inline]
 #[must_use]
 pub fn wrap_deg(degrees: f32) -> f32 {
@@ -131,11 +123,9 @@ mod tests {
     }
 
     proptest! {
-        /// Round-trip identity: polar coords that never land at the origin
-        /// must recover the angle within float tolerance.
         #[test]
         fn atan2_deg_round_trip(
-            // Keep angles in [-179, 179] to avoid the atan2 branch-cut discontinuity at ±180.
+            // Stay clear of the branch cut at ±180.
             angle in -179.0f32..=179.0,
             r in 1.0e-3f32..1.0e3,
         ) {
@@ -148,7 +138,6 @@ mod tests {
             );
         }
 
-        /// sin² + cos² = 1 for any angle.
         #[test]
         fn trig_pythagorean_identity(angle in -1.0e6f32..1.0e6) {
             let s = sin_deg(angle);
@@ -156,7 +145,6 @@ mod tests {
             prop_assert!((s * s + c * c - 1.0).abs() < 1.0e-4, "angle={angle}");
         }
 
-        /// wrap_deg always returns a value in [-180, 180).
         #[test]
         fn wrap_deg_in_range(d in -1.0e6f32..1.0e6) {
             let w = wrap_deg(d);

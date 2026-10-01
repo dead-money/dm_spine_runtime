@@ -25,27 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Render-command emission — the boundary between the core Spine
-//! runtime and any downstream renderer (e.g. [`spine_bevy`]).
+//! Render-command emission, the boundary between the runtime and a renderer.
 //!
-//! This module owns two things:
-//!
-//! - The [`RenderCommand`] data layout: interleaved positions + UVs,
-//!   packed `u32` colors, `u16` indices, blend mode, and an opaque
-//!   [`TextureId`]. Matches `spine-cpp`'s `RenderCommand` struct
-//!   exactly so the golden-capture harness can dump byte-comparable
-//!   output.
-//! - The [`SkeletonRenderer`] walker that iterates a
-//!   `Skeleton`'s draw-order, resolves each attachment's geometry, and
-//!   emits one or more `RenderCommand`s — with clipping and
-//!   command batching wired in.
-//!
-//! **No GPU / windowing deps.** `TextureId` is a newtype over `u32`
-//! (the atlas page index); the downstream renderer maps it to whatever
-//! GPU-side texture handle it owns. Vertex/index/color buffers are
-//! plain `Vec<_>` — the consumer copies or re-wraps as needed.
-//!
-//! [`spine_bevy`]: https://github.com/dead-money/spine_bevy
+//! [`SkeletonRenderer`] walks a skeleton's draw order and emits
+//! [`RenderCommand`]s: plain vertex, color and index buffers tagged with a
+//! blend mode and an opaque [`TextureId`] (the atlas page index). The
+//! renderer maps that id to its own GPU texture.
 
 use crate::data::BlendMode;
 
@@ -55,23 +40,19 @@ pub mod renderer;
 pub use clipping::SkeletonClipping;
 pub use renderer::SkeletonRenderer;
 
-/// Opaque texture identifier emitted on every [`RenderCommand`]. Wraps
-/// the atlas page index (`AtlasRegion::page_index` / `TextureRegionRef::page_index`).
-/// Downstream renderers resolve this to their own GPU handle.
+/// Texture of a [`RenderCommand`]: the atlas page index
+/// ([`AtlasPage::index`](crate::atlas::AtlasPage::index), carried on
+/// [`TextureRegionRef::page_index`](crate::data::attachment::TextureRegionRef::page_index)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextureId(pub u32);
 
 impl TextureId {
-    /// Sentinel used when an attachment has no resolved texture region
-    /// (e.g. the loader failed to find its atlas entry). Renderers may
-    /// treat commands with this id as invisible or flag them as errors.
+    /// Sentinel for "no texture". [`SkeletonRenderer`] never emits it; it
+    /// skips attachments that have no resolved region.
     pub const MISSING: TextureId = TextureId(u32::MAX);
 }
 
-/// A batch of drawable geometry that shares one texture, one blend
-/// mode, one tint, and one dark-color tint. Literal port of
-/// `spine-cpp`'s `RenderCommand` struct, with owning `Vec`s in place
-/// of spine-cpp's block-allocator slices.
+/// A batch of triangles that share one texture and one blend mode.
 ///
 /// ## Buffer layout
 ///
@@ -79,17 +60,15 @@ impl TextureId {
 /// |--------------|-----------------|---------------------------------------------|
 /// | `positions`  | `2 * vertices`  | Interleaved `x, y` in skeleton world space  |
 /// | `uvs`        | `2 * vertices`  | Interleaved `u, v` in atlas space (0..1)    |
-/// | `colors`     | `vertices`      | Packed `0xAARRGGBB` (premultiplied alpha)   |
+/// | `colors`     | `vertices`      | Packed `0xAARRGGBB`, not premultiplied      |
 /// | `dark_colors`| `vertices`      | Packed `0xAARRGGBB` for tint-black          |
 /// | `indices`    | `indices`       | Triangle-list `u16` into this command       |
 /// | `slots`      | `vertices`      | Slot index; only with [`RenderOptions::vertex_ids`] |
 /// | `tags`       | `vertices`      | Attachment [`tag`](crate::data::Attachment::tag); only with `vertex_ids` |
 ///
-/// `vertices = positions.len() / 2` and `indices = indices.len()`; the
-/// numeric counts are not stored separately.
-///
 /// Each slot's color is repeated across its vertices. By default only slots
-/// with the same colors share a command, as in spine-cpp.
+/// with the same colors share a command, as in spine-cpp, so every vertex in
+/// a command has the same color and dark color.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderCommand {
     pub positions: Vec<f32>,
@@ -103,7 +82,7 @@ pub struct RenderCommand {
     pub texture: TextureId,
 }
 
-/// What [`SkeletonRenderer`] emits beyond spine-cpp's output.
+/// [`SkeletonRenderer`] behavior beyond spine-cpp's. Both default off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderOptions {
     /// Fill [`RenderCommand::slots`] and [`RenderCommand::tags`], so a
@@ -115,26 +94,22 @@ pub struct RenderOptions {
 }
 
 impl RenderCommand {
-    /// Number of vertices in this command (`positions.len() / 2`).
+    /// `positions.len() / 2`.
     #[must_use]
     #[inline]
     pub fn num_vertices(&self) -> usize {
         self.positions.len() / 2
     }
 
-    /// Number of indices in this command (equals `indices.len()`;
-    /// exposed for symmetry with [`Self::num_vertices`]).
+    /// `indices.len()`.
     #[must_use]
     #[inline]
     pub fn num_indices(&self) -> usize {
         self.indices.len()
     }
 
-    /// World-space axis-aligned bounding box of this command's vertices as
-    /// `(x_min, x_max, y_min, y_max)`. Returns `None` for an empty command.
-    ///
-    /// Useful for cull tests, for degenerate-command detection, and for
-    /// diagnostic tools that want a quick per-command summary.
+    /// World-space bounding box of the vertices as
+    /// `(x_min, x_max, y_min, y_max)`, or `None` for an empty command.
     #[must_use]
     pub fn position_bounds(&self) -> Option<(f32, f32, f32, f32)> {
         let n = self.num_vertices();
@@ -157,13 +132,8 @@ impl RenderCommand {
     }
 }
 
-/// Pack four 0..1 floats into `0xAARRGGBB`. Matches spine-cpp's
-/// `SkeletonRenderer` color packing exactly — including the
-/// truncating `f32 -> u8` cast (no round-to-nearest, matches C++
-/// `static_cast<uint8_t>`).
-///
-/// Used by the render walker to populate `RenderCommand::colors` and
-/// `RenderCommand::dark_colors`.
+/// Packs four 0..1 floats into `0xAARRGGBB`. Truncates rather than rounds,
+/// as spine-cpp's `static_cast<uint8_t>` does, so render goldens match exactly.
 #[allow(dead_code)]
 #[must_use]
 #[inline]
@@ -181,14 +151,10 @@ mod tests {
 
     #[test]
     fn pack_color_matches_spine_cpp_layout() {
-        // White, opaque
         assert_eq!(pack_color(1.0, 1.0, 1.0, 1.0), 0xffff_ffff);
-        // Opaque black
         assert_eq!(pack_color(0.0, 0.0, 0.0, 1.0), 0xff00_0000);
-        // Fully transparent
         assert_eq!(pack_color(1.0, 1.0, 1.0, 0.0), 0x00ff_ffff);
-        // Pure red, half alpha
-        // 0.5 * 255 = 127.5 → truncates to 127 (matching C++ static_cast).
+        // 0.5 * 255 = 127.5 truncates to 127.
         assert_eq!(pack_color(1.0, 0.0, 0.0, 0.5), 0x7fff_0000);
     }
 

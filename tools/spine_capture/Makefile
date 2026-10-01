@@ -1,7 +1,7 @@
 # Links spine-cpp 4.3 into the golden-capture and benchmark CLIs.
 #
-# SPINE_RUNTIMES must be an upstream/4.3 checkout at the pinned commit in
-# ../../docs/SPINE_4_3_UPGRADE.md, not the deadmoney/* branches.
+# SPINE_RUNTIMES must be an upstream/4.3 checkout at the commit CI pins in
+# ../../.github/workflows/ci.yml, not a deadmoney/* branch.
 #
 #   make SPINE_RUNTIMES=../../../spine-runtimes-4.3
 

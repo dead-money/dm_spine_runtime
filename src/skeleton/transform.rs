@@ -131,7 +131,8 @@ fn clamp(x: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-/// `FromProperty::value`: reads a channel from the source bone.
+/// Reads one channel of `source` plus its offset. Angles are in degrees; world
+/// values are divided by the skeleton scale.
 pub(crate) fn from_value(
     property: TransformProperty,
     f: &Frame,
@@ -217,7 +218,7 @@ fn to_mix(property: TransformProperty, p: &TransformConstraintPose) -> f32 {
     }
 }
 
-/// `ToProperty::apply`: writes a channel to a constrained bone.
+/// Writes `value` to one channel of `bone`, weighted by that channel's mix.
 #[allow(clippy::many_single_char_names)]
 fn to_apply(
     property: TransformProperty,

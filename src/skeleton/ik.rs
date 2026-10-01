@@ -205,7 +205,8 @@ fn sign(v: f32) -> f32 {
     }
 }
 
-/// Bends a parent and child bone to reach the target.
+/// Bends a parent and child bone to reach the target. No-op unless both bones
+/// use `Inherit::Normal`.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,

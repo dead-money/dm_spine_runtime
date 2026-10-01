@@ -11,8 +11,8 @@ repository = "https://github.com/dead-money/spine_runtime"
 documentation = "https://docs.rs/spine_runtime"
 categories = ["game-development", "graphics"]
 keywords = ["spine", "2d", "animation", "skeletal"]
-# The tests need the sibling spine-runtimes checkout and can't run from the
-# published crate.
+# Tests and tooling need a sibling spine-runtimes checkout, so they can't run
+# from the published crate.
 exclude = [
   ".github/",
   ".claude/",
@@ -34,10 +34,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 approx = "0.5"
 proptest = "1"
 pretty_assertions = "1"
-# Used only by the golden-pose integration test to parse capture fixtures.
+# Parses the golden capture fixtures.
 serde = { version = "1", features = ["derive"] }
-# Used by the software_render example for PNG IO. Dev-only — does not
-# leak into the library's dep graph.
+# PNG output for the software_render example.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [[bench]]
@@ -49,8 +48,8 @@ unsafe_code = "deny"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# Spine uses f32 pervasively; these lints fire constantly on faithful C++ ports
-# without adding value.
+# Spine math is f32 with index casts throughout; these fire constantly on a
+# literal port without catching anything.
 cast_precision_loss = "allow"
 cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"

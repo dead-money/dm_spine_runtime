@@ -25,20 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Binary `.skel` parser — port of `spine-cpp/SkeletonBinary.cpp`.
-//!
-//! The public entry point is [`SkeletonBinary`]. Instantiate with a mutable
-//! [`AttachmentLoader`] and call [`SkeletonBinary::read`] on a byte buffer
-//! to produce a [`SkeletonData`].
-//!
-//! The implementation mirrors the spine-cpp single-file approach so that a
-//! reader comparing line-for-line sees roughly matching structure. Sections
-//! are tagged with `// --- Section name` banners.
+//! Binary `.skel` parser. Entry point is [`SkeletonBinary`].
 
-// Pedantic clippy lints that fire on faithful ports of spine-cpp's dense
-// single-file parser. These are silenced at module scope so the port stays
-// verbatim against SkeletonBinary.cpp — chasing each lint would require
-// restructuring the port away from the reference.
+// Keeps the parser's structure diffable against SkeletonBinary.cpp.
 #![allow(
     clippy::too_many_lines,
     clippy::cast_possible_wrap,
@@ -137,6 +126,7 @@ pub struct SkeletonBinary<'loader> {
 }
 
 impl<'loader> SkeletonBinary<'loader> {
+    /// Reader that builds attachments through `loader`, at scale 1.
     pub fn with_loader(loader: &'loader mut dyn AttachmentLoader) -> Self {
         Self {
             loader,
@@ -152,6 +142,8 @@ impl<'loader> SkeletonBinary<'loader> {
         self
     }
 
+    /// Parses a `.skel` buffer.
+    ///
     /// # Errors
     /// Malformed content, a version other than 4.3, or a loader failure.
     pub fn read(mut self, bytes: &[u8]) -> Result<SkeletonData, BinaryError> {
@@ -753,8 +745,8 @@ impl<'loader> SkeletonBinary<'loader> {
                 let vertex_data = self.read_vertices(r, flags & 128 != 0)?;
                 let vertices_len = vertex_data.world_vertices_length as usize;
                 let uvs = read_float_array(r, vertices_len, 1.0)?;
-                // Float count minus hull vertex count: the units are mixed
-                // on purpose, as in SkeletonBinary.cpp.
+                // `vertices_len` is twice the vertex count, so this is
+                // 2V - hull - 2, the triangle count of a triangulated polygon.
                 let tri_count = (vertices_len as i32 - hull_length as i32 - 2).max(0) as usize * 3;
                 let triangles = read_short_array(r, tri_count)?;
                 let n = r.read_uvarint()?;
@@ -1490,9 +1482,9 @@ fn read_inherit(r: &mut BinaryReader<'_>) -> Result<Inherit, BinaryError> {
     })
 }
 
-/// Rebuilds a full order from `(index, shift)` changes. The shift is
-/// unsigned on the wire but may be negative; spine-cpp relies on unsigned
-/// wraparound, so it's read as a signed varint here.
+/// Rebuilds a full order from `(index, shift)` changes. The shift is an
+/// unsigned varint; negative shifts rely on 32-bit wraparound to `i32`, as in
+/// spine-cpp.
 fn read_draw_order(
     r: &mut BinaryReader<'_>,
     slot_count: usize,
@@ -1597,13 +1589,13 @@ fn read_short_array(r: &mut BinaryReader<'_>, n: usize) -> Result<Vec<u16>, Bina
     Ok(out)
 }
 
-/// Read a CurveTimelineN where each frame has `entries` floats (time + values).
-/// Scale is applied to every value (not time).
+/// Reads a curve timeline whose frames are `entries` floats (time, then
+/// values). `scale` applies to values, not time.
 ///
-/// Produces the runtime `_curves` layout (per-frame type code in slots
-/// `[0, frame_count)` followed by bezier samples in
-/// `[frame_count, frame_count + bezier_count * BEZIER_SIZE)`) so the
-/// Phase 3 apply path can consume it without further decoding.
+/// `curves` holds a type code per frame in `[0, frame_count)`, then
+/// `bezier_count * BEZIER_SIZE` bezier samples. A bezier frame's code is
+/// `CURVE_BEZIER` plus the offset of its first channel's samples; later
+/// channels follow at `BEZIER_SIZE` strides.
 fn read_curve_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
@@ -1619,9 +1611,8 @@ fn read_curve_timeline(
     if frame_count == 0 {
         return Ok(CurveFrames { frames, curves });
     }
-    // spine-cpp CurveTimeline ctor sets `_curves[frameCount - 1] = STEPPED`
-    // as the safety default — a LINEAR read past the last frame would walk
-    // past end-of-frames otherwise.
+    // As in spine-cpp's CurveTimeline constructor: a linear last frame would
+    // read past the end of `frames`.
     curves[frame_count - 1] = CURVE_STEPPED as f32;
 
     let frame_last = frame_count - 1;
@@ -1631,8 +1622,7 @@ fn read_curve_timeline(
         values.push(r.read_float()? * scale);
     }
 
-    // Running count of bezier *channel segments* (not frames) emitted into
-    // the samples tail. Each BEZIER frame consumes `channels` segments.
+    // Counts bezier segments, one per channel per bezier frame.
     let mut bezier_seg_idx: usize = 0;
 
     for frame in 0..frame_count {
@@ -1653,9 +1643,6 @@ fn read_curve_timeline(
             CURVE_LINEAR => curves[frame] = CURVE_LINEAR as f32,
             CURVE_STEPPED => curves[frame] = CURVE_STEPPED as f32,
             CURVE_BEZIER => {
-                // Record the absolute offset into the samples tail for this
-                // frame's *first* channel; eval derives subsequent channels
-                // as `first + k * BEZIER_SIZE`.
                 let first_channel_abs = frame_count + bezier_seg_idx * BEZIER_SIZE;
                 curves[frame] = (i32::from(CURVE_BEZIER) + first_channel_abs as i32) as f32;
                 for k in 0..channels {
@@ -1686,9 +1673,9 @@ fn read_curve_timeline(
     Ok(CurveFrames { frames, curves })
 }
 
-/// Color timelines use byte-packed channels (each frame's color values are
-/// stored as `u8 / 255`). `channels` is the number of color channels per
-/// frame — 1 for Alpha, 3 for RGB, 4 for RGBA, 6 for RGB2, 7 for RGBA2.
+/// Like [`read_curve_timeline`], but values are bytes normalized to
+/// `u8 / 255`. `channels` is 1 for alpha, 3 for RGB, 4 for RGBA, 6 for RGB2,
+/// 7 for RGBA2.
 fn read_color_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
@@ -1757,20 +1744,15 @@ fn read_color_timeline(
     Ok(CurveFrames { frames, curves })
 }
 
-/// IK constraint timeline: per-frame `(time, flags, mix?, softness?)` with two
-/// bezier channels on bezier frames (mix, softness).
-///
-/// Produces the runtime `_curves` layout (per-frame type code + bezier
-/// samples tail) — same format as [`read_curve_timeline`] but with the
-/// IK-specific stride-6 frame shape.
+/// Reads an IK timeline into frames of `[time, mix, softness,
+/// bend_direction, compress, stretch]`. Bezier frames carry two channels, mix
+/// and softness. `curves` uses the [`read_curve_timeline`] layout.
 fn read_ik_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
     bezier_count: usize,
     scale: f32,
 ) -> Result<CurveFrames, BinaryError> {
-    // Frames = [time, mix, softness, bend_direction, compress, stretch];
-    // curves = [per_frame_type; frame_count] + bezier samples tail.
     let mut frames: Vec<f32> = Vec::with_capacity(frame_count * 6);
     let curves_len = frame_count + bezier_count * BEZIER_SIZE;
     let mut curves: Vec<f32> = vec![0.0_f32; curves_len];
@@ -1841,25 +1823,15 @@ fn read_ik_timeline(
     Ok(CurveFrames { frames, curves })
 }
 
-/// Deform timeline: each frame is a sparse vertex-offset array. Returns
-/// `(frame_times, curve_data, per_frame_vertices)`. Vertex storage
-/// matches spine-cpp's in-memory layout:
-///
-/// - Weighted: per-frame deltas in the mesh's local bone-space
-///   (absent-frames are `vec![0.0; deform_length]`).
-/// - Unweighted: per-frame **absolute** vertex positions with the
-///   attachment's setup-pose vertices pre-added to each non-absent
-///   frame (and the setup-pose vertices themselves used verbatim when
-///   a frame has no deltas). `DeformTimeline::apply` treats these as
-///   "setup-pose vertices" during `MixBlend::Add` / `MixBlend::Setup`
-///   so the pre-add is load-bearing.
-///
-/// `curves` follows the `CurveFrames` / spine-cpp `CurveTimeline`
-/// convention: `curves[0..frame_count]` carries the per-frame curve
-/// flag (LINEAR / STEPPED / BEZIER + tail offset), followed by
-/// `bezier_count * BEZIER_SIZE` pre-sampled bezier floats.
+/// `(frame_times, curves, per_frame_vertices)`.
 type DeformTimelineData = (Vec<f32>, Vec<f32>, Vec<Vec<f32>>);
 
+/// Reads a deform timeline. Frames are stored sparsely on the wire and
+/// expanded to `deform_length` floats. Weighted frames hold offsets, zero
+/// where absent. Unweighted frames hold absolute positions: the setup
+/// vertices are added at load time, as spine-cpp does, and apply relies on
+/// it. `curves` uses the [`read_curve_timeline`] layout with one channel
+/// running 0 to 1.
 fn read_deform_timeline(
     r: &mut BinaryReader<'_>,
     frame_count: usize,
@@ -1876,8 +1848,6 @@ fn read_deform_timeline(
     if frame_count == 0 {
         return Ok((frames, curves, vertices));
     }
-    // Safety default matching spine-cpp CurveTimeline ctor: last frame's
-    // curve type is STEPPED so a LINEAR read past the end is well-defined.
     curves[frame_count - 1] = CURVE_STEPPED as f32;
 
     let frame_last = frame_count - 1;
@@ -1890,9 +1860,6 @@ fn read_deform_timeline(
             if weighted {
                 vec![0.0_f32; deform_length]
             } else {
-                // spine-cpp: `deform.clearAndAddAll(vertices)` — absent
-                // frames in unweighted meshes resolve to the setup-pose
-                // vertex positions.
                 setup_vertices.to_vec()
             }
         } else {
@@ -1909,9 +1876,6 @@ fn read_deform_timeline(
                 }
             }
             if !weighted {
-                // Convert per-vertex deltas to absolute positions by
-                // pre-adding the setup pose. spine-cpp does this at
-                // load time; `DeformTimeline::apply` relies on it.
                 for (d, s) in deform.iter_mut().zip(setup_vertices.iter()) {
                     *d += *s;
                 }
@@ -1929,16 +1893,12 @@ fn read_deform_timeline(
             CURVE_LINEAR => curves[frame] = CURVE_LINEAR as f32,
             CURVE_STEPPED => curves[frame] = CURVE_STEPPED as f32,
             CURVE_BEZIER => {
-                // DeformTimeline has a single (time→percent) channel —
-                // one bezier segment per BEZIER frame.
                 let tail_offset = frame_count + bezier_seg_idx * BEZIER_SIZE;
                 curves[frame] = (i32::from(CURVE_BEZIER) + tail_offset as i32) as f32;
                 let cx1 = r.read_float()?;
                 let cy1 = r.read_float()?;
                 let cx2 = r.read_float()?;
                 let cy2 = r.read_float()?;
-                // spine-cpp passes (value1=0, value2=1) to setBezier:
-                // the percent channel runs 0 → 1 between frames.
                 let samples = compute_bezier_samples(time, 0.0, cx1, cy1, cx2, cy2, time2, 1.0);
                 curves[tail_offset..tail_offset + BEZIER_SIZE].copy_from_slice(&samples);
                 bezier_seg_idx += 1;
@@ -1956,11 +1916,9 @@ fn read_deform_timeline(
     Ok((frames, curves, vertices))
 }
 
-/// Pull the deform-relevant `(weighted, setup_vertices_clone)` from an
-/// attachment. `weighted` drives the load-time pre-add of setup
-/// vertices for unweighted meshes; `setup_vertices` is cloned so the
-/// caller can hand it to [`read_deform_timeline`] without holding a
-/// borrow of `sd` across the reader call.
+/// `(weighted, setup_vertices)` for an attachment. Setup vertices are cloned
+/// only when unweighted, since weighted vertices are bone-local triples, not
+/// positions.
 fn deform_context(sd: &SkeletonData, att: AttachmentId) -> (bool, Vec<f32>) {
     let Some(attachment) = sd.attachments.get(att.index()) else {
         return (false, Vec::new());
@@ -1972,9 +1930,6 @@ fn deform_context(sd: &SkeletonData, att: AttachmentId) -> (bool, Vec<f32>) {
         Attachment::Clipping(c) => &c.vertex_data,
         _ => return (false, Vec::new()),
     };
-    // For weighted meshes spine-cpp uses an all-zero setup buffer (the
-    // stored `vertices` are bone-local weight triples, not positions),
-    // so we only clone setup vertices when unweighted.
     if vd.bones.is_empty() {
         (false, vd.vertices.clone())
     } else {
@@ -1982,9 +1937,8 @@ fn deform_context(sd: &SkeletonData, att: AttachmentId) -> (bool, Vec<f32>) {
     }
 }
 
-/// Deform-frame length for a given attachment. Matches spine-cpp:
-/// weighted meshes store `vertices.len() / 3 * 2`, unweighted just
-/// `vertices.len()`.
+/// Floats per deform frame: `vertices.len() / 3 * 2` for weighted
+/// attachments, `vertices.len()` otherwise.
 fn deform_frame_len(sd: &SkeletonData, att: AttachmentId) -> usize {
     let Some(attachment) = sd.attachments.get(att.index()) else {
         return 0;
@@ -2003,12 +1957,8 @@ fn deform_frame_len(sd: &SkeletonData, att: AttachmentId) -> usize {
     }
 }
 
-/// Duration of an animation = max timestamp of any timeline's last frame.
-/// Used before Phase 3 can properly compute durations per-variant.
+/// The latest last-frame time across an animation's timelines.
 pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
-    // spine-cpp's `Timeline::getDuration` returns `frames[len - stride]`,
-    // i.e. the last frame's time. Port that per-variant using the known
-    // stride for each timeline kind.
     fn last_time_stride(frames: &[f32], stride: usize) -> f32 {
         if frames.len() < stride {
             return 0.0;
@@ -2019,7 +1969,7 @@ pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
     let mut max = 0.0f32;
     for t in &anim.timelines {
         let last = match t {
-            // CurveTimeline1 — stride 2 (time + 1 value).
+            // Time plus one value.
             Timeline::Rotate { curves, .. }
             | Timeline::TranslateX { curves, .. }
             | Timeline::TranslateY { curves, .. }
@@ -2034,7 +1984,7 @@ pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
             | Timeline::Slider { curves, .. }
             | Timeline::SliderMix { curves, .. } => last_time_stride(&curves.frames, 2),
 
-            // CurveTimeline2 — stride 3 (time + 2 values).
+            // Time plus two values.
             Timeline::Translate { curves, .. }
             | Timeline::Scale { curves, .. }
             | Timeline::Shear { curves, .. } => last_time_stride(&curves.frames, 3),
@@ -2047,7 +1997,6 @@ pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
             Timeline::TransformConstraint { curves, .. } => last_time_stride(&curves.frames, 7),
             Timeline::PathConstraintMix { curves, .. } => last_time_stride(&curves.frames, 4),
 
-            // Non-CurveFrames variants store times in a standalone `frames` vec.
             Timeline::Inherit { frames, .. }
             | Timeline::PhysicsReset { frames, .. }
             | Timeline::DrawOrder { frames, .. }
@@ -2055,12 +2004,9 @@ pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
             | Timeline::Attachment { frames, .. }
             | Timeline::Event { frames, .. } => frames.last().copied().unwrap_or(0.0),
 
-            // Deform uses CurveFrames; stride 2 (time + packed vertex index
-            // into the per-frame `vertices[i]`). Last frame's time sits at
-            // `frames[len - 2]`.
             Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 1),
 
-            // Sequence frames are interleaved (time, packed, delay); stride 3.
+            // Time, packed index and mode, delay.
             Timeline::Sequence { frames, .. } => last_time_stride(frames, 3),
         };
         max = max.max(last);

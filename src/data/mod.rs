@@ -27,17 +27,12 @@
 
 //! Immutable skeleton data shared across `Skeleton` instances.
 //!
-//! Every Spine asset loads into a single `SkeletonData`, which is typically
-//! wrapped in an `Arc` and referenced by many `Skeleton` instances. Runtime
-//! mutable state lives on `Skeleton`, not here.
+//! Each Spine asset loads into one [`SkeletonData`], usually wrapped in an
+//! `Arc` and shared by many `Skeleton`s. Mutable runtime state lives on
+//! `Skeleton`.
 //!
-//! # Typed indices
-//!
-//! Rather than storing cross-references as `Rc<RefCell<T>>` or raw pointers,
-//! every data object is identified by a small newtype integer index into the
-//! owning `SkeletonData` vectors. This keeps the hot paths pointer-free and
-//! lets the borrow checker leave the animation-apply and pose-compute loops
-//! alone.
+//! Cross-references are typed indices into the owning `SkeletonData`
+//! vectors ([`BoneId`], [`SlotId`], ...), not pointers.
 
 pub mod animation;
 pub mod attachment;
@@ -66,11 +61,8 @@ pub use skeleton::SkeletonData;
 pub use skin::{AttachmentRef, Skin, SkinKeys};
 pub use slot::{BlendMode, SlotData};
 
-/// Typed indices into the parent [`SkeletonData`] vectors.
-///
-/// Newtype wrappers rather than bare `u16`/`u32` so that a `SlotId` can't
-/// accidentally be passed where a `BoneId` is expected. Equality, hashing and
-/// ordering are derived, so they work transparently as map keys.
+/// Defines a typed index newtype, so a `SlotId` can't be passed where a
+/// `BoneId` is expected.
 macro_rules! define_id {
     ($(#[$meta:meta])* $vis:vis $name:ident($inner:ty)) => {
         $(#[$meta])*
@@ -123,8 +115,8 @@ define_id!(
     pub AnimationId(u16)
 );
 define_id!(
-    /// Index into [`SkeletonData::attachments`]. 32-bit because large rigs with
-    /// many skins + sequence frames exceed `u16`.
+    /// Index into [`SkeletonData::attachments`]. 32-bit because large rigs
+    /// with many skins and sequence frames exceed `u16`.
     pub AttachmentId(u32)
 );
 
@@ -140,10 +132,7 @@ mod tests {
 
     #[test]
     fn ids_are_distinct_types() {
-        // Compilation-only: a SlotId cannot be compared with a BoneId. If this
-        // ever starts compiling, the distinct-type invariant regressed.
-        fn _would_not_compile() {
-            // let _ = BoneId(0) == SlotId(0); // (kept as comment on purpose)
-        }
+        // `BoneId(0) == SlotId(0)` must not compile; nothing here checks it.
+        fn _would_not_compile() {}
     }
 }

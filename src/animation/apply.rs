@@ -25,9 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `Animation::apply` and each timeline's `apply`, ported from the 4.3
-//! timeline classes. `from`, `add` and `out` replace 4.2's blend and
-//! direction; `applied` selects the applied pose (sliders) over the
+//! `Animation::apply` and each timeline's `apply`.
+//!
+//! Shared parameters: `alpha` is the mix weight, `from` is what to mix from
+//! (see [`MixFrom`]), `add` blends additively, and `out` means the entry is
+//! mixing out. `applied` writes the applied pose (sliders) instead of the
 //! unconstrained pose (animation state).
 
 #![allow(
@@ -52,8 +54,10 @@ use crate::math::Color;
 use crate::skeleton::{Constraint, PhysicsConstraint, Skeleton, SlotPose};
 
 impl Skeleton {
-    /// `Animation::apply`: applies every timeline at `time`. Events between
-    /// `last_time` and `time` are pushed to `events`.
+    /// Applies every timeline of `animation` at `time` (seconds). With
+    /// `looping`, `time` and a positive `last_time` wrap by the duration.
+    /// Events keyed in `(last_time, time]` are pushed to `events`; `None`
+    /// skips them.
     pub fn apply_animation(
         &mut self,
         animation: AnimationId,
@@ -93,7 +97,7 @@ impl Skeleton {
     }
 }
 
-/// `Timeline::apply`.
+/// Applies one timeline. Parameters are as for [`Skeleton::apply_animation`].
 pub(crate) fn apply_timeline(
     sk: &mut Skeleton,
     sd: &SkeletonData,
@@ -895,7 +899,7 @@ fn clamp01(v: f32) -> f32 {
     v.clamp(0.0, 1.0)
 }
 
-/// `Color::set`, which clamps.
+/// Sets `c` to `v` clamped to `[0, 1]`, as spine-cpp's `Color::set` does.
 #[inline]
 fn set_color(c: &mut Color, v: Color) {
     c.r = clamp01(v.r);
@@ -904,7 +908,7 @@ fn set_color(c: &mut Color, v: Color) {
     c.a = clamp01(v.a);
 }
 
-/// `Color::add`, which clamps.
+/// Adds `d` to `c`, clamped to `[0, 1]`.
 #[inline]
 fn add_color(c: &mut Color, d: Color) {
     set_color(c, Color::new(c.r + d.r, c.g + d.g, c.b + d.b, c.a + d.a));
@@ -962,7 +966,8 @@ fn mix_channels<const N: usize>(
     }
 }
 
-/// `AttachmentTimeline::setAttachment`.
+/// Sets the slot's attachment to the one `key` names in the skeleton's skin
+/// or the default skin, or clears it when `key` is `None` or unresolved.
 pub(crate) fn set_attachment_by_key(
     sk: &mut Skeleton,
     slot: SlotId,

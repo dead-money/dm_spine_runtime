@@ -25,33 +25,24 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Curve-timeline evaluation primitives.
+//! Curve-timeline sampling and blending.
 //!
-//! Ports `spine::Animation::search`, `spine::CurveTimeline::getBezierValue`,
-//! `spine::CurveTimeline1::getCurveValue`, `spine::CurveTimeline2::getCurveValue`,
-//! and the `getRelativeValue` / `getAbsoluteValue` / `getScaleValue` helpers
-//! on `CurveTimeline1`. All operate on raw `[f32]` slices so callers can
-//! pass either field from [`CurveFrames`][crate::data::CurveFrames] or local
-//! scratch buffers.
+//! Functions take the raw `frames` / `curves` slices of a
+//! [`CurveFrames`][crate::data::CurveFrames], so they also work on scratch
+//! buffers.
 
-// Curve evaluation uses spine-cpp's short variable names (x, y, s, i, j, n)
-// verbatim; renaming loses the diff-ability against the reference.
+// spine-cpp's short variable names, kept so the code diffs against it.
 #![allow(clippy::many_single_char_names)]
-// `alpha == 1.0` and `blend == MixBlend::Setup` are literal tag checks from
-// spine-cpp — they're not the "imprecise equality" case float_cmp flags.
+// `alpha == 1.0` is an exact sentinel check, as in spine-cpp.
 #![allow(clippy::float_cmp)]
 
 use crate::animation::{BEZIER_SIZE, CURVE_BEZIER, CURVE_LINEAR, CURVE_STEPPED, MixFrom};
 
-/// Compute the 9 `(x, y)` bezier samples spine-cpp stores as an 18-float
-/// segment in `CurveFrames::curves`. Inputs are the wire-format control
-/// points plus the surrounding frames' `(time, value)` pairs; output matches
-/// `spine::CurveTimeline::setBezier`'s layout (x0, y0, x1, y1, …).
-///
-/// Used by the binary loader to materialise the runtime `_curves` layout
-/// that [`curve_value1`] / [`curve_value2`] / [`bezier_value`] expect.
+/// The 9 `(x, y)` samples of one bezier segment, laid out `x0, y0, x1, y1, …`
+/// as stored in `CurveFrames::curves`. `(time1, value1)` and `(time2, value2)`
+/// are the segment's keys; `cx1..cy2` are its control points.
 #[must_use]
-#[allow(clippy::too_many_arguments)] // matches spine-cpp's 10-param setBezier signature
+#[allow(clippy::too_many_arguments)]
 pub fn compute_bezier_samples(
     time1: f32,
     value1: f32,
@@ -62,11 +53,9 @@ pub fn compute_bezier_samples(
     time2: f32,
     value2: f32,
 ) -> [f32; BEZIER_SIZE] {
-    // Taylor-series-style bezier subdivision, copied literally from
-    // `spine-cpp/src/spine/CurveTimeline.cpp` `CurveTimeline::setBezier`.
-    // The magic fractions (0.03, 0.006, 0.3, 0.16666667) fall out of
-    // 9-segment uniform sampling of a cubic bezier; changing them breaks
-    // the bit-for-bit match against fixtures.
+    // Forward differencing at t = 0.1, 0.2, …, 0.9, from
+    // `CurveTimeline::setBezier`. Keep the constants literal for bit-exact
+    // parity.
     let tmpx = (time1 - cx1 * 2.0 + cx2) * 0.03;
     let tmpy = (value1 - cy1 * 2.0 + cy2) * 0.03;
     let dddx = ((cx1 - cx2) * 3.0 - time1 + time2) * 0.006;
@@ -91,11 +80,9 @@ pub fn compute_bezier_samples(
     out
 }
 
-/// Find the largest `i` in `step, 2*step, 3*step, …` with `frames[i] <= target`.
-///
-/// Returns `frames.len() - step` when every frame after index 0 is still
-/// less than or equal to `target` (i.e. we're past the last keyframe). Ports
-/// `spine::Animation::search(Vector<float>&, float, int)`.
+/// Index of the last frame (a multiple of `step`) whose time is `<= target`.
+/// Returns 0 when `target` precedes the second frame, and `frames.len() - step`
+/// past the last frame.
 #[must_use]
 pub fn search(frames: &[f32], target: f32, step: usize) -> usize {
     let n = frames.len();
@@ -109,21 +96,15 @@ pub fn search(frames: &[f32], target: f32, step: usize) -> usize {
     n - step
 }
 
-/// Bezier-segment interpolation for a curve-timeline value.
+/// Samples one channel of a bezier segment at `time`.
 ///
-/// `frames` is the timeline's frame data (interleaved times + values),
-/// `curves` is the per-frame type codes followed by bezier samples.
-/// `frame_index` is the leftmost frame in the segment (step-aligned),
-/// `value_offset` is the offset into `frames[frame_index..]` of the value
-/// column we're reading. `frame_entries` is the stride (2 for
-/// `CurveTimeline1`, 3 for `CurveTimeline2`, more for the colour timelines).
-/// `i` is the absolute offset into `curves` of the bezier segment's first
-/// x-sample (i.e. `frames.len()_over_stride + bezier_seg * BEZIER_SIZE`
-/// — caller decodes it from `curves[frame] - CURVE_BEZIER`).
-///
-/// Ports `spine::CurveTimeline::getBezierValue`.
+/// `frame_index` is the segment's start frame in `frames`, `value_offset`
+/// the channel's offset within a frame, and `frame_entries` the frame stride.
+/// `i` is the segment's start offset in `curves`:
+/// `curves[frame_index / frame_entries] - CURVE_BEZIER`, plus `BEZIER_SIZE`
+/// per later channel.
 #[must_use]
-#[allow(clippy::too_many_arguments)] // mirrors spine-cpp's eight-parameter signature
+#[allow(clippy::too_many_arguments)]
 pub fn bezier_value(
     frames: &[f32],
     curves: &[f32],
@@ -133,15 +114,13 @@ pub fn bezier_value(
     i: usize,
     frame_entries: usize,
 ) -> f32 {
-    // First bezier sample's x is > time → we're in the segment between
-    // `frames[frame_index]` and the first sample, so linear-interpolate.
+    // Before the first sample: interpolate from the start key.
     if curves[i] > time {
         let x = frames[frame_index];
         let y = frames[frame_index + value_offset];
         return y + (time - x) / (curves[i] - x) * (curves[i + 1] - y);
     }
 
-    // Walk the 9 (x, y) bezier samples looking for the first whose x >= time.
     let n = i + BEZIER_SIZE;
     let mut j = i + 2;
     while j < n {
@@ -153,30 +132,21 @@ pub fn bezier_value(
         j += 2;
     }
 
-    // Past the last sample: interpolate between the last sample and the
-    // next frame's value. spine-cpp advances `frame_index` by frame_entries
-    // here, then reads frames[frame_index], frames[frame_index + value_offset].
+    // Past the last sample: interpolate to the next key.
     let next_frame = frame_index + frame_entries;
     let x = curves[n - 2];
     let y = curves[n - 1];
     y + (time - x) / (frames[next_frame] - x) * (frames[next_frame + value_offset] - y)
 }
 
-/// Sample a single-value curve-timeline (stride 2) at `time`.
-///
-/// Expects `frames = [t0, v0, t1, v1, …]` and `curves = [type_0, type_1,
-/// …, type_(N-1), bezier_samples…]`. Ports
-/// `spine::CurveTimeline1::getCurveValue`.
+/// Samples a one-value curve timeline (`frames = [t0, v0, t1, v1, …]`) at
+/// `time`. `time` must be at or after the first key.
 #[must_use]
 pub fn curve_value1(frames: &[f32], curves: &[f32], time: f32) -> f32 {
     const ENTRIES: usize = 2;
     const VALUE: usize = 1;
 
-    // Find the frame index i (always a multiple of ENTRIES) whose time is
-    // the largest <= `time`. spine-cpp inlines this as a linear scan
-    // starting at `ii = 2`; port it literally (isize to carry the "past
-    // last frame" default across the signed comparison) to keep the
-    // search behaviour identical.
+    // spine-cpp's inlined search, kept literal.
     let mut i: isize = frames.len() as isize - ENTRIES as isize;
     let mut ii = ENTRIES;
     while ii as isize <= i {
@@ -210,10 +180,8 @@ pub fn curve_value1(frames: &[f32], curves: &[f32], time: f32) -> f32 {
     }
 }
 
-/// Sample a two-value curve-timeline (stride 3, e.g. `Translate`, `Scale`,
-/// `Shear`) at `time`. Returns `(value1, value2)`.
-///
-/// Ports the inline evaluation in `TranslateTimeline::apply` etc.
+/// Samples a two-value curve timeline (`frames = [t0, x0, y0, …]`) at `time`.
+/// `time` must be at or after the first key.
 #[must_use]
 pub fn curve_value2(frames: &[f32], curves: &[f32], time: f32) -> (f32, f32) {
     const ENTRIES: usize = 3;
@@ -250,13 +218,7 @@ pub fn curve_value2(frames: &[f32], curves: &[f32], time: f32) -> (f32, f32) {
     }
 }
 
-/// Blend a `CurveTimeline1` sample into a "relative" target (translate,
-/// rotate, shear) according to `blend` and `alpha`. Ports
-/// `CurveTimeline1::getRelativeValue`.
-///
-/// `current` is the target's current runtime value; `setup` is its
-/// setup-pose value.
-/// Value to use before a timeline's first key.
+/// The value a property takes before a timeline's first key.
 #[inline]
 #[must_use]
 pub fn before_first_key(from: MixFrom, alpha: f32, current: f32, setup: f32) -> f32 {
@@ -267,7 +229,8 @@ pub fn before_first_key(from: MixFrom, alpha: f32, current: f32, setup: f32) -> 
     }
 }
 
-/// `CurveTimeline1::getRelativeValue`: keyed values are offsets from setup.
+/// `CurveTimeline1::getRelativeValue`: keyed values are offsets from
+/// `setup`. `current` is the property's value before this timeline.
 #[must_use]
 pub fn relative_value(
     frames: &[f32],
@@ -290,7 +253,8 @@ pub fn relative_value(
     }
 }
 
-/// `CurveTimeline1::getAbsoluteValue`. `value` overrides the curve sample.
+/// `CurveTimeline1::getAbsoluteValue`: keyed values replace the property.
+/// `value`, when given, is used instead of the curve sample.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn absolute_value(
@@ -351,7 +315,7 @@ pub fn scale_value(
     base + (value - base) * alpha
 }
 
-/// `MathUtil::sign`: 0 for 0, unlike `f32::signum`.
+/// Returns 0 for 0 (and NaN), unlike `f32::signum`.
 #[inline]
 #[must_use]
 pub fn sign(v: f32) -> f32 {
@@ -430,10 +394,7 @@ mod tests {
     /// Two-frame linear ramp from 0 at t=0 to 10 at t=1.
     fn linear_ramp_1() -> (Vec<f32>, Vec<f32>) {
         // Frame layout: [t0, v0, t1, v1] = [0, 0, 1, 10].
-        // Curves: two frames → [type_0, type_1] = [LINEAR, LINEAR]. Note:
-        // spine-cpp's CurveTimeline ctor sets curves[frameCount - 1] = STEPPED,
-        // but for apply() purposes, curves[last_frame] is never read (search
-        // returns a non-last index unless time exceeds the last frame).
+        // The last frame's curve type is never read.
         (
             vec![0.0, 0.0, 1.0, 10.0],
             vec![CURVE_LINEAR as f32, CURVE_STEPPED as f32],

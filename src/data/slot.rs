@@ -41,28 +41,26 @@ pub enum BlendMode {
     Screen,
 }
 
-/// Immutable setup-pose slot, owned by [`SkeletonData`].
+/// Setup-pose slot, owned by [`SkeletonData`].
 ///
 /// [`SkeletonData`]: crate::data::SkeletonData
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotData {
     pub index: SlotId,
     pub name: String,
-    /// Bone this slot is parented to.
     pub bone: BoneId,
     pub color: Color,
-    /// "Tint-black" secondary color, applied only when enabled on export.
+    /// Tint-black color; `None` if the slot has none.
     pub dark_color: Option<Color>,
-    /// Name of the attachment shown in the setup pose — `None` means no
-    /// attachment is visible by default.
+    /// Attachment shown in the setup pose; `None` for no attachment.
     pub attachment_name: Option<String>,
     /// `attachment_name` interned; `None` for no or an empty name.
     pub attachment_key: Option<SkinKey>,
     pub blend_mode: BlendMode,
 
-    // Non-essential.
+    // Nonessential.
     pub visible: bool,
-    /// Editor-only hint for the attachment path; unused at runtime.
+    /// Never set by the loaders; unused at runtime.
     pub path: String,
 }
 

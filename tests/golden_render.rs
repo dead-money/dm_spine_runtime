@@ -25,27 +25,13 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Diffs [`SkeletonRenderer::render`][spine_runtime::render::SkeletonRenderer::render]
-//! output against per-rig fixtures captured from spine-cpp's
-//! `SkeletonRenderer` (see `tools/spine_capture/capture_render.sh`).
+//! Diffs setup-pose [`SkeletonRenderer::render`][spine_runtime::render::SkeletonRenderer::render]
+//! output against spine-cpp fixtures from `tools/spine_capture/capture_render.sh`.
 //!
-//! **Header-level diff.** Per-command we check:
-//! - `texture` — is the command routed to the right atlas page
-//! - `blend` — mode matches the slot's `BlendMode`
-//! - `num_vertices` / `num_indices` — batching produced the same run sizes
-//! - `color` / `dark_color` — skeleton × slot × attachment tint packing
-//!
-//! Per-vertex position/UV content is *not* diffed here — it's already
-//! covered by `golden_pose` (every bone's world matrix is bit-for-bit
-//! identical) and `update_region` + `compute_world_vertices` are both
-//! literal ports of the spine-cpp math. Duplicating the check just
-//! makes fixtures brittle without catching anything new.
-//!
-//! The first-vertex fields captured in the fixture format
-//! (`first_pos`, `last_pos`, `first_uv`) are kept on-disk for future
-//! opt-in diffs when we want them — at the moment their ordering is
-//! batcher-sensitive, so headers-only gives the same structural
-//! coverage with no order dependence.
+//! Each command's texture page, blend mode, vertex and index counts, and
+//! first-vertex color and dark color must match exactly. Its first and last
+//! vertex positions and first UV must match to within the capture's 6
+//! significant digits.
 
 mod common;
 

@@ -312,14 +312,17 @@ fn parent_world(bones: &[Bone], i: usize) -> Option<(f32, f32, f32, f32, f32, f3
     Some((pp.a, pp.b, pp.c, pp.d, pp.world_x, pp.world_y))
 }
 
-/// `BonePose::update`: computes the applied world transform once per frame.
+/// Computes the applied world transform unless it was already computed this
+/// frame.
 pub fn update_bone(bones: &mut [Bone], i: usize, f: &Frame) {
     if bones[i].applied().world != f.update {
         update_world_transform(bones, i, f);
     }
 }
 
-/// `BonePose::updateWorldTransform`.
+/// Computes the applied world transform from the local transform and the
+/// parent's applied world transform, first recovering the local transform if
+/// a constraint wrote the world transform this frame.
 #[allow(clippy::many_single_char_names)]
 pub fn update_world_transform(bones: &mut [Bone], i: usize, f: &Frame) {
     if bones[i].applied().local == f.update {
@@ -424,8 +427,8 @@ pub fn update_world_transform(bones: &mut [Bone], i: usize, f: &Frame) {
     }
 }
 
-/// `BonePose::updateLocalTransform`: recovers the local transform from a
-/// world transform a constraint wrote.
+/// Recovers the applied local transform from its world transform and the
+/// parent's.
 #[allow(clippy::many_single_char_names)]
 pub fn update_local_transform(bones: &mut [Bone], i: usize, f: &Frame) {
     let parent = parent_world(bones, i);
