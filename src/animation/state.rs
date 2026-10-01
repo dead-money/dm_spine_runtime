@@ -310,6 +310,15 @@ type IdMap<V> = HashMap<PropertyId, V, BuildHasherDefault<IdHasher>>;
 struct Slot {
     generation: u32,
     entry: Option<TrackEntry>,
+    spare: EntryBuffers,
+}
+
+/// A disposed entry's emptied buffers, handed to the next entry in its slot.
+#[derive(Default)]
+struct EntryBuffers {
+    timeline_mode: Vec<u8>,
+    timeline_hold_mix: Vec<Option<EntryId>>,
+    timelines_rotation: Vec<f32>,
 }
 
 struct Queued {
@@ -437,9 +446,13 @@ impl AnimationState {
             .expect("live track entry")
     }
 
-    fn alloc(&mut self, entry: TrackEntry) -> EntryId {
+    fn alloc(&mut self, mut entry: TrackEntry) -> EntryId {
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
+            let spare = std::mem::take(&mut slot.spare);
+            entry.timeline_mode = spare.timeline_mode;
+            entry.timeline_hold_mix = spare.timeline_hold_mix;
+            entry.timelines_rotation = spare.timelines_rotation;
             slot.entry = Some(entry);
             EntryId {
                 index,
@@ -449,6 +462,7 @@ impl AnimationState {
             self.slots.push(Slot {
                 generation: 0,
                 entry: Some(entry),
+                spare: EntryBuffers::default(),
             });
             EntryId {
                 index: (self.slots.len() - 1) as u32,
@@ -459,8 +473,18 @@ impl AnimationState {
 
     fn dispose(&mut self, id: EntryId) {
         let slot = &mut self.slots[id.index as usize];
-        if slot.generation == id.generation && slot.entry.is_some() {
-            slot.entry = None;
+        if slot.generation != id.generation {
+            return;
+        }
+        if let Some(entry) = slot.entry.take() {
+            slot.spare = EntryBuffers {
+                timeline_mode: entry.timeline_mode,
+                timeline_hold_mix: entry.timeline_hold_mix,
+                timelines_rotation: entry.timelines_rotation,
+            };
+            slot.spare.timeline_mode.clear();
+            slot.spare.timeline_hold_mix.clear();
+            slot.spare.timelines_rotation.clear();
             slot.generation = slot.generation.wrapping_add(1);
             self.free.push(id.index);
         }
@@ -804,7 +828,7 @@ impl AnimationState {
             if reverse {
                 self.events_reverse(anim, animation_last, animation_time);
             }
-            self.queue_events(cur, animation_time, events);
+            self.queue_events(cur, animation_time, Some(events));
             self.events.clear();
             let c = self.e_mut(cur);
             c.next_animation_last = animation_time;
@@ -962,8 +986,7 @@ impl AnimationState {
             self.events_reverse(anim, animation_last, animation_time);
         }
         if to_mix_duration > 0.0 {
-            let mut sink = Vec::new();
-            self.queue_events(from, animation_time, &mut sink);
+            self.queue_events(from, animation_time, None);
         }
         self.events.clear();
         let f = self.e_mut(from);
@@ -1016,7 +1039,12 @@ impl AnimationState {
         }
     }
 
-    fn queue_events(&mut self, entry: EntryId, animation_time: f32, out: &mut Vec<Event>) {
+    fn queue_events(
+        &mut self,
+        entry: EntryId,
+        animation_time: f32,
+        mut out: Option<&mut Vec<Event>>,
+    ) {
         let e = self.e(entry);
         let (start, end) = (e.animation_start, e.animation_end);
         let duration = end - start;
@@ -1046,7 +1074,7 @@ impl AnimationState {
                 break;
             }
             if ev.time >= start && ev.time <= end {
-                self.queue_keyframe(entry, ev, out);
+                self.queue_keyframe(entry, ev, out.as_deref_mut());
             }
             i += 1;
         }
@@ -1055,14 +1083,16 @@ impl AnimationState {
         }
         for ev in &events[i..] {
             if ev.time >= start && ev.time <= end {
-                self.queue_keyframe(entry, ev, out);
+                self.queue_keyframe(entry, ev, out.as_deref_mut());
             }
         }
         self.events = events;
     }
 
-    fn queue_keyframe(&mut self, entry: EntryId, event: &Event, out: &mut Vec<Event>) {
-        out.push(event.clone());
+    fn queue_keyframe(&mut self, entry: EntryId, event: &Event, out: Option<&mut Vec<Event>>) {
+        if let Some(out) = out {
+            out.push(event.clone());
+        }
         self.queue.push(Queued {
             kind: EventType::Event,
             entry,
