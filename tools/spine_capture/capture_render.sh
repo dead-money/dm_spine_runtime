@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Dump the spine-cpp SkeletonRenderer output for every example rig at
-# setup pose. Fixtures land at tests/fixtures/render/{rig}/{variant}.json.
-#
-# Mirrors capture_all.sh's atlas-pairing rules (use non-PMA atlases).
+# Captures spine-cpp SkeletonRenderer output at the setup pose for every
+# example .skel into tests/fixtures/render/<rig>/<variant>.json. Atlases pair
+# as in capture_all.sh.
 
 set -euo pipefail
 

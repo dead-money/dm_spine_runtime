@@ -25,11 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Timeline evaluation — curve sampling + `Timeline::apply` logic.
+//! Animation playback: curve sampling, timeline application, and
+//! [`AnimationState`].
 //!
-//! Data shapes (the [`Timeline`][crate::data::Timeline] enum, [`CurveFrames`][crate::data::animation::CurveFrames],
-//! etc.) live in [`crate::data::animation`]. This module is the runtime side
-//! — the code that reads those shapes and pushes values into a
+//! The timeline data lives in [`crate::data::animation`]; this module reads
+//! it and writes the resulting values into a
 //! [`Skeleton`][crate::skeleton::Skeleton].
 
 pub mod apply;
@@ -47,14 +47,8 @@ pub use state_data::{AnimationStateData, MixAnimationNotFound};
 
 use crate::data::EventId;
 
-/// Runtime event firing — one per animation frame that tripped since the
-/// previous `apply` call. Carries a copy of the frame's int/float/string
-/// values so downstream consumers can read them without chasing back to
-/// [`AnimationEvent`][crate::data::AnimationEvent].
-///
-/// Pushed into the `events` out-param by [`Timeline::Event`][crate::data::Timeline::Event]
-/// during `Animation::apply`. [`AnimationState`] also drains these into its
-/// lifecycle event queue.
+/// A keyframe event that fired between the last and current apply time.
+/// Copies the key's values from [`AnimationEvent`][crate::data::AnimationEvent].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// Index into [`SkeletonData::events`][crate::data::SkeletonData::events].
@@ -81,18 +75,18 @@ pub enum MixFrom {
     First,
 }
 
-/// Number of floats per bezier segment stored in `CurveFrames::curves`.
+/// Floats per bezier segment in `CurveFrames::curves`: 9 (x, y) samples.
 ///
-/// Ports `spine-cpp`'s `CurveTimeline::BEZIER_SIZE`: 9 samples × 2 floats
-/// (x, y) each. The exact shape is `_curves = [type_frame_0, …,
-/// type_frame_(N-1), bezier_sample_0_x, bezier_sample_0_y, …]`; the per-frame
-/// type code either encodes `LINEAR` / `STEPPED` directly or an absolute
-/// offset into the bezier-sample tail (see [`curve::curve_value1`]).
+/// `curves` holds one curve-type code per frame, then the bezier samples.
+/// A frame's code is [`CURVE_LINEAR`], [`CURVE_STEPPED`], or
+/// [`CURVE_BEZIER`] plus the index of its first channel's samples in
+/// `curves`; later channels follow at `BEZIER_SIZE` strides.
 pub const BEZIER_SIZE: usize = 18;
 
-/// Linear interpolation curve-type code (stored in `CurveFrames::curves[frame]`).
+/// Linear interpolation curve-type code.
 pub const CURVE_LINEAR: i32 = 0;
 /// Stepped (no interpolation) curve-type code.
 pub const CURVE_STEPPED: i32 = 1;
-/// Bezier base code. Actual stored value is `BEZIER + offset_into_curves`.
+/// Bezier curve-type code. The stored value is this plus the sample index
+/// in `CurveFrames::curves`.
 pub const CURVE_BEZIER: i32 = 2;

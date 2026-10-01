@@ -25,9 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Integration tests: load every example skeleton's `.json` export and assert
-//! basic structural invariants, then spot-check against the matching `.skel`
-//! load to confirm the two formats produce compatible `SkeletonData`.
+//! Every example `.json` export loads and matches its `.skel` export: bones,
+//! slots, constraints and skins within the JSON's precision, and the same
+//! timeline kinds and targets per animation.
 
 mod common;
 
@@ -234,8 +234,7 @@ fn assert_close(a: &impl std::fmt::Debug, b: &impl std::fmt::Debug, label: &str)
     assert!(same, "{label}\n  json: {a:?}\n  skel: {b:?}");
 }
 
-/// Order-independent summary of an animation's timelines: kind, target and
-/// key count.
+/// Order-independent summary of an animation's timelines: kind and target.
 fn timeline_signature(sd: &SkeletonData, name: &str) -> Vec<String> {
     let anim = sd.animations.iter().find(|a| a.name == name).unwrap();
     let mut sig: Vec<String> = anim

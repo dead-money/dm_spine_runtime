@@ -133,8 +133,8 @@ struct Mode {
     /// Whether the step with this index, counted across the script, is a full
     /// apply. The last step before each command is always full.
     full: fn(usize) -> bool,
-    /// The other steps call [`AnimationState::apply_events`] rather than
-    /// apply and then reset every entry's rotation directions.
+    /// Non-full steps call [`AnimationState::apply_events`] if set; otherwise
+    /// they apply and then reset every entry's rotation directions.
     events_only: bool,
 }
 
@@ -156,8 +156,9 @@ fn reset_rotation_directions(state: &mut AnimationState) {
     }
 }
 
-/// Runs the script, returning `(frames, events)` in the fixture's shape and
-/// a trace of every drained event, keyframe event and entry state.
+/// Runs the script, returning the skeleton at each `dump`, the lifecycle
+/// events in the fixture's string form, and a trace of every drained event,
+/// keyframe event and entry state.
 fn run(
     data: &Arc<SkeletonData>,
     script: &str,

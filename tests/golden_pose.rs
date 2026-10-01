@@ -25,11 +25,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Golden-pose test: loads every rig with a captured setup-pose fixture,
-//! poses it via `Skeleton::new` + `update_cache` + `update_world_transform`,
-//! and diffs every bone's world matrix and applied-local fields against
-//! the fixture (which was captured from spine-cpp, see
-//! `tools/spine_capture/`).
+//! Diffs every rig's setup pose against spine-cpp fixtures from
+//! `tools/spine_capture/capture_all.sh`: update cache order, plus each bone's
+//! world matrix and validated local transform after
+//! `update_world_transform(Physics::None)`.
 
 mod common;
 
@@ -195,8 +194,6 @@ fn first_bone_mismatch(
     None
 }
 
-// Phase 5e: fixtures regenerated with the full constraint pipeline
-// enabled via Skeleton::updateWorldTransform.
 #[test]
 fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
     let fixtures = collect_fixtures();

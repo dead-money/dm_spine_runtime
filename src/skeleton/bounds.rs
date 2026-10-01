@@ -25,36 +25,26 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `SkeletonBounds` — collects every visible
-//! [`BoundingBoxAttachment`][crate::data::BoundingBoxAttachment], computes its world-space polygon, and
-//! exposes hit-testing + coarse AABB queries.
-//!
-//! Literal port of `spine-cpp/src/spine/SkeletonBounds.cpp` (~230
-//! LOC). Used by gameplay code (projectile hits, click-to-select,
-//! spatial culling) — orthogonal to rendering, shares the
-//! `Skeleton::compute_world_vertices` helper.
+//! World-space polygons for the bounding boxes a skeleton shows, with
+//! hit tests and AABB queries.
 
 #![allow(clippy::many_single_char_names)] // spine-cpp short names preserved for diff parity.
 
 use crate::data::{Attachment, AttachmentRef};
 use crate::skeleton::Skeleton;
 
-/// One bounding-box attachment's world polygon — interleaved
-/// `x, y` pairs. Vertex count = `count / 2`.
+/// One bounding box's world polygon.
 #[derive(Debug, Clone, Default)]
 pub struct BoundsPolygon {
-    /// Flat interleaved world-space vertex positions. `count`
-    /// carries the active prefix length since the underlying `Vec`
-    /// may have extra capacity from reuse.
+    /// Interleaved world `x, y` pairs. Only the first `count` floats are
+    /// current; the rest are left over from reuse.
     pub vertices: Vec<f32>,
-    /// Number of *floats* in use (always even). spine-cpp calls this
-    /// `_count` on its `Polygon` type.
+    /// Floats in use, twice the vertex count.
     pub count: usize,
 }
 
 impl BoundsPolygon {
-    /// Iterate the `(x, y)` pairs within the active prefix of
-    /// [`Self::vertices`].
+    /// The `(x, y)` pairs in use.
     pub fn iter_vertices(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
         self.vertices[..self.count]
             .as_chunks::<2>()
@@ -64,21 +54,14 @@ impl BoundsPolygon {
     }
 }
 
-/// Hit-test + AABB helper over a `Skeleton`'s active
-/// [`BoundingBoxAttachment`][crate::data::BoundingBoxAttachment]s. Recompute with [`Self::update`] every
-/// frame the skeleton pose changes.
+/// Hit tests against the [`BoundingBoxAttachment`](crate::data::BoundingBoxAttachment)s
+/// a skeleton shows. Call [`Self::update`] after each pose change.
 #[derive(Debug, Default)]
 pub struct SkeletonBounds {
-    /// `AttachmentId` of each bounding box, one per polygon. Parallel
-    /// to [`Self::polygons`].
+    /// Parallel to `polygons`.
     bounding_boxes: Vec<AttachmentRef>,
-    /// World-space polygons, one per entry in [`Self::bounding_boxes`].
-    /// Buffers are pooled — on `update` we truncate the outer Vec to
-    /// the active count but retain inner buffer capacity.
+    /// Polygons kept across updates reuse their vertex buffers.
     polygons: Vec<BoundsPolygon>,
-    /// Axis-aligned bounding box covering every polygon. Valid after
-    /// a call to [`Self::update`] with `update_aabb = true`; otherwise
-    /// spans `[f32::MIN, f32::MAX]`.
     min_x: f32,
     min_y: f32,
     max_x: f32,
@@ -91,19 +74,10 @@ impl SkeletonBounds {
         Self::default()
     }
 
-    /// Repopulate `self` from `skeleton`'s current pose. Scans the
-    /// slot list, collects every active `BoundingBoxAttachment`,
-    /// and computes its world-space polygon. If `update_aabb` is
-    /// `true`, also recomputes the AABB; otherwise `aabb_*` queries
-    /// conservatively return `true` (spine-cpp convention).
-    ///
-    /// # Panics
-    /// Panics if a bounding box's `vertex_data.world_vertices_length`
-    /// exceeds `i32::MAX` (practically impossible — Spine exports
-    /// are capped well below this).
+    /// Collects the world polygon of every bounding box shown by a slot
+    /// whose bone is active, in slot order. With `update_aabb`, also fits
+    /// the AABB to them; otherwise the AABB spans every finite coordinate.
     pub fn update(&mut self, skeleton: &Skeleton, update_aabb: bool) {
-        // Reuse allocations: drop attachment refs but keep polygon
-        // buffers around for the next pass.
         self.bounding_boxes.clear();
         let reused = self.polygons.len();
         let mut slot_count_seen = 0;
@@ -121,14 +95,12 @@ impl SkeletonBounds {
                 continue;
             };
 
-            // Either reuse an existing BoundsPolygon buffer or push a
-            // fresh one.
             let count = bbox.vertex_data.world_vertices_length as usize;
             let polygon = if slot_count_seen < reused {
                 &mut self.polygons[slot_count_seen]
             } else {
                 self.polygons.push(BoundsPolygon::default());
-                self.polygons.last_mut().unwrap()
+                &mut self.polygons[slot_count_seen]
             };
             polygon.count = count;
             if polygon.vertices.len() < count {
@@ -148,7 +120,6 @@ impl SkeletonBounds {
             slot_count_seen += 1;
         }
 
-        // Drop any trailing reused-but-now-unused polygon slots.
         self.polygons.truncate(slot_count_seen);
 
         if update_aabb {
@@ -188,14 +159,13 @@ impl SkeletonBounds {
         self.max_y = max_y;
     }
 
-    /// Returns `true` if the AABB contains `(x, y)`.
+    /// Whether the AABB contains `(x, y)`.
     #[must_use]
     pub fn aabb_contains_point(&self, x: f32, y: f32) -> bool {
         x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
     }
 
-    /// Returns `true` if the AABB intersects the segment
-    /// `(x1, y1) → (x2, y2)`.
+    /// Whether the AABB intersects the segment from `(x1, y1)` to `(x2, y2)`.
     #[must_use]
     pub fn aabb_intersects_segment(&self, x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
         let (min_x, min_y, max_x, max_y) = (self.min_x, self.min_y, self.max_x, self.max_y);
@@ -226,7 +196,7 @@ impl SkeletonBounds {
         false
     }
 
-    /// Returns `true` if `self`'s AABB intersects `other`'s AABB.
+    /// Whether the two AABBs overlap.
     #[must_use]
     pub fn aabb_intersects_skeleton(&self, other: &SkeletonBounds) -> bool {
         self.min_x < other.max_x
@@ -235,8 +205,7 @@ impl SkeletonBounds {
             && self.max_y > other.min_y
     }
 
-    /// Point-in-polygon test for a specific [`BoundsPolygon`]
-    /// (ray-casting / even-odd rule).
+    /// Even-odd point-in-polygon test. `false` for fewer than three vertices.
     #[must_use]
     pub fn polygon_contains_point(polygon: &BoundsPolygon, x: f32, y: f32) -> bool {
         let vertices = &polygon.vertices;
@@ -265,9 +234,7 @@ impl SkeletonBounds {
         inside
     }
 
-    /// Returns the [`AttachmentRef`] of the first bounding box
-    /// containing `(x, y)`, or `None`. Walks polygons in the order
-    /// they were collected by [`Self::update`].
+    /// The first bounding box, in slot order, whose polygon contains `(x, y)`.
     #[must_use]
     pub fn contains_point(&self, x: f32, y: f32) -> Option<AttachmentRef> {
         for (i, polygon) in self.polygons.iter().enumerate() {
@@ -278,9 +245,8 @@ impl SkeletonBounds {
         None
     }
 
-    /// Returns the [`AttachmentRef`] of the first bounding box
-    /// whose polygon intersects the segment `(x1, y1) → (x2, y2)`,
-    /// or `None`.
+    /// The first bounding box, in slot order, whose polygon intersects the
+    /// segment from `(x1, y1)` to `(x2, y2)`.
     #[must_use]
     pub fn intersects_segment(&self, x1: f32, y1: f32, x2: f32, y2: f32) -> Option<AttachmentRef> {
         for (i, polygon) in self.polygons.iter().enumerate() {
@@ -291,7 +257,8 @@ impl SkeletonBounds {
         None
     }
 
-    /// Segment-polygon intersection for a specific [`BoundsPolygon`].
+    /// Whether the segment from `(x1, y1)` to `(x2, y2)` crosses an edge of
+    /// `polygon`. `false` for fewer than three vertices.
     #[must_use]
     pub fn polygon_intersects_segment(
         polygon: &BoundsPolygon,
@@ -336,9 +303,8 @@ impl SkeletonBounds {
         false
     }
 
-    /// Returns the bounding box polygon for the given attachment,
-    /// or `None` if it's not in the last `update` pass. Requires a
-    /// prior call to [`Self::update`].
+    /// The polygon of `attachment_id` from the last [`Self::update`], if it
+    /// was shown.
     #[must_use]
     pub fn polygon_for(&self, attachment_id: AttachmentRef) -> Option<&BoundsPolygon> {
         self.bounding_boxes
@@ -347,34 +313,33 @@ impl SkeletonBounds {
             .map(|i| &self.polygons[i])
     }
 
-    /// All polygons collected by the last [`Self::update`] call.
+    /// Polygons from the last [`Self::update`].
     #[must_use]
     pub fn polygons(&self) -> &[BoundsPolygon] {
         &self.polygons
     }
 
-    /// All bounding-box attachments collected by the last
-    /// [`Self::update`] call. Parallel to [`Self::polygons`].
+    /// Bounding boxes from the last [`Self::update`], parallel to
+    /// [`Self::polygons`].
     #[must_use]
     pub fn bounding_boxes(&self) -> &[AttachmentRef] {
         &self.bounding_boxes
     }
 
-    /// AABB width. Returns `0` when [`Self::update`] was never
-    /// called or `update_aabb = false`.
+    /// AABB width: `0` before the first [`Self::update`], infinite after one
+    /// without `update_aabb`, negative infinity when there are no polygons.
     #[must_use]
     pub fn width(&self) -> f32 {
         self.max_x - self.min_x
     }
 
-    /// AABB height.
+    /// AABB height, with the same edge cases as [`Self::width`].
     #[must_use]
     pub fn height(&self) -> f32 {
         self.max_y - self.min_y
     }
 
-    /// Tuple `(min_x, min_y, max_x, max_y)` for the last computed
-    /// AABB.
+    /// `(min_x, min_y, max_x, max_y)`.
     #[must_use]
     pub fn aabb(&self) -> (f32, f32, f32, f32) {
         (self.min_x, self.min_y, self.max_x, self.max_y)
@@ -413,15 +378,14 @@ mod tests {
         assert!(SkeletonBounds::polygon_intersects_segment(
             &polygon, -5.0, 5.0, 5.0, 5.0
         ));
-        // Segment entirely outside below.
+        // Segment entirely outside.
         assert!(!SkeletonBounds::polygon_intersects_segment(
             &polygon, -5.0, -5.0, -1.0, -5.0
         ));
     }
 
-    /// End-to-end: an example rig with bounding boxes (goblins has
-    /// many) updates without panicking and produces a non-empty
-    /// polygon set.
+    /// A real rig's bounding boxes yield finite, even-length polygons.
+    /// Skipped when the example exports are missing.
     #[test]
     fn update_on_example_rig() {
         use crate::atlas::Atlas;
@@ -451,9 +415,6 @@ mod tests {
         let mut bounds = SkeletonBounds::new();
         bounds.update(&sk, true);
 
-        // goblins-pro uses bounding boxes for hit-testing — expect
-        // at least one. If an example ever drops them the test is
-        // skipped (not failed) at the assertion below.
         for polygon in bounds.polygons() {
             assert!(polygon.count > 0);
             assert!(polygon.count.is_multiple_of(2));

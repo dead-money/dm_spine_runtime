@@ -25,29 +25,17 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Shared `VertexAttachment::computeWorldVertices` helper — transforms
-//! an attachment's stored local vertices into world space using the
-//! slot's bone (unweighted) or a weighted sum over multiple bones
-//! (weighted), optionally adding the slot's per-vertex deform offsets.
-//!
-//! Used by mesh rendering, path constraints, bounding-box hit tests, and
-//! clipping-polygon construction. Literal port of
-//! `spine-cpp/src/spine/VertexAttachment.cpp::computeWorldVertices`.
+//! World-space vertices for vertex attachments (meshes, paths, bounding
+//! boxes, clipping polygons).
 
 use crate::data::{SlotId, VertexData};
 use crate::skeleton::Skeleton;
 
 impl Skeleton {
-    /// Transform `vertex_data`'s local vertices into world space, writing
-    /// interleaved `x, y` pairs into `world[offset..]` at `stride`
-    /// intervals. `start` and `count` are indexed in **local floats**
-    /// (consistent with spine-cpp — they're `2 * vertex_index` and
-    /// `2 * vertex_count` respectively).
-    ///
-    /// If the slot has a non-empty deform buffer, its values are added
-    /// on top of the local vertices before world transformation.
-    // spine-cpp signature is the same 7-arg shape (slot + start/count/buf/offset/stride);
-    // matching it is non-negotiable for 1:1 port parity.
+    /// Writes world `x, y` pairs for `vertex_data` into `world`, starting at
+    /// `offset` and `stride` floats apart. `start` and `count` are in floats
+    /// (twice the vertex index and count). A non-empty applied deform on the
+    /// slot replaces unweighted vertices and offsets weighted ones.
     #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
     pub(crate) fn compute_world_vertices(
         &self,
@@ -82,8 +70,8 @@ impl Skeleton {
             return;
         }
 
-        // Weighted — skip past the first `start / 2` weighted groups to
-        // find the initial `v` and `b` cursors.
+        // Skip the first `start / 2` vertices: `v` indexes `bones`, `skip`
+        // counts bone influences passed.
         let mut v = 0_usize;
         let mut skip = 0_usize;
         let mut i = 0_usize;

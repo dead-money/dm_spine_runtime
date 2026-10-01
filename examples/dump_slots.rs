@@ -25,11 +25,14 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Walk a skeleton's draw order and print each drawable slot's attachment
-//! kind + name + world-space bounds. Used to investigate per-slot
-//! regressions.
+//! Prints one line per unbatched render command at the setup pose: vertex and
+//! triangle counts, world-space bounds, and the slot and attachment it came
+//! from. Commands collapsed to a point are flagged `!!`.
 //!
-//! ```
+//! `SPINE_RIG`, `SPINE_SKEL` and `SPINE_ATLAS` pick the export under
+//! `../spine-runtimes/examples` (default spineboy):
+//!
+//! ```text
 //! SPINE_RIG=dragon SPINE_SKEL=dragon-ess SPINE_ATLAS=dragon-pma \
 //!     cargo run --example dump_slots
 //! ```
@@ -68,8 +71,8 @@ fn main() {
     sk.setup_pose();
     sk.update_world_transform(Physics::None);
 
-    // Build a parallel list of (drawable slot name, attachment kind) to
-    // label the render commands.
+    // Labels match commands by index, assuming the renderer emits exactly one
+    // command per visible region or mesh slot.
     let mut labels: Vec<(String, &'static str, String)> = Vec::new();
     for &slot_id in sk.draw_order.applied() {
         let slot = &sk.slots[slot_id.index()];

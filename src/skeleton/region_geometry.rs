@@ -114,7 +114,8 @@ impl RegionGeometry {
 
     /// World position of region-space point `(u, v)`, interpolated in the
     /// triangle containing it, or in the triangle it lies nearest outside.
-    /// `None` if there is no geometry.
+    /// `None` if there is no geometry or every triangle is degenerate in
+    /// region space.
     #[must_use]
     pub fn map(&self, u: f32, v: f32) -> Option<(f32, f32)> {
         let (uvs, world) = (&self.region_uvs, &self.world);

@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Walk every rig in spine-runtimes/examples/ and dump its setup-pose JSON
-# into tests/fixtures/{rig}/{variant}/setup_pose.json.
-#
-# Atlas pairing rule: each rig has one non-PMA .atlas (<rig>.atlas) and
-# one or more .skel variants (<rig>-<variant>.skel). We always use the
-# non-PMA atlas because setup-pose math is pixel-independent and the PMA
-# atlas just sets a blend-mode flag we don't read.
+# Captures the setup pose of every .skel under $SPINE_EXAMPLES (default
+# ../spine-runtimes/examples) into tests/fixtures/<rig>/<variant>/setup_pose.json.
+# Each <rig>-<variant>.skel pairs with the non-PMA <rig>.atlas, or failing
+# that any non-PMA atlas in the same directory. The pose doesn't depend on PMA.
 
 set -euo pipefail
 
@@ -35,14 +32,12 @@ while IFS= read -r -d '' skel; do
     rig="$(basename "$(dirname "$export_dir")")"
     skel_base="$(basename "$skel" .skel)"
 
-    # Variant is whatever follows "<rig>-" in the skel basename, else empty.
     if [[ "$skel_base" == "$rig" ]]; then
         variant=""
     else
         variant="${skel_base#${rig}-}"
     fi
 
-    # Match the non-PMA atlas. Fallback to any *.atlas without -pma.
     atlas="$export_dir/$rig.atlas"
     if [[ ! -f "$atlas" ]]; then
         atlas=""
@@ -67,9 +62,7 @@ while IFS= read -r -d '' skel; do
     mkdir -p "$out_dir"
     out="$out_dir/setup_pose.json"
 
-    # Pass paths relative to the workspace root so the fixture's
-    # `source_skel` / `source_atlas` provenance fields don't leak
-    # absolute filesystem paths.
+    # Relative paths keep the fixtures' source_skel / source_atlas portable.
     rel_atlas="${atlas#$RUNTIME_ROOT/../}"
     rel_skel="${skel#$RUNTIME_ROOT/../}"
     if (cd "$RUNTIME_ROOT/.." && "$BIN" "$rel_atlas" "$rel_skel" "$out"); then

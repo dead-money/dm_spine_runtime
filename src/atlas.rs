@@ -25,23 +25,20 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Parser for the Spine `.atlas` text format, ported from
-//! `spine-cpp/src/spine/Atlas.cpp`.
+//! Parser for the Spine `.atlas` text format.
 //!
-//! An atlas is a text file describing one or more texture pages and the
-//! rectangular regions within them that skeletons reference. This module only
-//! parses the metadata; actual texture pixels are loaded by the renderer
-//! (e.g. `spine_bevy` resolves `AtlasPage::name` to a `Handle<Image>`).
+//! An atlas lists texture pages and the named regions packed into them. This
+//! module parses only that metadata; loading the page images is up to the
+//! caller.
 //!
 //! # Supported features
 //!
 //! - Legacy per-region fields (`xy`, `size`, `offset`, `orig`).
 //! - 4.1+ compact fields (`bounds`, `offsets`).
-//! - Rotation written as `rotate: true` (90°), `rotate: false` (0°), or an
-//!   explicit integer degree count.
-//! - `repeat` / `filter` / `format` / `pma` page-level options.
-//! - Unknown keys captured as `(name, values)` pairs on the region — matches
-//!   the spine-cpp fallback so runtime extensions keep working.
+//! - `rotate: true` (90°), `rotate: false` (0°), or an integer degree count.
+//! - Page options `repeat`, `filter`, `format` and `pma`.
+//! - Other region keys kept as `(name, values)` pairs in
+//!   [`AtlasRegion::extras`], as spine-cpp keeps them.
 //!
 //! # Format example
 //!
@@ -57,12 +54,8 @@
 
 use thiserror::Error;
 
-/// Pixel format hint written by the Spine editor. Runtime consumers may use
-/// this to pick an appropriate GPU texture format, but most just upload the
-/// source PNG as RGBA8 and ignore the hint.
-///
-/// `Unknown` is used when the atlas omits the `format:` line or writes an
-/// unrecognised value — matching spine-cpp's silent fallback.
+/// Pixel format hint written by the Spine editor. `Unknown` when the atlas
+/// omits `format:` or writes an unrecognized value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Unknown,
@@ -96,11 +89,11 @@ pub enum TextureWrap {
     Repeat,
 }
 
-/// One texture page declared in an atlas — typically backed by a PNG file.
+/// One texture page, usually backed by a PNG file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtlasPage {
-    /// Texture filename as written in the atlas (e.g. `"spineboy.png"`). The
-    /// renderer resolves this relative to the atlas file's directory.
+    /// Texture filename as written in the atlas (e.g. `"spineboy.png"`),
+    /// relative to the atlas file's directory.
     pub name: String,
     pub width: i32,
     pub height: i32,
@@ -109,12 +102,11 @@ pub struct AtlasPage {
     pub mag_filter: TextureFilter,
     pub u_wrap: TextureWrap,
     pub v_wrap: TextureWrap,
-    /// Premultiplied-alpha flag. When true, texture pixels have been
-    /// preprocessed so that `rgb *= a` — the renderer must use `(ONE,
-    /// ONE_MINUS_SRC_ALPHA)` blending instead of the standard
-    /// `(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)`.
+    /// The texture has premultiplied alpha, so it needs `(ONE,
+    /// ONE_MINUS_SRC_ALPHA)` blending rather than `(SRC_ALPHA,
+    /// ONE_MINUS_SRC_ALPHA)`.
     pub pma: bool,
-    /// Zero-based page index within the parent atlas.
+    /// Position in [`Atlas::pages`].
     pub index: u32,
 }
 
@@ -135,46 +127,42 @@ impl AtlasPage {
     }
 }
 
-/// One named sub-rectangle within an [`AtlasPage`]. UV coordinates are
-/// precomputed relative to the parent page during parsing.
+/// One named rectangle within an [`AtlasPage`].
 ///
-/// When `degrees == 90` (most common rotated case), the region's pixels are
-/// laid out rotated 90° CCW on the page — the renderer must account for this
-/// when sampling.
+/// A region with `degrees == 90` is stored rotated 90° counterclockwise on
+/// the page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtlasRegion {
-    /// Index into the parent [`Atlas::pages`] vector.
+    /// Index into [`Atlas::pages`].
     pub page: u32,
     pub name: String,
-    /// Sequence index (e.g. `foo` with `index: 2` for animated attachments).
-    /// `-1` means "no index" (un-numbered region).
+    /// Frame number within a sequence (`index:`), or `-1` if absent.
     pub index: i32,
 
-    // Pixel rect on the page.
+    // Position on the page and size before rotation. A 90° region covers
+    // `height` x `width` pixels on the page.
     pub x: i32,
     pub y: i32,
     pub width: i32,
     pub height: i32,
 
-    // Pre-crop dimensions of the source image (before the editor trimmed
-    // transparent padding), plus the offset from the original top-left to
-    // the trimmed rect.
+    // Size of the image before whitespace stripping, and the stripped
+    // rect's offset within it. The original size defaults to the packed size.
     pub original_width: i32,
     pub original_height: i32,
     pub offset_x: f32,
     pub offset_y: f32,
 
-    /// Rotation degrees: 0, 90, 180, or 270.
+    /// Rotation in degrees as written; usually 0 or 90.
     pub degrees: i32,
 
-    /// UV coordinates on the parent page, precomputed from `x/y/width/height`.
+    /// UV rect on the page, accounting for 90° rotation.
     pub u: f32,
     pub v: f32,
     pub u2: f32,
     pub v2: f32,
 
-    /// Extension key/value pairs for any line that wasn't one of the
-    /// well-known region fields. Values are parsed as decimal integers.
+    /// Lines with unrecognized keys, values parsed as integers.
     pub extras: Vec<(String, Vec<i32>)>,
 }
 
@@ -201,8 +189,7 @@ impl AtlasRegion {
         }
     }
 
-    /// Lookup an extension key; returns its values if present. Linear scan —
-    /// the list is always short, so this is fine.
+    /// Values of the extra key `key`, if present.
     #[must_use]
     pub fn extra(&self, key: &str) -> Option<&[i32]> {
         self.extras
@@ -221,33 +208,25 @@ pub struct Atlas {
 }
 
 impl Atlas {
-    /// Parse atlas text. Returns a populated [`Atlas`] or an error with
-    /// 1-based line numbers for diagnostics.
+    /// Parses `.atlas` text.
     ///
     /// # Errors
-    /// Returns [`AtlasError`] on malformed content (missing colons in a region
-    /// body, unparseable integers, etc.). Unknown values in `format:` /
-    /// `filter:` / `repeat:` entries degrade silently to `Unknown` /
-    /// `ClampToEdge` rather than error — this matches spine-cpp, which was
-    /// designed to tolerate atlases exported from older editor versions.
+    /// [`AtlasError`] when a numeric field has too few values or a value that
+    /// isn't an integer. Unrecognized `format:` and `filter:` values become
+    /// `Unknown` instead.
     pub fn parse(text: &str) -> Result<Self, AtlasError> {
         Parser::new(text).run()
     }
 
-    /// Find the first region by name. Linear scan — callers that need
-    /// repeated lookups should build their own hash map.
+    /// First region named `name`. A linear scan; build a map for repeated
+    /// lookups.
     #[must_use]
     pub fn find_region(&self, name: &str) -> Option<&AtlasRegion> {
         self.regions.iter().find(|r| r.name == name)
     }
 }
 
-/// Errors produced by [`Atlas::parse`]. Line numbers are 1-based.
-///
-/// The parser is permissive about structural issues that spine-cpp also
-/// tolerates (unknown keys, garbage lines that happen to look like region
-/// names, unrecognised enum values). These variants flag problems that make a
-/// known property unusable.
+/// Errors from [`Atlas::parse`]. Line numbers are 1-based.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AtlasError {
     #[error("line {line}: failed to parse integer in {key:?}: {value:?}")]
@@ -266,9 +245,7 @@ pub enum AtlasError {
     },
 }
 
-// --- parser -----------------------------------------------------------------
-
-/// At most 5 trimmed tokens parsed out of a `key: v1, v2, …, v4` line.
+/// A trimmed `key: v1, v2, v3, v4` line.
 #[derive(Default)]
 struct Entry<'a> {
     key: &'a str,
@@ -285,16 +262,13 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Self {
         Self {
-            // `str::lines()` handles both `\n` and `\r\n` line terminators and
-            // omits a trailing empty line from a final newline — the exact
-            // behaviour we want.
             lines: text.lines().collect(),
             cursor: 0,
             atlas: Atlas::default(),
         }
     }
 
-    /// Trimmed view of the current line. Returns `None` past EOF.
+    /// The current line, trimmed, or `None` past the end.
     fn current(&self) -> Option<&'a str> {
         self.lines.get(self.cursor).map(|l| trim_line(l))
     }
@@ -310,9 +284,7 @@ impl<'a> Parser<'a> {
     fn run(mut self) -> Result<Atlas, AtlasError> {
         self.skip_blank_lines();
 
-        // Spine 4.1+ atlases may emit file-level entries before the first page
-        // name (e.g. a hash header). Consume and discard any run of `key: ...`
-        // lines at the top.
+        // Skip file-level `key: value` lines before the first page name.
         while let Some(line) = self.current() {
             if line.is_empty() || parse_entry(line).is_none() {
                 break;
@@ -322,12 +294,9 @@ impl<'a> Parser<'a> {
 
         while let Some(line) = self.current() {
             if line.is_empty() {
-                // Blank lines terminate the current page's region block.
                 self.advance();
                 continue;
             }
-            // Non-blank line at the top level → it's a page name. The page is
-            // immediately followed by its property block, then its regions.
             self.parse_page()?;
         }
 
@@ -348,14 +317,12 @@ impl<'a> Parser<'a> {
         let mut page = AtlasPage::new(name_line.to_string());
         self.advance();
 
-        // Page properties: a contiguous block of `key: v1, v2, …` lines.
         while let Some(line) = self.current() {
             if line.is_empty() {
                 break;
             }
             let Some(entry) = parse_entry(line) else {
-                // Non-entry line at property scope means the page block is
-                // over and this line starts a region.
+                // A line without a colon names the first region.
                 break;
             };
             match entry.key {
@@ -369,8 +336,6 @@ impl<'a> Parser<'a> {
                     page.mag_filter = parse_texture_filter(entry.values[1]);
                 }
                 "repeat" => {
-                    // Default is ClampToEdge in both axes; presence of 'x' or
-                    // 'y' in the value toggles Repeat on that axis.
                     page.u_wrap = TextureWrap::ClampToEdge;
                     page.v_wrap = TextureWrap::ClampToEdge;
                     if entry.values[0].contains('x') {
@@ -381,8 +346,6 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "pma" => page.pma = entry.values[0].eq_ignore_ascii_case("true"),
-                // Ignore unknown page-level keys (e.g. `scale:`, which is an
-                // editor-only hint); matches spine-cpp behaviour.
                 _ => {}
             }
             self.advance();
@@ -391,7 +354,6 @@ impl<'a> Parser<'a> {
         page.index = page_index;
         self.atlas.pages.push(page);
 
-        // Regions of this page until the next blank line.
         while let Some(line) = self.current() {
             if line.is_empty() {
                 break;
@@ -412,17 +374,13 @@ impl<'a> Parser<'a> {
             if line.is_empty() {
                 break;
             }
-            // A non-entry line (no colon) is the signal that this region's
-            // property block is finished — the line is the start of the next
-            // region (or, at EOF, nothing). spine-cpp handles this the same
-            // way via `readEntry` returning 0.
+            // A line without a colon names the next region.
             let Some(entry) = parse_entry(line) else {
                 break;
             };
 
             match entry.key {
                 "xy" => {
-                    // Legacy pre-4.1 format: xy + size separately.
                     region.x = parse_int(&entry, 0, self.line_no())?;
                     region.y = parse_int(&entry, 1, self.line_no())?;
                 }
@@ -431,14 +389,12 @@ impl<'a> Parser<'a> {
                     region.height = parse_int(&entry, 1, self.line_no())?;
                 }
                 "bounds" => {
-                    // 4.1+ compact form: bounds: x, y, w, h.
                     region.x = parse_int(&entry, 0, self.line_no())?;
                     region.y = parse_int(&entry, 1, self.line_no())?;
                     region.width = parse_int(&entry, 2, self.line_no())?;
                     region.height = parse_int(&entry, 3, self.line_no())?;
                 }
                 "offset" => {
-                    // Legacy.
                     region.offset_x = parse_float_from_int(&entry, 0, self.line_no())?;
                     region.offset_y = parse_float_from_int(&entry, 1, self.line_no())?;
                 }
@@ -447,15 +403,12 @@ impl<'a> Parser<'a> {
                     region.original_height = parse_int(&entry, 1, self.line_no())?;
                 }
                 "offsets" => {
-                    // 4.1+ compact form: offsets: ox, oy, ow, oh.
                     region.offset_x = parse_float_from_int(&entry, 0, self.line_no())?;
                     region.offset_y = parse_float_from_int(&entry, 1, self.line_no())?;
                     region.original_width = parse_int(&entry, 2, self.line_no())?;
                     region.original_height = parse_int(&entry, 3, self.line_no())?;
                 }
                 "rotate" => {
-                    // Three accepted forms: `true` → 90°, `false` → 0°, or
-                    // an explicit integer.
                     let v = entry.values[0];
                     if v.eq_ignore_ascii_case("true") {
                         region.degrees = 90;
@@ -467,9 +420,6 @@ impl<'a> Parser<'a> {
                     region.index = parse_int(&entry, 0, self.line_no())?;
                 }
                 other => {
-                    // Any unrecognised key is captured verbatim so downstream
-                    // extensions (9-slice, hull counts, whatever) can read it
-                    // off the region.
                     let mut vals = Vec::with_capacity(entry.value_count);
                     for i in 0..entry.value_count {
                         vals.push(parse_int(&entry, i, self.line_no())?);
@@ -480,15 +430,12 @@ impl<'a> Parser<'a> {
             self.advance();
         }
 
-        // If the region had no explicit `orig`/`offsets` entry, fall back to
-        // the trimmed size — matches spine-cpp.
         if region.original_width == 0 && region.original_height == 0 {
             region.original_width = region.width;
             region.original_height = region.height;
         }
 
-        // Compute UVs. Rotated regions swap width/height when projecting onto
-        // the page.
+        // A 90° region's extent on the page swaps width and height.
         let page = &self.atlas.pages[page_index as usize];
         let pw = page.width.max(1) as f32;
         let ph = page.height.max(1) as f32;
@@ -507,25 +454,22 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Trim leading/trailing whitespace and any trailing `\r` (Windows line endings).
 fn trim_line(line: &str) -> &str {
     line.trim_matches(|c: char| c.is_whitespace())
 }
 
-/// Split `"key: v1, v2, v3, v4"` into key + up to 4 values, trimming each.
-/// Returns `None` when the line has no `:` — the caller decides whether that's
-/// end-of-block or an error.
+/// Splits `key: v1, v2, v3, v4` into a key and up to four trimmed values.
+/// `None` when the line has no colon.
 fn parse_entry(line: &str) -> Option<Entry<'_>> {
     let colon = line.find(':')?;
     let (key, rest) = line.split_at(colon);
-    let rest = &rest[1..]; // skip the ':'
+    let rest = &rest[1..];
     let mut entry = Entry {
         key: key.trim(),
         ..Entry::default()
     };
 
-    // Up to 4 comma-separated values. Extra commas beyond that are silently
-    // truncated, matching spine-cpp's behaviour (readEntry returns at most 4).
+    // Anything past the fourth value is dropped, as spine-cpp's `readEntry` does.
     let mut remaining = rest;
     for slot in &mut entry.values {
         if remaining.is_empty() {
@@ -562,18 +506,14 @@ fn parse_int(entry: &Entry, idx: usize, line: usize) -> Result<i32, AtlasError> 
     })
 }
 
-/// The editor writes `offset`/`offsets` values as integers but
-/// `TextureRegion::offsetX/Y` is declared as `float` in spine-cpp. Parse as
-/// integer then widen to f32 to match.
+/// Offsets are written as integers but stored as floats, as in spine-cpp.
 fn parse_float_from_int(entry: &Entry, idx: usize, line: usize) -> Result<f32, AtlasError> {
     parse_int(entry, idx, line).map(|v| v as f32)
 }
 
 fn parse_format(s: &str) -> Format {
-    // Clean mapping by name. spine-cpp has an off-by-one bug here (its lookup
-    // array aligns with the enum by accident only for some values), but the
-    // field is only informational — no visible behaviour depends on matching
-    // that bug.
+    // Mapped by name. spine-cpp's name table has a leading "" that its
+    // `Format` enum lacks, so its result is off by one; the runtime never reads it.
     match s {
         "Alpha" => Format::Alpha,
         "Intensity" => Format::Intensity,
@@ -638,12 +578,11 @@ region-b
         assert_abs_diff_eq!(a.u2, 16.0 / 64.0);
         assert_abs_diff_eq!(a.v2, 16.0 / 32.0);
         assert_eq!(a.degrees, 0);
-        assert_eq!(a.original_width, 16); // falls back to trimmed size
+        assert_eq!(a.original_width, 16);
         assert_eq!(a.original_height, 16);
 
         let b = &atlas.regions[1];
         assert_eq!(b.degrees, 90);
-        // Rotated: u2/v2 swap width/height.
         assert_abs_diff_eq!(b.u2, (16 + 16) as f32 / 64.0);
         assert_abs_diff_eq!(b.v2, 16.0_f32 / 32.0);
     }
@@ -788,9 +727,6 @@ r
 
     #[test]
     fn non_entry_line_starts_a_new_region() {
-        // A line without a colon inside a region body is interpreted as the
-        // start of the next region, matching spine-cpp. So this parses as
-        // two regions named "r" and "more" rather than as an error.
         let text = "p.png
 \tsize: 8, 8
 r
@@ -814,8 +750,6 @@ r
         assert!(matches!(err, AtlasError::BadInteger { .. }));
     }
 
-    // Integration: every .atlas shipped with spine-runtimes parses without
-    // error and has at least one page and region.
     #[test]
     fn parses_all_example_atlases() {
         let examples =
@@ -834,8 +768,6 @@ r
             );
             parsed += 1;
         }
-        // Sanity: we expect ~41 atlases in the examples dir. Hard-coding a
-        // lower bound means the test still works if new skeletons get added.
         assert!(parsed >= 20, "only parsed {parsed} atlases");
     }
 

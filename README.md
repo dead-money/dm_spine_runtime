@@ -112,7 +112,7 @@ Skeletons can share one `Arc<Skin>`, so a crowd wearing the same outfit builds i
 
 ### Drawing
 
-Each `RenderCommand` is one draw call: vertex positions, UVs, packed colors, 16-bit indices, a blend mode, and a `TextureId`. The `TextureId` is the index of the atlas page, so load `atlas.pages[id]` as a texture and look it up by that index. Consecutive attachments that share a texture and blend mode come back merged into one command.
+Each `RenderCommand` is one draw call: vertex positions, UVs, packed colors and dark colors, 16-bit indices, a blend mode, and a `TextureId`. The `TextureId` is the atlas page index, so load each of `atlas.pages` as a texture and look it up by that index. Consecutive attachments that share a texture, blend mode, and colors come back merged into one command. `RenderOptions` can merge across colors and add per-vertex slot and tag streams.
 
 `examples/software_render.rs` draws the commands on the CPU and writes a PNG. It's the shortest complete renderer, and a quick way to tell whether a visual bug is in the runtime or in your renderer.
 
@@ -140,12 +140,12 @@ It's also fast. On our game's creature rigs, a full frame (animation, posing, an
 
 | Spine | spine_runtime |
 |-------|---------------|
-| 4.3   | `main`        |
-| 4.2   | `v0.1.0`      |
+| 4.3   | `0.2`         |
+| 4.2   | `v0.1.0` tag  |
 
 ## Building
 
-The tests and examples use the example rigs from Esoteric's [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes) repository, cloned next to this one (or wherever `SPINE_EXAMPLES` points):
+The tests and examples load the example rigs from Esoteric's [`spine-runtimes`](https://github.com/EsotericSoftware/spine-runtimes) repository, cloned next to this one. The integration tests and the bench also accept a `SPINE_EXAMPLES` path:
 
 ```sh
 git clone -b 4.3 https://github.com/EsotericSoftware/spine-runtimes ../spine-runtimes
@@ -157,8 +157,8 @@ CI pins a specific `4.3` commit; see `.github/workflows/ci.yml`.
 Three examples come with the crate:
 
 - `cargo run --example software_render` draws a rig to a PNG. `SPINE_RIG`, `SPINE_ANIM`, `SPINE_TIME`, and `SPINE_OUT` pick what it draws; the file header lists the rest.
-- `cargo run --example dump_slots` prints each visible slot's attachment and on-screen bounds.
-- `cargo run --example rig_info -- <dir> <rig> <animation>` counts a binary rig's bones, constraints, and an animation's timelines.
+- `cargo run --example dump_slots` prints each render command's slot, attachment, and world bounds at the setup pose.
+- `cargo run --example rig_info -- <dir> <rig> <animation>` counts a binary rig's bones, slots, and constraints, and an animation's timelines.
 
 Contributors: [`docs/BINARY_FORMAT.md`](docs/BINARY_FORMAT.md) covers the `.skel` format, and `tools/spine_capture/` regenerates the comparison data from `spine-cpp`.
 

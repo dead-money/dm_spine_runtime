@@ -27,24 +27,21 @@
 
 //! Primitive readers for Spine's big-endian binary format.
 //!
-//! The wire layout (from `spine-cpp/SkeletonBinary.cpp`):
+//! Wire layout, as in `spine-cpp/SkeletonBinary.cpp`:
 //!
 //! - Integers: big-endian 4-byte `i32`.
-//! - Floats: big-endian IEEE 754 (same bits as the `i32` above, reinterpreted).
-//! - Varints: 1–5 bytes, MSB-continuation. Optional zigzag decoding for
-//!   signed values (`optimize_positive == false`).
-//! - Strings: varint length prefix `n`. `n == 0` means `None`. Otherwise
-//!   the payload is `n - 1` bytes of UTF-8 (no trailing NUL on the wire).
+//! - Floats: big-endian IEEE 754, the same bits as an integer.
+//! - Varints: 1 to 5 bytes, low 7 bits first, high bit means more follow.
+//!   Signed values are zigzag-encoded.
+//! - Strings: varint length `n`. `n == 0` means `None`; otherwise `n - 1`
+//!   bytes of UTF-8 follow, with no trailing NUL.
 //! - Colors: 4 bytes RGBA, each `u8 / 255.0`.
 //!
-//! The reader is panic-free on malformed input: every primitive returns a
-//! `Result<_, BinaryError>` carrying the byte offset where the problem was
-//! detected.
+//! The reader never panics on malformed input. Errors carry the byte offset
+//! where the problem was found.
 
-// These casts are intentional: spine's binary format encodes a mix of
-// signed / unsigned values with shared bit-width. The reader returns
-// `i32` for varints even in "optimize positive" mode to match spine-cpp's
-// signature, and the zigzag path casts unsigned bit patterns to signed.
+// Varints return `i32` in both modes, as spine-cpp's `readVarint` does, so
+// unsigned bit patterns are reinterpreted as signed.
 #![allow(clippy::cast_possible_wrap, clippy::cast_lossless)]
 
 use thiserror::Error;
@@ -116,8 +113,7 @@ impl<'a> BinaryReader<'a> {
         Self { buf, pos: 0 }
     }
 
-    /// Current byte offset from the start of the buffer. Used in error
-    /// diagnostics and to sanity-check that a full parse consumed the file.
+    /// Current byte offset from the start of the buffer.
     pub fn position(&self) -> usize {
         self.pos
     }
@@ -159,22 +155,19 @@ impl<'a> BinaryReader<'a> {
         Ok(i32::from_be_bytes([b0, b1, b2, b3]))
     }
 
-    /// Big-endian IEEE-754 single-precision float (same bit pattern as
-    /// [`Self::read_int`] reinterpreted).
+    /// Big-endian IEEE 754 single-precision float.
     pub fn read_float(&mut self) -> Result<f32, BinaryError> {
         self.read_int().map(|bits| f32::from_bits(bits as u32))
     }
 
-    /// Variable-length integer. When `optimize_positive == true`, the value
-    /// is treated as unsigned. When `false`, Spine's zigzag decoding is
-    /// applied so that small magnitudes (positive or negative) encode in few
-    /// bytes.
+    /// Variable-length integer. `optimize_positive` reads it as unsigned
+    /// (values above `i32::MAX` wrap negative); otherwise it is zigzag-decoded.
+    /// Payload bits past 32 are dropped, as in spine-cpp.
     ///
-    /// The upper 4-bit bit of the 5th byte is masked off to match spine-cpp,
-    /// which also caps at 32 bits.
+    /// # Errors
+    /// [`BinaryError::VarintOverflow`] if the fifth byte has its continuation
+    /// bit set. spine-cpp ignores that bit.
     pub fn read_varint(&mut self, optimize_positive: bool) -> Result<i32, BinaryError> {
-        // Up to 5 bytes; each carries 7 value bits in the low nibble-and-some,
-        // with the high bit signaling continuation. Matches spine-cpp.
         let start = self.pos;
         let mut b = self.read_byte()?;
         let mut value = u32::from(b & 0x7F);
@@ -194,8 +187,6 @@ impl<'a> BinaryReader<'a> {
                 }
             }
         }
-        // 32-bit cap — if more bytes were present they'd indicate overflow.
-        // spine-cpp silently truncates; we surface the error.
         if self.pos == start + 5 && (b & 0x80) != 0 {
             return Err(BinaryError::VarintOverflow { at: start });
         }
@@ -203,24 +194,19 @@ impl<'a> BinaryReader<'a> {
         Ok(if optimize_positive {
             value as i32
         } else {
-            // Zigzag decode: the sign mask is `-(value & 1)` in two's
-            // complement — i.e. all-zeros for even values, all-ones for odd.
-            // XOR with the unsigned right shift recovers the original signed
-            // integer: 0→0, 1→-1, 2→1, 3→-2, 4→2, …
+            // Zigzag: 0→0, 1→-1, 2→1, 3→-2, 4→2, ...
             let sign_mask = (value & 1).wrapping_neg();
             ((value >> 1) ^ sign_mask) as i32
         })
     }
 
-    /// Same as [`Self::read_varint`] with `optimize_positive = true`, returning
-    /// a `usize` — convenient for count fields.
+    /// Unsigned varint as `usize`, for counts and indices.
     pub fn read_uvarint(&mut self) -> Result<usize, BinaryError> {
         let v = self.read_varint(true)?;
         Ok(v as u32 as usize)
     }
 
-    /// Length-prefixed string. Returns `None` when the length field is zero,
-    /// matching spine-cpp's NULL convention for "absent string".
+    /// Length-prefixed string. A zero length means `None`.
     pub fn read_string(&mut self) -> Result<Option<String>, BinaryError> {
         let len = self.read_uvarint()?;
         if len == 0 {
@@ -236,9 +222,8 @@ impl<'a> BinaryReader<'a> {
             .map_err(|source| BinaryError::InvalidUtf8 { at: start, source })
     }
 
-    /// String-table indexed string. The file stores a flat `Vec<String>`
-    /// early on; subsequent references encode `index + 1` (so `0` still
-    /// means `None`).
+    /// Reference into the file's string table, stored as `index + 1`. `0`
+    /// means `None`.
     pub fn read_string_ref(&mut self, strings: &[String]) -> Result<Option<String>, BinaryError> {
         let at = self.pos;
         let index = self.read_uvarint()?;

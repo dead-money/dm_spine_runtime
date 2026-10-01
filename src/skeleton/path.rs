@@ -333,8 +333,8 @@ impl Skeleton {
         *c = scratch;
     }
 
-    /// `computeWorldPositions`: samples `spaces_count` positions along the
-    /// path into `scratch.positions` as `[x, y, rotation]` triples.
+    /// Samples `spaces_count` positions along the path into
+    /// `scratch.positions` as `[x, y, rotation]` triples, rotation in radians.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn compute_path_positions(
         &self,

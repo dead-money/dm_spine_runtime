@@ -135,9 +135,9 @@ impl Slot {
         self.posed.applied()
     }
 
-    /// Resets color, dark color and attachment. `attachment` is the setup
-    /// attachment resolved through the skeleton's skins, with its timeline
-    /// attachment.
+    /// Resets color, dark color, sequence frame and attachment. `attachment`
+    /// is the setup attachment resolved through the skeleton's skins, and
+    /// `timeline` its timeline attachment.
     pub fn setup_pose(
         &mut self,
         data: &SlotData,

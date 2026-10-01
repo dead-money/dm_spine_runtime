@@ -25,32 +25,25 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Crossfade duration lookup for the [`AnimationState`][crate::animation::AnimationState].
-//!
-//! Ports `spine::AnimationStateData` — a (from, to) → mix-duration table with
-//! a default fallback. Typical setup at load time: write per-transition
-//! overrides for natural-looking animation swaps ("walk → idle ≈ 0.2s",
-//! "walk → jump ≈ 0.1s"), falling back to [`AnimationStateData::default_mix`] otherwise.
+//! Mix durations for [`AnimationState`][crate::animation::AnimationState]
+//! transitions.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::data::{AnimationId, SkeletonData};
 
-/// Stores mix (crossfade) durations to be applied when
-/// [`AnimationState`][crate::animation::AnimationState] animations change.
+/// Crossfade durations, in seconds, per `(from, to)` animation pair, with a
+/// default for pairs that have none.
 #[derive(Debug, Clone)]
 pub struct AnimationStateData {
     data: Arc<SkeletonData>,
     default_mix: f32,
-    /// spine-cpp keys by `(Animation*, Animation*)` identity; the Rust port
-    /// uses the (from, to) `AnimationId` pair. Semantics are identical.
     mixes: HashMap<(AnimationId, AnimationId), f32>,
 }
 
 impl AnimationStateData {
-    /// Create an empty mix table for the given skeleton. All transitions
-    /// use the default mix duration (initially 0) until overridden.
+    /// An empty table whose default mix is 0.
     #[must_use]
     pub fn new(data: Arc<SkeletonData>) -> Self {
         Self {
@@ -60,14 +53,13 @@ impl AnimationStateData {
         }
     }
 
-    /// Skeleton the mix table belongs to.
+    /// Skeleton data the animation ids refer to.
     #[must_use]
     pub fn data(&self) -> &Arc<SkeletonData> {
         &self.data
     }
 
-    /// Fallback mix duration when no explicit override exists for a
-    /// `(from, to)` pair. spine-cpp default: 0 seconds.
+    /// Mix duration for pairs without an override. Starts at 0.
     #[must_use]
     pub fn default_mix(&self) -> f32 {
         self.default_mix
@@ -77,17 +69,16 @@ impl AnimationStateData {
         self.default_mix = value;
     }
 
-    /// Override the mix duration for `from → to`.
+    /// Sets the mix duration for `from` to `to`.
     pub fn set_mix(&mut self, from: AnimationId, to: AnimationId, duration: f32) {
         self.mixes.insert((from, to), duration);
     }
 
-    /// Name-lookup wrapper around [`Self::set_mix`].
+    /// [`Self::set_mix`] by animation name.
     ///
     /// # Errors
     ///
-    /// Returns [`MixAnimationNotFound`] if either name doesn't match an
-    /// animation in the owning skeleton data.
+    /// [`MixAnimationNotFound`] if either name isn't in the skeleton data.
     pub fn set_mix_by_name(
         &mut self,
         from_name: &str,
@@ -100,15 +91,13 @@ impl AnimationStateData {
         Ok(())
     }
 
-    /// Look up the mix duration for a `from → to` transition, falling back
-    /// to [`Self::default_mix`].
+    /// Mix duration for `from` to `to`, or [`Self::default_mix`].
     #[must_use]
     pub fn mix(&self, from: AnimationId, to: AnimationId) -> f32 {
         *self.mixes.get(&(from, to)).unwrap_or(&self.default_mix)
     }
 
-    /// Remove every override and reset the default mix to 0 (matches
-    /// `spine::AnimationStateData::clear`).
+    /// Removes every override and resets the default mix to 0.
     pub fn clear(&mut self) {
         self.mixes.clear();
         self.default_mix = 0.0;
@@ -124,8 +113,8 @@ impl AnimationStateData {
     }
 }
 
-/// Error returned by [`AnimationStateData::set_mix_by_name`] when the
-/// named animation isn't in the owning skeleton data.
+/// [`AnimationStateData::set_mix_by_name`] was given an unknown animation
+/// name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("no animation named `{0}`")]
 pub struct MixAnimationNotFound(pub String);

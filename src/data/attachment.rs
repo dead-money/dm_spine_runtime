@@ -25,8 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Attachment data. spine-cpp's class hierarchy flattens to a tagged enum;
-//! vertex-based variants embed [`VertexData`].
+//! Attachment data. Vertex-based attachments embed [`VertexData`].
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -124,8 +123,9 @@ impl Attachment {
         }
     }
 
-    /// The data attachment whose timelines apply to this one, which `this`
-    /// refers to. `None` for an owned attachment not copied from data.
+    /// The data attachment whose timelines apply to this one. `this` is how
+    /// the caller refers to `self`. `None` for an owned attachment not
+    /// copied from data.
     #[must_use]
     pub fn timeline_attachment(&self, this: AttachmentRef) -> Option<AttachmentId> {
         self.timeline_link()
@@ -159,8 +159,8 @@ impl Attachment {
         }
     }
 
-    /// A copy driven by the same timelines as this attachment, which `this`
-    /// refers to. Sequences get fresh ids, as in spine-cpp.
+    /// A copy driven by the same timelines as this attachment. `this` is how
+    /// the caller refers to `self`. Sequences get fresh ids, as in spine-cpp.
     #[must_use]
     pub fn copy(&self, this: AttachmentRef) -> Attachment {
         let timeline = self.timeline_attachment(this);
@@ -176,9 +176,9 @@ impl Attachment {
         copy
     }
 
-    /// Points every sequence frame at `region` and recomputes UVs (and
-    /// region offsets). Returns `false`, changing nothing, for attachments
-    /// without a texture.
+    /// Points every sequence frame at `region` and recomputes UVs and region
+    /// offsets. Returns `false`, changing nothing, for attachments without a
+    /// texture.
     pub fn set_region(&mut self, region: TextureRegionRef) -> bool {
         match self {
             Attachment::Region(a) => {
@@ -259,7 +259,8 @@ static NEXT_SEQUENCE_ID: AtomicI32 = AtomicI32::new(0);
 
 /// Frames of a region or mesh attachment. Every region and mesh has one; a
 /// plain attachment is a one-frame sequence without a path suffix. Per-frame
-/// UVs (and region vertex offsets) are precomputed by `update_sequence`.
+/// UVs and region offsets are filled by [`RegionAttachment::update_sequence`]
+/// and [`MeshAttachment::update_sequence`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sequence {
     /// Unique per sequence; timelines use it as their property id.
@@ -304,7 +305,8 @@ impl Sequence {
         self.regions.len()
     }
 
-    /// The frame to show for a slot's `sequence_index` (-1 means setup).
+    /// The frame to show for a slot's `sequence_index` (-1 means
+    /// `setup_index`), clamped to the frame range.
     #[must_use]
     pub fn resolve_index(&self, sequence_index: i32) -> usize {
         let mut index = sequence_index;
@@ -323,12 +325,15 @@ impl Sequence {
         self.regions.get(index).and_then(Option::as_ref)
     }
 
+    /// UVs of frame `index`, as x,y pairs.
     #[must_use]
     pub fn uvs(&self, index: usize) -> &[f32] {
         let stride = self.uvs.len() / self.regions.len().max(1);
         &self.uvs[index * stride..(index + 1) * stride]
     }
 
+    /// Quad vertex offsets of frame `index`, indexed by [`quad_corner`].
+    /// Region attachments only.
     #[must_use]
     pub fn offsets(&self, index: usize) -> &[f32; 8] {
         &self.offsets[index]
@@ -406,7 +411,6 @@ impl RegionAttachment {
     }
 }
 
-/// `RegionAttachment::computeUVs`.
 fn compute_region_uvs(
     region: Option<&TextureRegionRef>,
     a: &RegionAttachment,
@@ -490,7 +494,6 @@ fn compute_region_uvs(
     }
 }
 
-/// `MeshAttachment::computeUVs`.
 fn compute_mesh_uvs(region: Option<&TextureRegionRef>, region_uvs: &[f32], uvs: &mut [f32]) {
     let n = uvs.len();
     let (u, v, width, height);
