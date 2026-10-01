@@ -25,7 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! IK constraint (`IkConstraint.cpp`): one- and two-bone solvers.
+//! IK constraint solving: a one-bone aim and a two-bone bend toward a target
+//! bone. The state lives in [`IkConstraint`](super::IkConstraint);
+//! [`Skeleton::update_world_transform`] runs the solver.
 
 use crate::data::{ConstraintId, IkConstraintData, Inherit, ScaleYMode};
 use crate::math::util::{EPSILON, PI, RAD_DEG};

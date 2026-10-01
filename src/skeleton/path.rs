@@ -25,8 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Path constraint (`PathConstraint.cpp`): positions bones along the cubic
-//! bezier path attachment on a slot.
+//! Path constraint solving: positions, rotates and optionally scales bones
+//! along the cubic bezier path attachment shown on a slot. The state lives in
+//! [`PathConstraint`]; [`Skeleton::update_world_transform`] runs the solver.
 
 #![allow(clippy::many_single_char_names, clippy::needless_range_loop)]
 
@@ -334,7 +335,8 @@ impl Skeleton {
     }
 
     /// Samples `spaces_count` positions along the path into
-    /// `scratch.positions` as `[x, y, rotation]` triples, rotation in radians.
+    /// `scratch.positions` as `[x, y, rotation]` triples. Rotation is in
+    /// radians and is only meaningful for samples that need a tangent.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn compute_path_positions(
         &self,

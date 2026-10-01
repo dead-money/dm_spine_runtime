@@ -30,20 +30,26 @@
 
 use crate::data::EventId;
 
-/// A named event declared on the skeleton.
+/// A named event declared on the skeleton. The values are defaults that each
+/// [`AnimationEvent`](crate::data::AnimationEvent) key may override.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventData {
+    /// Position in [`SkeletonData::events`](crate::data::SkeletonData::events).
     pub index: EventId,
     pub name: String,
     pub int_value: i32,
     pub float_value: f32,
     pub string_value: String,
+    /// Empty when the event has no audio.
     pub audio_path: String,
+    /// Audio volume, 0..1.
     pub volume: f32,
+    /// Audio stereo balance, -1 (left) to 1 (right).
     pub balance: f32,
 }
 
 impl EventData {
+    /// An event with zeroed values and no audio.
     #[must_use]
     pub fn new(index: EventId, name: impl Into<String>) -> Self {
         Self {

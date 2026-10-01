@@ -26,6 +26,28 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Loader for `.json` skeleton exports.
+//!
+//! [`SkeletonJson`] parses a JSON export into a
+//! [`SkeletonData`](crate::data::SkeletonData), creating attachments through an
+//! [`AttachmentLoader`](crate::load::AttachmentLoader). Failures are reported
+//! as [`JsonError`]. Only Spine 4.3 exports are accepted; binary `.skel` exports
+//! go through [`SkeletonBinary`](crate::load::SkeletonBinary).
+//!
+//! ```no_run
+//! use spine_runtime::atlas::Atlas;
+//! use spine_runtime::load::{AtlasAttachmentLoader, SkeletonJson};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let atlas = Atlas::parse(&std::fs::read_to_string("spineboy.atlas")?)?;
+//! let mut loader = AtlasAttachmentLoader::new(&atlas);
+//! let json = std::fs::read_to_string("spineboy-pro.json")?;
+//! let data = SkeletonJson::with_loader(&mut loader)
+//!     .with_scale(0.5)
+//!     .read_str(&json)?;
+//! # let _ = data;
+//! # Ok(())
+//! # }
+//! ```
 
 mod parse;
 

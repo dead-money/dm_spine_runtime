@@ -46,9 +46,12 @@ pub enum BlendMode {
 /// [`SkeletonData`]: crate::data::SkeletonData
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotData {
+    /// Position in [`SkeletonData::slots`](crate::data::SkeletonData::slots).
     pub index: SlotId,
     pub name: String,
+    /// Bone the attachment follows.
     pub bone: BoneId,
+    /// Tint multiplied into the attachment's color.
     pub color: Color,
     /// Tint-black color; `None` if the slot has none.
     pub dark_color: Option<Color>,
@@ -58,13 +61,14 @@ pub struct SlotData {
     pub attachment_key: Option<SkinKey>,
     pub blend_mode: BlendMode,
 
-    // Nonessential.
+    /// Nonessential: shown in the editor.
     pub visible: bool,
     /// Never set by the loaders; unused at runtime.
     pub path: String,
 }
 
 impl SlotData {
+    /// A white, normal-blend slot with no attachment.
     #[must_use]
     pub fn new(index: SlotId, name: impl Into<String>, bone: BoneId) -> Self {
         Self {

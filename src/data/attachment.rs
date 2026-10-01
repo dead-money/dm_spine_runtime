@@ -25,14 +25,21 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Attachment data. Vertex-based attachments embed [`VertexData`].
+//! Attachments: what a slot shows or uses.
+//!
+//! [`RegionAttachment`] and [`MeshAttachment`] are textured and render;
+//! their texture comes from a [`Sequence`] of [`TextureRegionRef`]s. The
+//! others are geometry for constraints, clipping and hit tests.
+//! Vertex-based attachments embed [`VertexData`].
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::data::{AttachmentId, AttachmentRef, SlotId};
 use crate::math::Color;
 
-/// Indices into a region's 8-float quad (`offsets` / `uvs`).
+/// Indices into a region's 8-float quad ([`Sequence::offsets`] and
+/// [`Sequence::uvs`]): bottom-left, upper-left, upper-right, bottom-right,
+/// x then y.
 pub mod quad_corner {
     pub const BLX: usize = 0;
     pub const BLY: usize = 1;
@@ -44,6 +51,9 @@ pub mod quad_corner {
     pub const BRY: usize = 7;
 }
 
+/// Kind of an [`Attachment`]. `LinkedMesh` exists only in the export
+/// format; a loaded linked mesh is a `Mesh` with
+/// [`MeshAttachment::source_mesh`] set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttachmentType {
     Region,
@@ -55,6 +65,9 @@ pub enum AttachmentType {
     Clipping,
 }
 
+/// Any attachment. Data attachments live in
+/// [`SkeletonData::attachments`](crate::data::SkeletonData::attachments);
+/// runtime copies live in a [`Skin`](crate::data::Skin)'s arena.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Attachment {
     Region(RegionAttachment),
@@ -72,10 +85,12 @@ pub enum Attachment {
 pub struct TimelineLink {
     /// `None` means the attachment itself.
     pub attachment: Option<AttachmentId>,
+    /// Slots other than the keyed one that the timelines also apply to.
     pub slots: Vec<SlotId>,
 }
 
 impl Attachment {
+    /// The attachment's own name, not the placeholder it is stored under.
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
@@ -100,6 +115,7 @@ impl Attachment {
         }
     }
 
+    /// `None` for point attachments, which no timeline drives.
     #[must_use]
     pub fn timeline_link(&self) -> Option<&TimelineLink> {
         match self {
@@ -136,6 +152,7 @@ impl Attachment {
             })
     }
 
+    /// The caller-defined tag. See [`RegionAttachment::tag`].
     #[must_use]
     pub fn tag(&self) -> u32 {
         match self {
@@ -194,6 +211,7 @@ impl Attachment {
         true
     }
 
+    /// `None` for region and point attachments.
     #[must_use]
     pub fn vertex_data(&self) -> Option<&VertexData> {
         match self {
@@ -205,6 +223,7 @@ impl Attachment {
         }
     }
 
+    /// `Some` for region and mesh attachments only.
     #[must_use]
     pub fn sequence(&self) -> Option<&Sequence> {
         match self {
@@ -215,7 +234,8 @@ impl Attachment {
     }
 }
 
-/// Shared by Mesh, `BoundingBox`, Path and Clipping.
+/// Vertices of a mesh, bounding box, path or clipping attachment, either
+/// relative to the slot's bone or weighted across several bones.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct VertexData {
     /// Empty when unweighted. Otherwise, per vertex: bone count, then that
@@ -223,10 +243,12 @@ pub struct VertexData {
     pub bones: Vec<i32>,
     /// Unweighted: x,y pairs. Weighted: x,y,weight triples per bone.
     pub vertices: Vec<f32>,
+    /// Floats in the computed world vertices: vertex count × 2.
     pub world_vertices_length: u32,
     pub timeline: TimelineLink,
 }
 
+/// How a sequence timeline steps through frames.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SequenceMode {
     #[default]
@@ -240,6 +262,7 @@ pub enum SequenceMode {
 }
 
 impl SequenceMode {
+    /// Decodes the wire value; `None` if out of range.
     #[must_use]
     pub fn from_index(v: i32) -> Option<Self> {
         Some(match v {
@@ -265,10 +288,16 @@ static NEXT_SEQUENCE_ID: AtomicI32 = AtomicI32::new(0);
 pub struct Sequence {
     /// Unique per sequence; timelines use it as their property id.
     pub id: i32,
+    /// Number appended to the path for the first frame.
     pub start: i32,
+    /// Minimum digits in the appended frame number, zero-padded.
     pub digits: i32,
+    /// Frame shown in the setup pose.
     pub setup_index: i32,
+    /// Whether frame paths get a frame number appended. `false` for a
+    /// plain one-frame attachment.
     pub path_suffix: bool,
+    /// One region per frame; `None` where the loader found none.
     pub regions: Vec<Option<TextureRegionRef>>,
     /// Frame-major; each frame is `uvs.len() / regions.len()` floats.
     uvs: Vec<f32>,
@@ -277,6 +306,7 @@ pub struct Sequence {
 }
 
 impl Sequence {
+    /// `count` frames with no regions resolved yet, and a fresh id.
     #[must_use]
     pub fn new(count: usize, path_suffix: bool) -> Self {
         Self {
@@ -300,6 +330,7 @@ impl Sequence {
         }
     }
 
+    /// Number of frames.
     #[must_use]
     pub fn count(&self) -> usize {
         self.regions.len()
@@ -320,26 +351,36 @@ impl Sequence {
         index.max(0) as usize
     }
 
+    /// Region of frame `index`; `None` if unresolved or out of range.
     #[must_use]
     pub fn region(&self, index: usize) -> Option<&TextureRegionRef> {
         self.regions.get(index).and_then(Option::as_ref)
     }
 
-    /// UVs of frame `index`, as x,y pairs.
+    /// UVs of frame `index`, as u,v pairs. Empty until `update_sequence`
+    /// has run.
+    ///
+    /// # Panics
+    /// If `index` is out of range after `update_sequence` has run.
     #[must_use]
     pub fn uvs(&self, index: usize) -> &[f32] {
         let stride = self.uvs.len() / self.regions.len().max(1);
         &self.uvs[index * stride..(index + 1) * stride]
     }
 
-    /// Quad vertex offsets of frame `index`, indexed by [`quad_corner`].
-    /// Region attachments only.
+    /// Quad vertex offsets of frame `index`, indexed by [`quad_corner`], in
+    /// the bone's local space.
+    ///
+    /// # Panics
+    /// If `index` is out of range or this is not a region attachment's
+    /// sequence.
     #[must_use]
     pub fn offsets(&self, index: usize) -> &[f32; 8] {
         &self.offsets[index]
     }
 
-    /// Atlas path of frame `index`.
+    /// Atlas path of frame `index`: `base_path` plus the zero-padded frame
+    /// number `start + index` when [`Self::path_suffix`] is set.
     #[must_use]
     pub fn path(&self, base_path: &str, index: usize) -> String {
         if !self.path_suffix {
@@ -355,18 +396,24 @@ impl Sequence {
     }
 }
 
+/// A textured quad placed relative to the slot's bone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAttachment {
     pub name: String,
-    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    /// Caller-defined; kept by [`Attachment::copy`] and emitted per vertex
+    /// in [`RenderCommand::tags`](crate::render::RenderCommand::tags).
     pub tag: u32,
+    /// Atlas path the regions were looked up by.
     pub path: String,
     pub color: Color,
+    /// Center offset from the bone, in bone space.
     pub x: f32,
     pub y: f32,
+    /// Degrees.
     pub rotation: f32,
     pub scale_x: f32,
     pub scale_y: f32,
+    /// Size in skeleton units, before scale.
     pub width: f32,
     pub height: f32,
     pub sequence: Sequence,
@@ -374,6 +421,8 @@ pub struct RegionAttachment {
 }
 
 impl RegionAttachment {
+    /// An identity-transform, zero-size, white region. Call
+    /// [`Self::update_sequence`] once its fields and regions are set.
     #[must_use]
     pub fn new(name: impl Into<String>, sequence: Sequence) -> Self {
         Self {
@@ -393,7 +442,8 @@ impl RegionAttachment {
         }
     }
 
-    /// Recomputes every frame's vertex offsets and UVs.
+    /// Recomputes every frame's vertex offsets and UVs. Call after changing
+    /// the transform, size or regions. A frame with no region gets 0..1 UVs.
     pub fn update_sequence(&mut self) {
         let n = self.sequence.regions.len();
         self.sequence.uvs.clear();
@@ -566,29 +616,38 @@ fn compute_mesh_uvs(region: Option<&TextureRegionRef>, region_uvs: &[f32], uvs: 
     }
 }
 
+/// A textured, optionally weighted and deformable triangle mesh.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshAttachment {
     pub name: String,
-    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    /// Caller-defined; kept by [`Attachment::copy`] and emitted per vertex
+    /// in [`RenderCommand::tags`](crate::render::RenderCommand::tags).
     pub tag: u32,
+    /// Atlas path the regions were looked up by.
     pub path: String,
     pub color: Color,
     pub vertex_data: VertexData,
+    /// Per-vertex u,v pairs, 0..1 within the region. Frame UVs on the page
+    /// are derived from these by [`Self::update_sequence`].
     pub region_uvs: Vec<f32>,
+    /// Triangle list indexing vertices.
     pub triangles: Vec<u16>,
-    /// In floats (vertex count × 2).
+    /// Hull vertex count × 2. The hull vertices come first.
     pub hull_length: u32,
     pub sequence: Sequence,
     /// Set for linked meshes; geometry is copied from it at link time.
     pub source_mesh: Option<AttachmentId>,
 
-    // Nonessential.
+    /// Nonessential: edge index pairs, for editor display.
     pub edges: Vec<u16>,
+    /// Nonessential: size in skeleton units.
     pub width: f32,
     pub height: f32,
 }
 
 impl MeshAttachment {
+    /// An empty white mesh. Call [`Self::update_sequence`] once its
+    /// geometry and regions are set.
     #[must_use]
     pub fn new(name: impl Into<String>, sequence: Sequence) -> Self {
         Self {
@@ -608,7 +667,8 @@ impl MeshAttachment {
         }
     }
 
-    /// Recomputes every frame's UVs from `region_uvs`.
+    /// Recomputes every frame's UVs from `region_uvs`. A frame with no
+    /// region uses `region_uvs` as is.
     pub fn update_sequence(&mut self) {
         let n = self.sequence.regions.len();
         let stride = self.region_uvs.len();
@@ -624,7 +684,8 @@ impl MeshAttachment {
         }
     }
 
-    /// Links to `source`, copying its geometry.
+    /// Links to `source`, copying its geometry. Call
+    /// [`Self::update_sequence`] afterwards.
     pub fn set_source_mesh(&mut self, id: AttachmentId, source: &MeshAttachment) {
         self.source_mesh = Some(id);
         self.vertex_data.bones.clone_from(&source.vertex_data.bones);
@@ -641,16 +702,19 @@ impl MeshAttachment {
     }
 }
 
+/// A polygon for hit testing; see
+/// [`SkeletonBounds`](crate::skeleton::SkeletonBounds).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundingBoxAttachment {
     pub name: String,
-    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    /// Caller-defined; kept by [`Attachment::copy`].
     pub tag: u32,
     pub vertex_data: VertexData,
     pub color: Color,
 }
 
 impl BoundingBoxAttachment {
+    /// An empty attachment with the editor's default color.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -662,19 +726,26 @@ impl BoundingBoxAttachment {
     }
 }
 
+/// A cubic Bezier spline that path constraints move bones along. Vertices
+/// are control points, three per curve joint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathAttachment {
     pub name: String,
-    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    /// Caller-defined; kept by [`Attachment::copy`].
     pub tag: u32,
     pub vertex_data: VertexData,
     pub color: Color,
+    /// The last curve joins back to the first.
     pub closed: bool,
+    /// Positions are spaced by arc length computed each frame, rather than
+    /// by the precomputed [`Self::lengths`].
     pub constant_speed: bool,
+    /// Cumulative length at the end of each curve, in skeleton units.
     pub lengths: Vec<f32>,
 }
 
 impl PathAttachment {
+    /// An empty attachment with the editor's default color.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -689,18 +760,23 @@ impl PathAttachment {
     }
 }
 
+/// A single point and direction relative to the slot's bone, for spawning
+/// effects or attaching objects.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointAttachment {
     pub name: String,
-    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    /// Caller-defined; kept by [`Attachment::copy`].
     pub tag: u32,
+    /// Position in bone space.
     pub x: f32,
     pub y: f32,
+    /// Degrees, relative to the bone.
     pub rotation: f32,
     pub color: Color,
 }
 
 impl PointAttachment {
+    /// A point at the bone origin with the editor's default color.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -714,19 +790,26 @@ impl PointAttachment {
     }
 }
 
+/// A polygon that clips the slots drawn after it, up to and including
+/// `end_slot`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClippingAttachment {
     pub name: String,
-    /// Caller-defined; kept by [`Attachment::copy`], emitted per vertex.
+    /// Caller-defined; kept by [`Attachment::copy`].
     pub tag: u32,
     pub vertex_data: VertexData,
     pub color: Color,
+    /// Last slot clipped; `None` clips to the end of the draw order.
     pub end_slot: Option<SlotId>,
+    /// Clip against the polygon's convex hull instead of splitting a
+    /// concave polygon into convex parts.
     pub convex: bool,
+    /// Keep what lies outside the polygon instead of inside.
     pub inverse: bool,
 }
 
 impl ClippingAttachment {
+    /// An empty attachment with the editor's default color.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -743,10 +826,15 @@ impl ClippingAttachment {
 
 /// A resolved texture region. `atlas` regions carry packing data (offsets,
 /// original size, rotation); plain regions map straight to `u..u2, v..v2`.
+/// Pixel fields are in page pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextureRegionRef {
+    /// Becomes the [`TextureId`](crate::render::TextureId) of commands
+    /// drawing this region.
     pub page_index: u32,
+    /// Whether the packing fields below are meaningful.
     pub atlas: bool,
+    /// UV rect on the page, 0..1.
     pub u: f32,
     pub v: f32,
     pub u2: f32,
@@ -755,10 +843,13 @@ pub struct TextureRegionRef {
     /// spine-cpp's atlas loader leaves them.
     pub packed_width: f32,
     pub packed_height: f32,
+    /// See [`AtlasRegion`](crate::atlas::AtlasRegion).
     pub original_width: f32,
     pub original_height: f32,
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Packing rotation in degrees. Meshes handle 0, 90, 180 and 270;
+    /// regions only 0 and 90.
     pub degrees: i32,
     pub page_width: f32,
     pub page_height: f32,

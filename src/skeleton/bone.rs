@@ -25,35 +25,52 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Runtime bones. Each bone has an unconstrained and a constrained
-//! [`BonePose`]; the world transform of the applied one is computed lazily,
-//! tracked by per-frame stamps against [`Frame::update`].
+//! Runtime bones and the bone transform math.
+//!
+//! Each [`Bone`] has an unconstrained and a constrained [`BonePose`]. The
+//! free functions here update one bone's applied pose inside a bone slice;
+//! [`Skeleton::update_world_transform`](crate::skeleton::Skeleton::update_world_transform)
+//! calls them in update order. Each pose stamps the [`Frame::update`] at which
+//! its world or local transform was last written, so work already done this
+//! frame is skipped and constraint-written world transforms can be turned
+//! back into local ones.
 
 use crate::data::{BoneData, BoneId, BoneLocal, Inherit};
 use crate::math::util::{DEG_RAD, EPSILON_SQ, RAD_DEG};
 use crate::skeleton::pose::{Pose, Posed};
 
-/// Skeleton-level values the bone transform needs.
+/// Skeleton-level values the bone transform needs: the skeleton's position
+/// and scale, and the current update stamp.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     pub x: f32,
     pub y: f32,
     pub scale_x: f32,
     pub scale_y: f32,
-    /// Incremented once per `update_world_transform`.
+    /// Incremented once per `update_world_transform`, skipping 0, which pose
+    /// stamps use for "never".
     pub update: u32,
 }
 
 /// Local transform plus the world transform it produces.
+///
+/// The local fields are relative to the parent bone; angles are in degrees.
+/// The world transform is the 2x2 matrix `[a b; c d]` plus translation
+/// `(world_x, world_y)`, valid after
+/// [`Skeleton::update_world_transform`](crate::skeleton::Skeleton::update_world_transform).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BonePose {
     pub x: f32,
     pub y: f32,
+    /// Degrees.
     pub rotation: f32,
     pub scale_x: f32,
     pub scale_y: f32,
+    /// Degrees.
     pub shear_x: f32,
+    /// Degrees.
     pub shear_y: f32,
+    /// Which parts of the parent's world transform this bone inherits.
     pub inherit: Inherit,
     pub a: f32,
     pub b: f32,
@@ -82,6 +99,7 @@ impl Pose for BonePose {
 }
 
 impl BonePose {
+    /// A pose with `l` as its local transform and a zero world transform.
     #[must_use]
     pub fn from_local(l: &BoneLocal) -> Self {
         Self {
@@ -104,6 +122,7 @@ impl BonePose {
         }
     }
 
+    /// Overwrites the local transform; the world transform is unchanged.
     pub fn set_local(&mut self, l: &BoneLocal) {
         self.x = l.x;
         self.y = l.y;
@@ -115,6 +134,7 @@ impl BonePose {
         self.inherit = l.inherit;
     }
 
+    /// The local transform fields.
     #[must_use]
     pub fn local_transform(&self) -> BoneLocal {
         BoneLocal {
@@ -129,26 +149,32 @@ impl BonePose {
         }
     }
 
+    /// World rotation of the local x axis, in degrees.
     #[must_use]
     pub fn world_rotation_x(&self) -> f32 {
         self.c.atan2(self.a) * RAD_DEG
     }
 
+    /// World rotation of the local y axis, in degrees.
     #[must_use]
     pub fn world_rotation_y(&self) -> f32 {
         self.d.atan2(self.b) * RAD_DEG
     }
 
+    /// Length of the world x axis. Always non-negative.
     #[must_use]
     pub fn world_scale_x(&self) -> f32 {
         (self.a * self.a + self.c * self.c).sqrt()
     }
 
+    /// Length of the world y axis. Always non-negative.
     #[must_use]
     pub fn world_scale_y(&self) -> f32 {
         (self.b * self.b + self.d * self.d).sqrt()
     }
 
+    /// Transforms a world point into this bone's local space. Non-finite
+    /// when the world matrix is singular.
     #[must_use]
     pub fn world_to_local(&self, world_x: f32, world_y: f32) -> (f32, f32) {
         let det = self.a * self.d - self.b * self.c;
@@ -160,6 +186,7 @@ impl BonePose {
         )
     }
 
+    /// Transforms a point in this bone's local space to world space.
     #[must_use]
     pub fn local_to_world(&self, local_x: f32, local_y: f32) -> (f32, f32) {
         (
@@ -168,6 +195,8 @@ impl BonePose {
         )
     }
 
+    /// Converts a world rotation to a local [`Self::rotation`] value, both
+    /// in degrees.
     #[must_use]
     pub fn world_to_local_rotation(&self, world_rotation: f32) -> f32 {
         let r = world_rotation * DEG_RAD;
@@ -176,6 +205,8 @@ impl BonePose {
             - self.shear_x
     }
 
+    /// Converts a local [`Self::rotation`] value to a world rotation, both in
+    /// degrees.
     #[must_use]
     pub fn local_to_world_rotation(&self, local_rotation: f32) -> f32 {
         let r = (local_rotation - self.rotation - self.shear_x) * DEG_RAD;
@@ -183,6 +214,8 @@ impl BonePose {
         (cos * self.c + sin * self.d).atan2(cos * self.a + sin * self.b) * RAD_DEG
     }
 
+    /// Rotates the world matrix by `degrees`. The local transform is not
+    /// updated; call [`modify_world`] first so it is recovered later.
     pub fn rotate_world(&mut self, degrees: f32) {
         let r = degrees * DEG_RAD;
         let (sin, cos) = (r.sin(), r.cos());
@@ -263,18 +296,24 @@ fn wrap_shear(shear_y: &mut f32) {
     }
 }
 
+/// A bone instance.
 #[derive(Debug, Clone)]
 pub struct Bone {
+    /// Index of this bone's [`BoneData`], equal to its own index.
     pub data: BoneId,
     pub parent: Option<BoneId>,
     pub children: Vec<BoneId>,
     pub posed: Posed<BonePose>,
-    /// Off when the bone needs a skin that isn't applied.
+    /// Off when the bone is skin-required and the worn skin doesn't include
+    /// it or a descendant. Inactive bones aren't updated, and their slots
+    /// aren't drawn.
     pub active: bool,
     pub(crate) sorted: bool,
 }
 
 impl Bone {
+    /// A bone in its setup pose. `children` starts empty and `active` false;
+    /// [`Skeleton::new`](crate::skeleton::Skeleton::new) fills them in.
     #[must_use]
     pub fn new(data: &BoneData) -> Self {
         let pose = BonePose::from_local(&data.setup);
@@ -288,6 +327,7 @@ impl Bone {
         }
     }
 
+    /// The pose to read: constrained if a constraint writes this bone.
     #[inline]
     #[must_use]
     pub fn applied(&self) -> &BonePose {
@@ -299,6 +339,7 @@ impl Bone {
         self.posed.applied_mut()
     }
 
+    /// Resets the unconstrained local transform to the setup pose.
     pub fn setup_pose(&mut self, data: &BoneData) {
         self.posed.pose.set_local(&data.setup);
     }
@@ -525,7 +566,9 @@ pub fn validate_local_transform(bones: &mut [Bone], i: usize, f: &Frame) {
     }
 }
 
-/// Call before changing the local transform after it may have been used.
+/// Call before changing the applied local transform after it may have been
+/// used this frame. Invalidates the world transforms of this bone and any
+/// descendants already computed from it.
 pub fn modify_local(bones: &mut [Bone], i: usize, f: &Frame) {
     if bones[i].applied().local == f.update {
         update_local_transform(bones, i, f);
@@ -534,7 +577,9 @@ pub fn modify_local(bones: &mut [Bone], i: usize, f: &Frame) {
     reset_world(bones, i, f);
 }
 
-/// Call before changing the world transform directly.
+/// Call before writing the applied world transform directly. Marks the local
+/// transform for recovery and invalidates descendants already computed this
+/// frame.
 pub fn modify_world(bones: &mut [Bone], i: usize, f: &Frame) {
     let p = bones[i].applied_mut();
     p.local = f.update;

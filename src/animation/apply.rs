@@ -25,12 +25,24 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `Animation::apply` and each timeline's `apply`.
+//! Applying an animation's timelines to a skeleton, through
+//! [`Skeleton::apply_animation`].
 //!
-//! Shared parameters: `alpha` is the mix weight, `from` is what to mix from
-//! (see [`MixFrom`]), `add` blends additively, and `out` means the entry is
-//! mixing out. `applied` writes the applied pose (sliders) instead of the
-//! unconstrained pose (animation state).
+//! The mix parameters shared by the functions here and in
+//! [`curve`][crate::animation::curve]:
+//!
+//! - `alpha`: weight of the timeline's value, 0 to 1.
+//! - `from`: what the value mixes from before and between keys (see
+//!   [`MixFrom`]).
+//! - `add`: add the keyed value to the current one instead of mixing toward
+//!   it. Only timelines that support it ([`Timeline::is_additive`]) honor it.
+//! - `out`: the animation is mixing out. Timelines with discrete values
+//!   (attachment, draw order, inherit, sequence, IK bend direction) stop
+//!   applying keys and return to setup or keep the current value, per
+//!   `from`. Scale timelines keep the sign of the value they mix from.
+//! - `applied`: write the constrained (applied) pose rather than the
+//!   unconstrained pose. Slider constraints apply animations this way;
+//!   [`AnimationState`][crate::animation::AnimationState] does not.
 
 #![allow(
     clippy::float_cmp,
@@ -56,8 +68,14 @@ use crate::skeleton::{Constraint, PhysicsConstraint, Skeleton, SlotPose};
 impl Skeleton {
     /// Applies every timeline of `animation` at `time` (seconds). With
     /// `looping`, `time` and a positive `last_time` wrap by the duration.
-    /// Events keyed in `(last_time, time]` are pushed to `events`; `None`
-    /// skips them.
+    /// Events keyed in `(last_time, time]` are appended to `events`; `None`
+    /// skips them. Pass a `last_time` of -1 to include events keyed at 0.
+    /// The mix parameters are described in the [module docs](crate::animation::apply).
+    ///
+    /// # Panics
+    ///
+    /// If `animation` isn't an index into this skeleton's
+    /// [`SkeletonData::animations`].
     pub fn apply_animation(
         &mut self,
         animation: AnimationId,

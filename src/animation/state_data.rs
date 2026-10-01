@@ -65,6 +65,7 @@ impl AnimationStateData {
         self.default_mix
     }
 
+    /// Sets the mix duration, in seconds, for pairs without an override.
     pub fn set_default_mix(&mut self, value: f32) {
         self.default_mix = value;
     }

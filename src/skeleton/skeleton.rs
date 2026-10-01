@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `Skeleton`: the per-instance pose of a [`SkeletonData`].
+//! [`Skeleton`]: the per-instance pose of a [`SkeletonData`].
 
 use std::sync::Arc;
 
@@ -42,27 +42,43 @@ use crate::skeleton::slot::{DrawOrder, Slot};
 use crate::skeleton::update_cache::{ResetEntry, UpdateCacheEntry};
 
 /// A posed instance of a shared [`SkeletonData`].
+///
+/// Each frame: apply animations (for example with
+/// [`AnimationState::apply`](crate::animation::AnimationState::apply)),
+/// advance physics time with [`Self::update`], compute world transforms with
+/// [`Self::update_world_transform`], then render with
+/// [`SkeletonRenderer`](crate::render::SkeletonRenderer).
 #[derive(Debug, Clone)]
 pub struct Skeleton {
     pub(crate) data: Arc<SkeletonData>,
+    /// Indexed by [`BoneId`], in [`SkeletonData::bones`] order.
     pub bones: Vec<Bone>,
+    /// Indexed by [`SlotId`], in [`SkeletonData::slots`] order.
     pub slots: Vec<Slot>,
     pub draw_order: DrawOrder,
-    /// Same order as [`SkeletonData::constraints`].
+    /// Indexed by [`ConstraintId`], in [`SkeletonData::constraints`] order.
     pub constraints: Vec<Constraint>,
     /// Parallel to [`Self::constraints`]; inactive constraints don't update.
+    /// Set by [`Self::update_cache`].
     pub constraints_active: Vec<bool>,
     pub(crate) physics: Vec<ConstraintId>,
     pub(crate) update_cache: Vec<UpdateCacheEntry>,
     pub(crate) reset_cache: Vec<ResetEntry>,
     pub(crate) skin: Option<Arc<Skin>>,
+    /// Tint multiplied into every slot's color when rendering.
     pub color: Color,
+    /// World position of the skeleton, added to the root bone's position.
     pub x: f32,
     pub y: f32,
+    /// Scale applied to the whole skeleton in world space. Negative flips.
     pub scale_x: f32,
     pub scale_y: f32,
+    /// Wind direction for physics constraints, scaled by each constraint's
+    /// wind strength. Defaults to `(1, 0)`.
     pub wind_x: f32,
     pub wind_y: f32,
+    /// Gravity direction for physics constraints, scaled by each
+    /// constraint's gravity strength. Defaults to `(0, 1)`.
     pub gravity_x: f32,
     pub gravity_y: f32,
     /// Seconds, advanced by [`Self::update`]; drives physics.
@@ -71,7 +87,9 @@ pub struct Skeleton {
 }
 
 impl Skeleton {
-    /// A skeleton in its setup pose with its update cache built.
+    /// A skeleton in its setup pose with no skin and its update cache built.
+    /// World transforms are not computed until
+    /// [`Self::update_world_transform`].
     #[must_use]
     pub fn new(data: Arc<SkeletonData>) -> Self {
         let mut bones: Vec<Bone> = data.bones.iter().map(Bone::new).collect();
@@ -118,6 +136,7 @@ impl Skeleton {
         skeleton
     }
 
+    /// The shared setup data this skeleton was created from.
     #[must_use]
     pub fn data(&self) -> &Arc<SkeletonData> {
         &self.data
@@ -261,7 +280,9 @@ impl Skeleton {
     }
 
     /// Resets constrained poses from their unconstrained poses, then updates
-    /// bones and constraints in update order.
+    /// bones and constraints in update order. Call after posing the
+    /// skeleton and before reading world transforms or rendering. `physics`
+    /// controls how physics constraints step.
     pub fn update_world_transform(&mut self, physics: Physics) {
         self.update = self.update.wrapping_add(1);
         if self.update == 0 {
@@ -327,7 +348,7 @@ impl Skeleton {
         }
     }
 
-    /// Linear scan by name.
+    /// The bone with this name. Linear scan.
     #[must_use]
     pub fn find_bone(&self, name: &str) -> Option<BoneId> {
         self.data
@@ -337,7 +358,7 @@ impl Skeleton {
             .map(|i| BoneId(i as u16))
     }
 
-    /// Linear scan by name.
+    /// The slot with this name. Linear scan.
     #[must_use]
     pub fn find_slot(&self, name: &str) -> Option<SlotId> {
         self.data
@@ -416,8 +437,9 @@ impl Skeleton {
         r.and_then(|r| self.attachment(r).timeline_attachment(r))
     }
 
-    /// The attachment for a placeholder on a slot, from the skin, falling
-    /// back to the default skin.
+    /// The attachment for a placeholder on a slot, from the worn skin,
+    /// falling back to the default skin. `None` for an empty placeholder or
+    /// one neither skin has.
     #[must_use]
     pub fn get_attachment(&self, slot: SlotId, placeholder: &str) -> Option<AttachmentRef> {
         if placeholder.is_empty() {
@@ -446,8 +468,9 @@ impl Skeleton {
         self.data.default_skin()?.get(key)
     }
 
-    /// Shows the attachment for `placeholder` on a slot, or clears it with
-    /// `None`. Does nothing if the placeholder has no attachment.
+    /// Shows the attachment for `placeholder` on a slot's unconstrained
+    /// pose, or clears it with `None`. Does nothing if the placeholder has
+    /// no attachment.
     pub fn set_attachment(&mut self, slot: SlotId, placeholder: Option<&str>) {
         let attachment = match placeholder {
             Some(p) => match self.get_attachment(slot, p) {
@@ -467,6 +490,7 @@ impl Skeleton {
     /// the new skin's for the same placeholder; with no old skin, setup
     /// attachments come from the new one. A slot left showing an attachment
     /// the old skin owned is cleared, since that attachment goes with it.
+    /// Rebuilds the update cache unless the skin is unchanged.
     pub fn set_skin(&mut self, new_skin: Option<Arc<Skin>>) {
         let same = match (&self.skin, &new_skin) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -545,12 +569,14 @@ impl Skeleton {
         Ok(())
     }
 
-    /// Advances [`Self::time`], which physics uses.
+    /// Advances [`Self::time`] by `delta` seconds. Physics constraints step
+    /// by the time elapsed since their last update.
     pub fn update(&mut self, delta: f32) {
         self.time += delta;
     }
 
-    /// Moves every physics simulation without adding inertia.
+    /// Moves every physics simulation by `(x, y)` in world units without
+    /// adding inertia, for example when teleporting the skeleton.
     pub fn physics_translate(&mut self, x: f32, y: f32) {
         for i in 0..self.physics.len() {
             if let Constraint::Physics(p) = &mut self.constraints[self.physics[i].index()] {
@@ -559,7 +585,8 @@ impl Skeleton {
         }
     }
 
-    /// Rotates every physics simulation around `(x, y)` without adding inertia.
+    /// Rotates every physics simulation `degrees` around world point
+    /// `(x, y)` without adding inertia.
     pub fn physics_rotate(&mut self, x: f32, y: f32, degrees: f32) {
         for i in 0..self.physics.len() {
             if let Constraint::Physics(p) = &mut self.constraints[self.physics[i].index()] {

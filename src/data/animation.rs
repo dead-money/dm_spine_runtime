@@ -37,7 +37,10 @@ use crate::math::Color;
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Animation {
     pub name: String,
+    /// Seconds.
     pub duration: f32,
+    /// Set through [`Self::set_timelines`], which keeps the property-id
+    /// caches in sync.
     pub timelines: Vec<Timeline>,
     /// Bones with bone timelines, in file order. Sliders touch only these.
     pub bones: Vec<BoneId>,
@@ -53,6 +56,7 @@ pub struct Animation {
 }
 
 impl Animation {
+    /// An animation with no timelines.
     #[must_use]
     pub fn new(name: impl Into<String>, duration: f32) -> Self {
         Self {
@@ -171,6 +175,7 @@ pub struct CurveFrames {
 /// [`EventData`](crate::data::EventData).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationEvent {
+    /// Seconds into the animation.
     pub time: f32,
     pub event: EventId,
     pub int_value: i32,
@@ -194,12 +199,15 @@ pub enum PhysicsProperty {
 }
 
 /// Every kind of animation timeline. Applied by [`crate::animation`].
+///
+/// Variants with `curves` interpolate between keys; the others step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Timeline {
     Rotate {
         bone: BoneId,
         curves: CurveFrames,
     },
+    /// X and Y keyed together.
     Translate {
         bone: BoneId,
         curves: CurveFrames,
@@ -212,6 +220,7 @@ pub enum Timeline {
         bone: BoneId,
         curves: CurveFrames,
     },
+    /// X and Y keyed together.
     Scale {
         bone: BoneId,
         curves: CurveFrames,
@@ -224,6 +233,7 @@ pub enum Timeline {
         bone: BoneId,
         curves: CurveFrames,
     },
+    /// X and Y keyed together.
     Shear {
         bone: BoneId,
         curves: CurveFrames,
@@ -245,6 +255,7 @@ pub enum Timeline {
         inherits: Vec<Inherit>,
     },
 
+    /// Sets the slot's attachment at each key.
     Attachment {
         slot: SlotId,
         /// Key times.
@@ -254,6 +265,7 @@ pub enum Timeline {
         /// `names` interned; `None` for no or an empty name.
         keys: Vec<Option<SkinKey>>,
     },
+    /// Slot color.
     Rgba {
         slot: SlotId,
         curves: CurveFrames,
@@ -266,6 +278,7 @@ pub enum Timeline {
         slot: SlotId,
         curves: CurveFrames,
     },
+    /// Slot color and tint-black dark color.
     Rgba2 {
         slot: SlotId,
         curves: CurveFrames,
@@ -296,15 +309,18 @@ pub enum Timeline {
     /// Sets the draw order. Per key, `None` restores the setup order;
     /// otherwise a full permutation of slots.
     DrawOrder {
+        /// Key times.
         frames: Vec<f32>,
         draw_orders: Vec<Option<Vec<SlotId>>>,
     },
     /// Reorders only `slots`; each key's order is indices into `slots`.
     DrawOrderFolder {
         slots: Vec<SlotId>,
+        /// Key times.
         frames: Vec<f32>,
         draw_orders: Vec<Option<Vec<u16>>>,
     },
+    /// Fires events as playback passes their keys.
     Event {
         /// Duplicates `events[i].time` so key search runs over a plain
         /// `f32` slice.
@@ -312,10 +328,13 @@ pub enum Timeline {
         events: Vec<AnimationEvent>,
     },
 
+    /// Every field of an [`IkConstraintPose`](crate::data::IkConstraintPose).
     IkConstraint {
         constraint: ConstraintId,
         curves: CurveFrames,
     },
+    /// The six mixes of a
+    /// [`TransformConstraintPose`](crate::data::TransformConstraintPose).
     TransformConstraint {
         constraint: ConstraintId,
         curves: CurveFrames,
@@ -328,6 +347,7 @@ pub enum Timeline {
         constraint: ConstraintId,
         curves: CurveFrames,
     },
+    /// Rotate, X and Y mixes.
     PathConstraintMix {
         constraint: ConstraintId,
         curves: CurveFrames,
@@ -343,8 +363,10 @@ pub enum Timeline {
     /// physics constraint.
     PhysicsReset {
         constraint: Option<ConstraintId>,
+        /// Key times.
         frames: Vec<f32>,
     },
+    /// A slider's time.
     Slider {
         constraint: ConstraintId,
         curves: CurveFrames,

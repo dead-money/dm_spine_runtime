@@ -118,7 +118,11 @@ struct LinkedMesh {
     inherit_timelines: bool,
 }
 
-/// Reader for the binary `.skel` format.
+/// Parser for binary `.skel` exports.
+///
+/// Build one with [`with_loader`](Self::with_loader), optionally set
+/// [`with_scale`](Self::with_scale), then consume it with
+/// [`read`](Self::read).
 pub struct SkeletonBinary<'loader> {
     loader: &'loader mut dyn AttachmentLoader,
     scale: f32,
@@ -126,7 +130,7 @@ pub struct SkeletonBinary<'loader> {
 }
 
 impl<'loader> SkeletonBinary<'loader> {
-    /// Reader that builds attachments through `loader`, at scale 1.
+    /// Parser that creates attachments through `loader`, at scale 1.
     pub fn with_loader(loader: &'loader mut dyn AttachmentLoader) -> Self {
         Self {
             loader,
@@ -135,17 +139,27 @@ impl<'loader> SkeletonBinary<'loader> {
         }
     }
 
-    /// Scales positions and sizes as they load.
+    /// Multiplies values in skeleton units as they load (bone translation and
+    /// length, attachment geometry, translation keys, IK softness, physics
+    /// limit, `reference_scale`, and so on). Rotation, scale and shear are
+    /// unaffected. Defaults to 1.
     #[must_use]
     pub fn with_scale(mut self, scale: f32) -> Self {
         self.scale = scale;
         self
     }
 
-    /// Parses a `.skel` buffer.
+    /// Parses a whole `.skel` buffer.
     ///
     /// # Errors
-    /// Malformed content, a version other than 4.3, or a loader failure.
+    /// [`BinaryError::UnsupportedVersion`] if the export's version does not
+    /// start with `4.3`, [`BinaryError::AttachmentLoader`] if the loader
+    /// fails, and the other [`BinaryError`] variants for truncated or
+    /// malformed content.
+    ///
+    /// # Panics
+    /// Some malformed deform or draw-order data indexes past its buffer and
+    /// panics instead of returning an error.
     pub fn read(mut self, bytes: &[u8]) -> Result<SkeletonData, BinaryError> {
         let scale = self.scale;
         let mut r = BinaryReader::new(bytes);
@@ -1522,7 +1536,9 @@ fn read_draw_order(
     Ok(Some(draw_order))
 }
 
-/// Links a mesh to its source and rebuilds its UVs. Shared by both loaders.
+/// Copies `source`'s geometry into the linked `mesh`, points its deform
+/// timelines at `source` when `inherit_timelines`, and recomputes its UVs.
+/// Does nothing unless both are meshes. Shared by both loaders.
 pub(crate) fn link_mesh(
     sd: &mut SkeletonData,
     mesh: AttachmentId,

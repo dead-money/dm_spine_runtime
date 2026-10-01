@@ -26,7 +26,35 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Per-instance skeleton state: bones, slots, constraints and their poses.
-//! The immutable, shared setup data lives in [`crate::data`].
+//!
+//! A [`Skeleton`] is one posed instance of a shared
+//! [`SkeletonData`](crate::data::SkeletonData). It owns a [`Bone`] per bone,
+//! a [`Slot`] per slot and a [`Constraint`] per constraint, indexed by the
+//! same typed ids as the data, plus a [`DrawOrder`]. Animations write local
+//! poses; [`Skeleton::update_world_transform`] then runs bones and
+//! constraints in update order to produce world transforms, which
+//! [`SkeletonRenderer`](crate::render::SkeletonRenderer) and
+//! [`SkeletonBounds`] read.
+//!
+//! Each bone, slot and constraint keeps two poses in a [`Posed`]: `pose`,
+//! which animations and application code write, and `constrained`, which
+//! constraints write. Read the result through `applied()`.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use spine_runtime::data::SkeletonData;
+//! use spine_runtime::skeleton::{Physics, Skeleton};
+//!
+//! fn hand_position(data: Arc<SkeletonData>, dt: f32) -> Option<(f32, f32)> {
+//!     let mut skeleton = Skeleton::new(data);
+//!     skeleton.x = 100.0;
+//!     skeleton.update(dt);
+//!     skeleton.update_world_transform(Physics::Update);
+//!     let hand = skeleton.find_bone("front-hand")?;
+//!     let pose = skeleton.bones[hand.index()].applied();
+//!     Some((pose.world_x, pose.world_y))
+//! }
+//! ```
 
 pub mod bone;
 pub mod bounds;
@@ -59,13 +87,13 @@ pub use update_cache::{ResetEntry, UpdateCacheEntry};
 /// [`Skeleton::update_world_transform`] call.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Physics {
-    /// Physics are not updated or applied.
+    /// Physics are neither simulated nor applied.
     #[default]
     None,
-    /// Physics are reset to the current pose.
+    /// Simulation state is cleared and restarts from the current pose.
     Reset,
-    /// Physics are updated and the pose from physics is applied.
+    /// The simulation advances to [`Skeleton::time`] and its result is applied.
     Update,
-    /// Physics are not updated but the pose from physics is applied.
+    /// The last simulated result is applied without advancing.
     Pose,
 }

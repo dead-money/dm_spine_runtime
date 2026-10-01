@@ -26,6 +26,11 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Pluggable attachment construction during skeleton load.
+//!
+//! The skeleton readers call an [`AttachmentLoader`] for each attachment they
+//! read. [`AtlasAttachmentLoader`] resolves textures against a parsed
+//! [`Atlas`]; implement the trait yourself to resolve them some other way or
+//! to skip attachments.
 
 use thiserror::Error;
 
@@ -39,8 +44,10 @@ use crate::data::attachment::{
 /// fails; these are for custom loaders.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AttachmentLoaderError {
+    /// No texture region for `path`.
     #[error("atlas region not found: {path:?} (attachment {attachment:?})")]
     RegionNotFound { path: String, attachment: String },
+    /// The loader doesn't handle this kind of attachment.
     #[error("attachment {attachment:?} is unsupported by this loader")]
     Unsupported { attachment: String },
 }
@@ -49,9 +56,14 @@ pub enum AttachmentLoaderError {
 /// `placeholder` the key the attachment is stored under in that skin, and
 /// `name` the attachment's own name. The loader resolves texture regions; the
 /// skeleton reader fills in the remaining fields and then calls
-/// `update_sequence`. Returning `Ok(None)` leaves the attachment out.
+/// `update_sequence`. Returning `Ok(None)` leaves the attachment out. An
+/// error aborts the load.
+///
+/// Only the textured kinds must be implemented; the others default to a
+/// plain attachment.
 pub trait AttachmentLoader {
-    /// `sequence` has one entry per frame; resolve each frame's region.
+    /// A region attachment. `path` is its atlas path; `sequence` has one
+    /// entry per frame, and [`Sequence::path`] gives each frame's path.
     ///
     /// # Errors
     /// Loader-specific.
@@ -64,6 +76,9 @@ pub trait AttachmentLoader {
         sequence: Sequence,
     ) -> Result<Option<RegionAttachment>, AttachmentLoaderError>;
 
+    /// A mesh attachment, including linked meshes. Arguments as for
+    /// [`Self::new_region_attachment`].
+    ///
     /// # Errors
     /// Loader-specific.
     fn new_mesh_attachment(
@@ -124,13 +139,15 @@ pub trait AttachmentLoader {
     }
 }
 
-/// Resolves regions against an [`Atlas`]. A frame whose region is missing
-/// stays `None` and renders with 0..1 UVs, as in spine-cpp.
+/// Resolves regions against an [`Atlas`] by name. Never fails: a frame
+/// whose region is missing stays `None`, as in spine-cpp, and
+/// [`SkeletonRenderer`](crate::render::SkeletonRenderer) skips drawing it.
 pub struct AtlasAttachmentLoader<'atlas> {
     atlas: &'atlas Atlas,
 }
 
 impl<'atlas> AtlasAttachmentLoader<'atlas> {
+    /// A loader that looks regions up in `atlas`.
     #[must_use]
     pub fn new(atlas: &'atlas Atlas) -> Self {
         Self { atlas }
@@ -147,7 +164,11 @@ impl<'atlas> AtlasAttachmentLoader<'atlas> {
     }
 }
 
-/// Snapshot of an atlas region in the form attachments consume.
+/// Snapshot of an atlas region in the form attachments consume. For custom
+/// loaders, or for [`Attachment::set_region`](crate::data::Attachment::set_region).
+///
+/// # Panics
+/// If `r.page` is not a page of `atlas`.
 #[must_use]
 pub fn region_ref(atlas: &Atlas, r: &AtlasRegion) -> TextureRegionRef {
     let page = &atlas.pages[r.page as usize];

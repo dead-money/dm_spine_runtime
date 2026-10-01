@@ -54,8 +54,9 @@
 
 use thiserror::Error;
 
-/// Pixel format hint written by the Spine editor. `Unknown` when the atlas
-/// omits `format:` or writes an unrecognized value.
+/// Pixel format hint written by the Spine texture packer. `Unknown` when the
+/// atlas omits `format:` or writes an unrecognized value. The runtime never
+/// reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Unknown,
@@ -68,7 +69,8 @@ pub enum Format {
     Rgba8888,
 }
 
-/// Texture minification / magnification filter.
+/// Texture minification or magnification filter. `Unknown` for an
+/// unrecognized value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureFilter {
     Unknown,
@@ -95,11 +97,14 @@ pub struct AtlasPage {
     /// Texture filename as written in the atlas (e.g. `"spineboy.png"`),
     /// relative to the atlas file's directory.
     pub name: String,
+    /// Page size in pixels, from `size:`. 0 when absent.
     pub width: i32,
     pub height: i32,
     pub format: Format,
+    /// `Nearest` when the page has no `filter:` line.
     pub min_filter: TextureFilter,
     pub mag_filter: TextureFilter,
+    /// `ClampToEdge` unless `repeat:` names this axis (`x`, `y` or `xy`).
     pub u_wrap: TextureWrap,
     pub v_wrap: TextureWrap,
     /// The texture has premultiplied alpha, so it needs `(ONE,
@@ -139,30 +144,33 @@ pub struct AtlasRegion {
     /// Frame number within a sequence (`index:`), or `-1` if absent.
     pub index: i32,
 
-    // Position on the page and size before rotation. A 90° region covers
-    // `height` x `width` pixels on the page.
+    /// Top-left corner on the page, in pixels.
     pub x: i32,
     pub y: i32,
+    /// Packed size in pixels, before rotation. A 90° region covers `height`
+    /// by `width` pixels on the page.
     pub width: i32,
     pub height: i32,
 
-    // Size of the image before whitespace stripping, and the stripped
-    // rect's offset within it. The original size defaults to the packed size.
+    /// Size of the image before whitespace was stripped. Defaults to the
+    /// packed size.
     pub original_width: i32,
     pub original_height: i32,
+    /// Offset of the packed rect within the original image, in pixels.
     pub offset_x: f32,
     pub offset_y: f32,
 
     /// Rotation in degrees as written; usually 0 or 90.
     pub degrees: i32,
 
-    /// UV rect on the page, accounting for 90° rotation.
+    /// UV rect on the page (0..1, v down), accounting for 90° rotation.
     pub u: f32,
     pub v: f32,
     pub u2: f32,
     pub v2: f32,
 
-    /// Lines with unrecognized keys, values parsed as integers.
+    /// Lines with unrecognized keys (such as `split` or `pad`), in file
+    /// order, values parsed as integers.
     pub extras: Vec<(String, Vec<i32>)>,
 }
 
@@ -203,7 +211,9 @@ impl AtlasRegion {
 /// that reference them.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Atlas {
+    /// Pages in file order.
     pub pages: Vec<AtlasPage>,
+    /// Regions of every page, in file order.
     pub regions: Vec<AtlasRegion>,
 }
 
@@ -211,9 +221,9 @@ impl Atlas {
     /// Parses `.atlas` text.
     ///
     /// # Errors
-    /// [`AtlasError`] when a numeric field has too few values or a value that
-    /// isn't an integer. Unrecognized `format:` and `filter:` values become
-    /// `Unknown` instead.
+    /// [`AtlasError`] when a numeric field has too few values, or a numeric
+    /// field or unrecognized region key has a value that isn't an integer.
+    /// Unrecognized `format:` and `filter:` values become `Unknown` instead.
     pub fn parse(text: &str) -> Result<Self, AtlasError> {
         Parser::new(text).run()
     }

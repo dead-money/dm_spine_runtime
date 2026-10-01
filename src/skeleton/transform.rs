@@ -25,8 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Transform constraint (`TransformConstraint.cpp` and the from/to property
-//! classes in `TransformConstraintData.cpp`).
+//! Transform constraint update and sorting. A transform constraint maps
+//! channels of a source bone onto its constrained bones.
 
 use crate::data::{
     ConstraintId, TransformConstraintData, TransformConstraintPose, TransformProperty,

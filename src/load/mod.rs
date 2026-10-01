@@ -25,12 +25,33 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Skeleton-loading infrastructure shared by format-specific loaders.
+//! Skeleton loaders: turn a Spine 4.3 export into [`SkeletonData`].
 //!
-//! Exposes the [`AttachmentLoader`] trait, the default
-//! [`AtlasAttachmentLoader`] implementation, and format-specific loaders:
-//! [`SkeletonBinary`] for `.skel` files and [`SkeletonJson`] for `.json`
-//! files.
+//! [`SkeletonBinary`] reads `.skel` files and [`SkeletonJson`] reads `.json`
+//! files. Both create attachments through an [`AttachmentLoader`], which
+//! resolves texture regions. [`AtlasAttachmentLoader`] resolves them against a
+//! parsed [`Atlas`]; implement the trait yourself to resolve regions some other
+//! way or to drop attachments.
+//!
+//! Load each asset once and share the result as `Arc<SkeletonData>` across
+//! skeleton instances.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use spine_runtime::atlas::Atlas;
+//! use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+//!
+//! let atlas = Atlas::parse(&std::fs::read_to_string("spineboy.atlas")?)?;
+//! let mut loader = AtlasAttachmentLoader::new(&atlas);
+//! let data = SkeletonBinary::with_loader(&mut loader)
+//!     .with_scale(0.5)
+//!     .read(&std::fs::read("spineboy-pro.skel")?)?;
+//! let data = Arc::new(data);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! [`SkeletonData`]: crate::data::SkeletonData
+//! [`Atlas`]: crate::atlas::Atlas
 
 pub mod attachment_loader;
 pub mod binary;

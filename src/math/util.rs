@@ -32,10 +32,15 @@
 
 // Computed the same way as spine-cpp's so rounding matches.
 pub const PI: f32 = std::f32::consts::PI;
+/// 2π, not π/2.
 pub const PI_2: f32 = PI * 2.0;
+/// 1 / 2π.
 pub const INV_PI_2: f32 = 1.0 / PI_2;
+/// Multiply degrees by this to get radians.
 pub const DEG_RAD: f32 = PI / 180.0;
+/// Multiply radians by this to get degrees.
 pub const RAD_DEG: f32 = 180.0 / PI;
+/// spine-cpp's tolerance for near-zero checks.
 pub const EPSILON: f32 = 0.00001;
 pub const EPSILON_SQ: f32 = EPSILON * EPSILON;
 

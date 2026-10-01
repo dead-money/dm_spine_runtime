@@ -39,12 +39,14 @@ use crate::math::Color;
 /// the skeleton's current skin (a runtime copy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttachmentRef {
+    /// Index into [`SkeletonData::attachments`](crate::data::SkeletonData::attachments).
     Data(AttachmentId),
     /// Index into the owning skin's [`Skin::owned`].
     Owned(u32),
 }
 
-/// Interned `(slot, placeholder)` pairs of one `SkeletonData`.
+/// Interned `(slot, placeholder)` pairs of one `SkeletonData`, stored in
+/// [`SkeletonData::skin_keys`](crate::data::SkeletonData::skin_keys).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SkinKeys {
     keys: Vec<(SlotId, Box<str>)>,
@@ -76,6 +78,9 @@ impl SkinKeys {
             .find(|k| *self.keys[k.index()].1 == *placeholder)
     }
 
+    /// # Panics
+    /// If `key` was not interned here. The same holds for
+    /// [`Self::placeholder`].
     #[must_use]
     pub fn slot(&self, key: SkinKey) -> SlotId {
         self.keys[key.index()].0
@@ -86,6 +91,7 @@ impl SkinKeys {
         &self.keys[key.index()].1
     }
 
+    /// Every key interned for `slot`.
     #[must_use]
     pub fn slot_keys(&self, slot: SlotId) -> &[SkinKey] {
         self.by_slot.get(slot.index()).map_or(&[], Vec::as_slice)
@@ -104,10 +110,18 @@ impl SkinKeys {
 
 /// A skin for one `SkeletonData`: its keys and data attachment ids are only
 /// meaningful against that data.
+///
+/// Entries point at shared data attachments or at attachments in the skin's
+/// own arena ([`Self::add_owned`]). To build a custom loadout, start from
+/// [`Skin::new`], then [`Self::add_skin`] or [`Self::copy_skin`] the parts,
+/// and wear it with
+/// [`Skeleton::set_skin`](crate::skeleton::Skeleton::set_skin).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Skin {
     pub name: String,
+    /// Skin-required bones this skin activates.
     pub bones: Vec<BoneId>,
+    /// Skin-required constraints this skin activates.
     pub constraints: Vec<ConstraintId>,
     /// Nonessential editor color.
     pub color: Color,
@@ -120,6 +134,7 @@ pub struct Skin {
 }
 
 impl Skin {
+    /// An empty skin.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -129,12 +144,15 @@ impl Skin {
         }
     }
 
+    /// The attachment at `key`, if any.
     #[inline]
     #[must_use]
     pub fn get(&self, key: SkinKey) -> Option<AttachmentRef> {
         self.entries.get(key.index()).copied().flatten()
     }
 
+    /// Puts `attachment` at `key`, replacing any previous entry.
+    ///
     /// # Panics
     ///
     /// If `attachment` is an owned index this skin doesn't have.
@@ -203,6 +221,7 @@ impl Skin {
         self.set_extra(slot, placeholder, attachment);
     }
 
+    /// Removes by name, including runtime-only placeholders.
     pub fn remove_named(&mut self, keys: &SkinKeys, slot: SlotId, placeholder: &str) {
         match keys.find(slot, placeholder) {
             Some(key) => self.remove(key),
@@ -226,17 +245,21 @@ impl Skin {
         AttachmentRef::Owned(self.owned.len() as u32 - 1)
     }
 
+    /// The skin's own attachments, indexed by [`AttachmentRef::Owned`].
     #[must_use]
     pub fn owned(&self) -> &[Attachment] {
         &self.owned
     }
 
+    /// Mutable access to the owned attachments, for editing copies in
+    /// place.
     #[must_use]
     pub fn owned_mut(&mut self) -> &mut [Attachment] {
         &mut self.owned
     }
 
-    /// Every non-empty entry.
+    /// Every non-empty keyed entry. Runtime-only placeholders are not
+    /// included; see [`Self::extra_on`].
     pub fn entries(&self) -> impl Iterator<Item = (SkinKey, AttachmentRef)> + '_ {
         self.entries
             .iter()
@@ -244,6 +267,7 @@ impl Skin {
             .filter_map(|(i, e)| e.map(|a| (SkinKey(i as u32), a)))
     }
 
+    /// Number of entries, including runtime-only placeholders.
     #[must_use]
     pub fn attachment_count(&self) -> usize {
         self.entries.iter().flatten().count() + self.extra.len()

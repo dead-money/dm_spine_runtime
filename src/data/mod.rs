@@ -25,14 +25,23 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Immutable skeleton data shared across `Skeleton` instances.
+//! Setup-pose data shared by every [`Skeleton`] of one asset.
 //!
-//! Each Spine asset loads into one [`SkeletonData`], usually wrapped in an
-//! `Arc` and shared by many `Skeleton`s. Mutable runtime state lives on
-//! `Skeleton`.
+//! A loader in [`crate::load`] reads an export into one [`SkeletonData`],
+//! which is then wrapped in an `Arc` and shared. Its parts:
 //!
-//! Cross-references are typed indices into the owning `SkeletonData`
-//! vectors ([`BoneId`], [`SlotId`], ...), not pointers.
+//! - [`BoneData`], [`SlotData`] and [`ConstraintData`]: the setup pose.
+//! - [`Skin`]: attachments keyed by slot and placeholder name.
+//! - [`Attachment`]: regions, meshes, clipping polygons, paths, points and
+//!   bounding boxes.
+//! - [`Animation`]: [`Timeline`]s that [`crate::animation`] applies.
+//! - [`EventData`]: events that animations fire.
+//!
+//! Mutable per-instance state lives on [`Skeleton`]. Cross-references are
+//! typed indices into the `SkeletonData` vectors ([`BoneId`], [`SlotId`],
+//! ...), not pointers.
+//!
+//! [`Skeleton`]: crate::skeleton::Skeleton
 
 pub mod animation;
 pub mod attachment;
@@ -70,6 +79,7 @@ macro_rules! define_id {
         $vis struct $name(pub $inner);
 
         impl $name {
+            /// The id as a `usize`, for indexing.
             #[inline]
             #[must_use]
             pub fn index(self) -> usize {

@@ -49,13 +49,15 @@ use thiserror::Error;
 use crate::load::AttachmentLoaderError;
 use crate::math::Color;
 
-/// Errors produced while parsing a `.skel` file. Byte offsets are 0-based
-/// from the start of the buffer.
+/// Errors produced while parsing a `.skel` file. `at` is a 0-based byte
+/// offset from the start of the buffer.
 #[derive(Debug, Error)]
 pub enum BinaryError {
+    /// The buffer ended `wanted` bytes short of a value.
     #[error("unexpected end of input at byte {at} (wanted {wanted} more byte(s))")]
     UnexpectedEof { at: usize, wanted: usize },
 
+    /// A varint's fifth byte had its continuation bit set.
     #[error("byte {at}: varint overflowed 32 bits")]
     VarintOverflow { at: usize },
 
@@ -66,12 +68,18 @@ pub enum BinaryError {
         source: std::str::Utf8Error,
     },
 
+    /// A string-table reference past the end of the table. `index` is
+    /// 0-based.
     #[error("byte {at}: string-table index {index} out of range ({len} entries)")]
     StringRefOutOfRange { at: usize, index: usize, len: usize },
 
+    /// The export's version does not start with `4.3`.
     #[error("skeleton version mismatch: file reports {found:?}, runtime targets {expected:?}")]
     UnsupportedVersion { found: String, expected: String },
 
+    /// A reference to a bone, slot, constraint, skin or event that does not
+    /// exist. `at` is 0 for linked-mesh skins, which are
+    /// checked after the whole skin section is read.
     #[error("byte {at}: {entity} index {index} out of range ({len} entries)")]
     IndexOutOfRange {
         at: usize,
@@ -80,6 +88,9 @@ pub enum BinaryError {
         len: usize,
     },
 
+    /// An enum or type tag outside the known set, or a constraint
+    /// reference to a constraint of the wrong kind (then `value` is its
+    /// index).
     #[error("byte {at}: unknown {entity} discriminant {value}")]
     UnknownDiscriminant {
         at: usize,
@@ -87,6 +98,8 @@ pub enum BinaryError {
         value: u32,
     },
 
+    /// A named attachment missing from its skin and slot: the source of a
+    /// linked mesh (`at` is 0) or the target of an attachment timeline.
     #[error("byte {at}: linked-mesh parent {parent:?} not found on skin {skin:?} slot {slot}")]
     LinkedMeshParentMissing {
         at: usize,
@@ -95,9 +108,12 @@ pub enum BinaryError {
         parent: String,
     },
 
+    /// The [`AttachmentLoader`](crate::load::AttachmentLoader) returned an
+    /// error.
     #[error("attachment loader failed: {0}")]
     AttachmentLoader(#[from] AttachmentLoaderError),
 
+    /// Not produced by the parser, which reads from memory.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
