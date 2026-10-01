@@ -53,8 +53,6 @@ so the first version is published by hand.
    publisher: repository `dead-money/spine_runtime`, workflow `release.yml`,
    environment blank. Later releases use GitHub's OIDC identity, so there's no
    token to store.
-4. Switch the README's Quick start from the git dependency to
-   `spine_runtime = "0.2"`, and add crates.io and docs.rs badges.
 
 ## Later releases
 
