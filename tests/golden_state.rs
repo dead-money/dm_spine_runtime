@@ -90,11 +90,14 @@ fn close(a: f32, b: f32) -> bool {
 }
 
 fn load(fx: &Fixture) -> Arc<SkeletonData> {
+    load_rig(&fx.source_skel, &fx.source_atlas)
+}
+
+fn load_rig(skel: &str, atlas: &str) -> Arc<SkeletonData> {
     let atlas =
-        Atlas::parse(&std::fs::read_to_string(common::example_path(&fx.source_atlas)).unwrap())
-            .unwrap();
+        Atlas::parse(&std::fs::read_to_string(common::example_path(atlas)).unwrap()).unwrap();
     let mut loader = AtlasAttachmentLoader::new(&atlas);
-    let bytes = std::fs::read(common::example_path(&fx.source_skel)).unwrap();
+    let bytes = std::fs::read(common::example_path(skel)).unwrap();
     Arc::new(
         SkeletonBinary::with_loader(&mut loader)
             .read(&bytes)
@@ -120,23 +123,57 @@ fn trace_entries(state: &AnimationState, trace: &mut Vec<String>) {
     }
 }
 
+/// How [`run`] applies each step.
+struct Mode {
+    /// Runs [`AnimationState::pose`] between every update, apply and command.
+    pose: bool,
+    /// Starts every full apply from a fresh skeleton in its setup pose, so
+    /// the pose doesn't depend on which steps were full.
+    reset: bool,
+    /// Whether the step with this index, counted across the script, is a full
+    /// apply. The last step before each command is always full.
+    full: fn(usize) -> bool,
+    /// The other steps call [`AnimationState::apply_events`] rather than
+    /// apply and then reset every entry's rotation directions.
+    events_only: bool,
+}
+
+const FULL: Mode = Mode {
+    pose: false,
+    reset: false,
+    full: |_| true,
+    events_only: false,
+};
+
+fn reset_rotation_directions(state: &mut AnimationState) {
+    for track in state.tracks().to_vec() {
+        let mut from = track;
+        while let Some(id) = from {
+            let e = state.entry_mut(id).unwrap();
+            e.reset_rotation_directions();
+            from = e.mixing_from;
+        }
+    }
+}
+
 /// Runs the script, returning `(frames, events)` in the fixture's shape and
-/// a trace of every drained event, keyframe event and entry state. With
-/// `pose`, [`AnimationState::pose`] runs between every update, apply and
-/// command.
+/// a trace of every drained event, keyframe event and entry state.
 fn run(
     data: &Arc<SkeletonData>,
     script: &str,
-    pose: bool,
+    mode: &Mode,
 ) -> (Vec<Skeleton>, Vec<String>, Vec<String>) {
+    let pose = mode.pose;
     let mut skeleton = Skeleton::new(Arc::clone(data));
     skeleton.setup_pose();
+    let fresh = skeleton.clone();
     let mut state_data = AnimationStateData::new(Arc::clone(data));
     let mut state: Option<AnimationState> = None;
     let mut frames = Vec::new();
     let mut events = Vec::new();
     let mut keyframes = Vec::new();
     let mut trace = Vec::new();
+    let mut step = 0;
     let anim_name = |id: spine_runtime::data::AnimationId| {
         if id == EMPTY_ANIMATION_ID {
             "<empty>".to_string()
@@ -169,12 +206,15 @@ fn run(
             "addempty" => {
                 state.add_empty_animation(track(), f[2].parse().unwrap(), f[3].parse().unwrap());
             }
-            "additive" | "alpha" | "interp" => {
+            "additive" | "alpha" | "interp" | "reverse" | "threshold" | "shortest" => {
                 let id = state.track(track()).unwrap();
                 let e = state.entry_mut(id).unwrap();
                 match f[0] {
                     "additive" => e.additive = f[2] == "1",
                     "alpha" => e.alpha = f[2].parse().unwrap(),
+                    "reverse" => e.reverse = f[2] == "1",
+                    "threshold" => e.event_threshold = f[2].parse().unwrap(),
+                    "shortest" => e.shortest_rotation = f[2] == "1",
                     _ => {
                         e.mix_interpolation = match f[2] {
                             "smooth" => Interpolation::Smooth,
@@ -187,12 +227,24 @@ fn run(
                 }
             }
             "step" => {
-                for _ in 0..f[1].parse::<usize>().unwrap() {
+                let count = f[1].parse::<usize>().unwrap();
+                for i in 0..count {
                     state.update(1.0 / 60.0);
                     if pose {
                         state.pose(&mut skeleton);
                     }
-                    state.apply(&mut skeleton, &mut keyframes);
+                    if i + 1 == count || (mode.full)(step) {
+                        if mode.reset {
+                            skeleton.clone_from(&fresh);
+                        }
+                        state.apply(&mut skeleton, &mut keyframes);
+                    } else if mode.events_only {
+                        state.apply_events(&mut keyframes);
+                    } else {
+                        state.apply(&mut skeleton, &mut keyframes);
+                        reset_rotation_directions(state);
+                    }
+                    step += 1;
                     if pose {
                         state.pose(&mut skeleton);
                         state.pose(&mut skeleton);
@@ -308,7 +360,7 @@ fn animation_state_scenarios_match_spine_cpp() {
         let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let label = path.file_stem().unwrap().to_string_lossy().into_owned();
         let data = load(&fx);
-        let (frames, events, _) = run(&data, &fx.script, false);
+        let (frames, events, _) = run(&data, &fx.script, &FULL);
         if events != fx.events {
             failures.push(format!(
                 "{label}: events\n    want {:?}\n    got  {events:?}",
@@ -334,8 +386,9 @@ fn pose_leaves_events_and_entries_unchanged() {
         let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let label = path.file_stem().unwrap().to_string_lossy().into_owned();
         let data = load(&fx);
-        let (_, events, trace) = run(&data, &fx.script, false);
-        let (frames, posed_events, posed_trace) = run(&data, &fx.script, true);
+        let (_, events, trace) = run(&data, &fx.script, &FULL);
+        let (frames, posed_events, posed_trace) =
+            run(&data, &fx.script, &Mode { pose: true, ..FULL });
         assert_eq!(events, posed_events, "{label}: events");
         assert_eq!(trace.len(), posed_trace.len(), "{label}: trace length");
         for (i, (want, got)) in trace.iter().zip(&posed_trace).enumerate() {
@@ -344,6 +397,140 @@ fn pose_leaves_events_and_entries_unchanged() {
         for (i, (sk, want)) in frames.iter().zip(&fx.frames).enumerate() {
             if let Some(msg) = check_frame(&format!("{label}#{i}"), sk, want) {
                 panic!("{msg}");
+            }
+        }
+    }
+}
+
+const SPINEBOY: (&str, &str) = (
+    "spineboy/export/spineboy-pro.skel",
+    "spineboy/export/spineboy.atlas",
+);
+
+const RAPTOR: (&str, &str) = (
+    "raptor/export/raptor-pro.skel",
+    "raptor/export/raptor.atlas",
+);
+
+/// Event-heavy scripts beyond the fixtures', checked only against full
+/// applies of themselves.
+const EVENT_SCRIPTS: &[((&str, &str), &str)] = &[
+    (SPINEBOY, "set:0:walk:1;step:90;dump;step:47;dump"),
+    (
+        SPINEBOY,
+        "mix:0.4;set:0:walk:1;threshold:0:0.5;step:25;set:0:run:1;threshold:0:1;step:30;dump;\
+         set:0:walk:1;step:40;dump",
+    ),
+    (
+        SPINEBOY,
+        "mix:0.2;set:0:run:1;add:0:jump:0:0.5;add:0:walk:1:0;add:0:idle:1:1.5;step:200;dump",
+    ),
+    (
+        SPINEBOY,
+        "add:0:walk:1:0.25;step:30;addempty:0:0.3:0.5;add:0:run:1:0.2;step:80;dump;\
+         empty:0:0;step:5;dump",
+    ),
+    (
+        SPINEBOY,
+        "mix:0.3;set:0:walk:1;reverse:0:1;threshold:0:1;step:50;set:0:run:1;reverse:0:1;step:40;\
+         dump;set:0:jump:0;step:70;dump",
+    ),
+    (
+        SPINEBOY,
+        "set:0:idle:1;set:1:walk:1;alpha:1:0.6;step:70;dump;empty:1:0.4;step:30;dump",
+    ),
+    (
+        SPINEBOY,
+        "mix:0.5;set:0:walk:1;shortest:0:1;step:20;set:0:death:0;step:40;dump;set:0:run:1;\
+         step:40;dump",
+    ),
+    (
+        RAPTOR,
+        "mix:0.4;set:0:roar:1;set:1:jump:1;step:20;set:1:walk:1;step:30;dump;step:30;dump",
+    ),
+];
+
+/// Full applies on these steps, `apply_events` on the rest.
+const PATTERNS: &[fn(usize) -> bool] = &[
+    |s| s % 2 == 0,
+    |s| s % 2 == 1,
+    |s| s % 5 != 2,
+    |s| s % 7 == 3,
+    |_| false,
+];
+
+fn pose_diff(want: &Skeleton, got: &Skeleton) -> Option<String> {
+    for (i, (w, g)) in want.bones.iter().zip(&got.bones).enumerate() {
+        if w.applied() != g.applied() {
+            return Some(format!(
+                "bone {i}: want {:?} got {:?}",
+                w.applied(),
+                g.applied()
+            ));
+        }
+    }
+    for (i, (w, g)) in want.slots.iter().zip(&got.slots).enumerate() {
+        if w.applied() != g.applied() {
+            return Some(format!(
+                "slot {i}: want {:?} got {:?}",
+                w.applied(),
+                g.applied()
+            ));
+        }
+    }
+    if want.draw_order.applied() != got.draw_order.applied() {
+        return Some("draw order differs".to_string());
+    }
+    let (w, g) = (
+        format!("{:?}", want.constraints),
+        format!("{:?}", got.constraints),
+    );
+    (w != g).then(|| format!("constraints: want {w} got {g}"))
+}
+
+/// Interleaving `apply_events` with full applies must give the same events,
+/// entries and poses as full applies alone, given the rotation directions
+/// `apply_events` documents resetting.
+#[test]
+fn apply_events_matches_full_apply() {
+    let mut cases = Vec::new();
+    for path in common::json_files(std::path::Path::new("tests/fixtures/state")) {
+        let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let label = path.file_stem().unwrap().to_string_lossy().into_owned();
+        cases.push((label, load(&fx), fx.script));
+    }
+    for (i, ((skel, atlas), script)) in EVENT_SCRIPTS.iter().enumerate() {
+        cases.push((
+            format!("events-{i}"),
+            load_rig(skel, atlas),
+            (*script).to_string(),
+        ));
+    }
+    assert!(cases.len() > EVENT_SCRIPTS.len(), "no state fixtures");
+
+    for (label, data, script) in &cases {
+        for (p, &full) in PATTERNS.iter().enumerate() {
+            let label = format!("{label} pattern {p}");
+            let reference = Mode {
+                reset: true,
+                full,
+                ..FULL
+            };
+            let (frames, events, trace) = run(data, script, &reference);
+            let mode = Mode {
+                events_only: true,
+                ..reference
+            };
+            let (got_frames, got_events, got_trace) = run(data, script, &mode);
+            assert_eq!(events, got_events, "{label}: events");
+            assert_eq!(trace.len(), got_trace.len(), "{label}: trace length");
+            for (i, (want, got)) in trace.iter().zip(&got_trace).enumerate() {
+                assert_eq!(want, got, "{label}: trace #{i}");
+            }
+            for (i, (want, got)) in frames.iter().zip(&got_frames).enumerate() {
+                if let Some(msg) = pose_diff(want, got) {
+                    panic!("{label}: dump #{i}: {msg}");
+                }
             }
         }
     }
