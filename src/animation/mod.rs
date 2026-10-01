@@ -27,7 +27,7 @@
 
 //! Timeline evaluation — curve sampling + `Timeline::apply` logic.
 //!
-//! Data shapes (the [`Timeline`][crate::data::Timeline] enum, [`CurveFrames`],
+//! Data shapes (the [`Timeline`][crate::data::Timeline] enum, [`CurveFrames`][crate::data::animation::CurveFrames],
 //! etc.) live in [`crate::data::animation`]. This module is the runtime side
 //! — the code that reads those shapes and pushes values into a
 //! [`Skeleton`][crate::skeleton::Skeleton].
