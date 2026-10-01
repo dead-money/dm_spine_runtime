@@ -25,10 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Unconstrained and constrained poses. Animations and application code
-//! write `pose`. An object a constraint affects is marked constrained by
-//! `Skeleton::update_cache`; its `constrained` pose is reset from `pose`
-//! each frame and is the applied pose.
+//! Unconstrained and constrained poses.
+//!
+//! Every bone, slot and constraint carries two poses in a [`Posed`].
+//! Animations and application code write `pose`. An object a constraint
+//! affects is marked constrained by
+//! [`Skeleton::update_cache`](crate::skeleton::Skeleton::update_cache); its
+//! `constrained` pose is reset from `pose` at the start of each
+//! [`Skeleton::update_world_transform`](crate::skeleton::Skeleton::update_world_transform)
+//! and is the applied pose that constraints write and rendering reads.
 
 /// A pose type that can be reset from another instance.
 pub trait Pose {
@@ -36,14 +41,19 @@ pub trait Pose {
     fn set_from(&mut self, other: &Self);
 }
 
+/// An unconstrained pose and the constrained pose derived from it.
 #[derive(Debug, Clone, Default)]
 pub struct Posed<P> {
+    /// The pose animations and application code set.
     pub pose: P,
+    /// Copy of `pose` that constraints modify. Meaningful only while
+    /// [`Self::is_constrained`].
     pub constrained: P,
     is_constrained: bool,
 }
 
 impl<P: Pose> Posed<P> {
+    /// Starts unconstrained.
     pub fn new(pose: P, constrained: P) -> Self {
         Self {
             pose,
@@ -62,6 +72,7 @@ impl<P: Pose> Posed<P> {
         }
     }
 
+    /// Mutable [`Self::applied`].
     #[inline]
     pub fn applied_mut(&mut self) -> &mut P {
         if self.is_constrained {
@@ -82,11 +93,14 @@ impl<P: Pose> Posed<P> {
         }
     }
 
+    /// Read-only [`Self::select_mut`].
     #[inline]
     pub fn select(&self, applied: bool) -> &P {
         if applied { self.applied() } else { &self.pose }
     }
 
+    /// Whether a constraint or slider writes this object, as decided by the
+    /// last `update_cache`.
     #[inline]
     pub fn is_constrained(&self) -> bool {
         self.is_constrained

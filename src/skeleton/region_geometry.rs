@@ -53,8 +53,10 @@ impl RegionGeometry {
         Self::default()
     }
 
-    /// Captures the slot's region or mesh as currently posed. Returns
-    /// `false`, leaving nothing to map, for other attachments or none.
+    /// Captures the slot's applied region or mesh, with any deform, using
+    /// bone world transforms from the last
+    /// [`Skeleton::update_world_transform`]. Returns
+    /// `false`, leaving nothing to map, if the slot shows no region or mesh.
     pub fn update(&mut self, skeleton: &Skeleton, slot: SlotId) -> bool {
         self.world.clear();
         self.region_uvs.clear();

@@ -25,8 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Physics constraint (`PhysicsConstraint.cpp`): a damped spring on a
-//! fixed timestep, applied to one bone's world transform.
+//! Physics constraint solving: a damped spring on a fixed timestep, applied
+//! to one bone's world transform. The state lives in
+//! [`PhysicsConstraint`](super::PhysicsConstraint);
+//! [`Skeleton::update_world_transform`] runs the solver, and its [`Physics`]
+//! argument picks whether the simulation steps, resets or only re-applies.
 
 #![allow(clippy::many_single_char_names, clippy::similar_names)]
 

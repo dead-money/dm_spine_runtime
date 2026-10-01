@@ -53,7 +53,7 @@ for dt in frame_deltas {
     animation.update(dt);
     events.clear();
     animation.apply(&mut skeleton, &mut events);
-    skeleton.update(dt); // advances physics
+    skeleton.update(dt); // advances skeleton time, which physics uses
     skeleton.update_world_transform(Physics::Update);
     for command in renderer.render(&skeleton) {
         // Draw command.positions / uvs / colors / indices with
@@ -74,7 +74,7 @@ let mut animation = AnimationState::new(Arc::new(mixes));
 
 animation.set_animation_by_name(0, "walk", true)?;
 animation.add_animation_by_name(0, "jump", false, 2.0)?; // after 2 s of walking
-animation.add_animation_by_name(0, "run", true, 0.0)?;   // when the jump ends
+animation.add_animation_by_name(0, "run", true, 0.0)?;   // mixes in as the jump ends
 
 // A second track plays on top of the first, e.g. aiming while running.
 animation.set_animation_by_name(1, "aim", true)?;

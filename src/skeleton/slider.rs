@@ -25,8 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Slider constraint (`Slider.cpp`): applies an animation at a time set by
-//! its pose or driven by a bone channel.
+//! Slider constraint update and sorting. A slider applies an animation at a
+//! time set by its pose or driven by a bone channel.
 
 use crate::data::{ConstraintId, SkeletonData, SliderData, Timeline};
 use crate::skeleton::bone;

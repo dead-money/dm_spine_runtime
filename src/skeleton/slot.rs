@@ -31,18 +31,26 @@ use crate::data::{AttachmentId, AttachmentRef, BoneId, SlotData, SlotId};
 use crate::math::Color;
 use crate::skeleton::pose::{Pose, Posed};
 
+/// A slot's animatable state: color, attachment, sequence frame and deform.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotPose {
+    /// Tint multiplied into the attachment's color when rendering.
     pub color: Color,
-    /// Meaningful only when `has_dark_color`.
+    /// Two-color tint dark color; alpha is unused. Meaningful only when
+    /// `has_dark_color`.
     pub dark_color: Color,
+    /// Set from the slot data; true when the slot uses two-color tinting.
     pub has_dark_color: bool,
+    /// The shown attachment. Set it with [`Self::set_attachment`] or
+    /// [`Skeleton::set_attachment`](crate::skeleton::Skeleton::set_attachment)
+    /// so deform and sequence state stay consistent.
     pub attachment: Option<AttachmentRef>,
     /// The data attachment whose timelines drive `attachment`.
     pub timeline_attachment: Option<AttachmentId>,
     /// Sequence frame, or -1 for the sequence's setup frame.
     pub sequence_index: i32,
-    /// Deformed vertices for the attachment. Empty means undeformed.
+    /// Deformed local vertices for the attachment, replacing its vertices
+    /// (unweighted) or offsetting them (weighted). Empty means undeformed.
     pub deform: Vec<f32>,
 }
 
@@ -105,9 +113,12 @@ impl SlotPose {
     }
 }
 
+/// A slot instance: which bone it follows and its current pose.
 #[derive(Debug, Clone)]
 pub struct Slot {
+    /// This slot's id, also its index in [`SkeletonData::slots`](crate::data::SkeletonData::slots).
     pub data: SlotId,
+    /// The bone whose world transform positions the attachment.
     pub bone: BoneId,
     pub posed: Posed<SlotPose>,
     /// Scratch state `AnimationState` uses while applying attachment timelines.
@@ -115,6 +126,8 @@ pub struct Slot {
 }
 
 impl Slot {
+    /// A slot with a default pose. [`Self::setup_pose`] applies the data's
+    /// setup values.
     #[must_use]
     pub fn new(data: &SlotData) -> Self {
         let pose = SlotPose {
@@ -129,6 +142,7 @@ impl Slot {
         }
     }
 
+    /// The pose to render: constrained if a slider writes this slot.
     #[inline]
     #[must_use]
     pub fn applied(&self) -> &SlotPose {
@@ -162,15 +176,19 @@ impl Slot {
 }
 
 /// Slot render order. Draw order timelines write `pose`; sliders may
-/// constrain it.
+/// constrain it, in which case `constrained` is the applied order.
 #[derive(Debug, Clone, Default)]
 pub struct DrawOrder {
+    /// Slots back to front.
     pub pose: Vec<SlotId>,
+    /// Copy of `pose` reset each `update_world_transform`, written by
+    /// sliders. Meaningful only while [`Self::is_constrained`].
     pub constrained: Vec<SlotId>,
     is_constrained: bool,
 }
 
 impl DrawOrder {
+    /// The order to render, back to front.
     #[must_use]
     pub fn applied(&self) -> &[SlotId] {
         if self.is_constrained {
@@ -180,6 +198,7 @@ impl DrawOrder {
         }
     }
 
+    /// The applied order if `applied`, else `pose`.
     pub fn select_mut(&mut self, applied: bool) -> &mut Vec<SlotId> {
         if applied && self.is_constrained {
             &mut self.constrained
@@ -188,6 +207,7 @@ impl DrawOrder {
         }
     }
 
+    /// Resets `pose` to slot order.
     pub fn setup_pose(&mut self, slot_count: usize) {
         self.pose.clear();
         self.pose.extend((0..slot_count).map(|i| SlotId(i as u16)));
@@ -201,6 +221,7 @@ impl DrawOrder {
         self.is_constrained = false;
     }
 
+    /// Whether a slider writes the draw order.
     #[must_use]
     pub fn is_constrained(&self) -> bool {
         self.is_constrained

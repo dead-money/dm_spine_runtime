@@ -25,9 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Clipping attachments: clips triangles against a clipping polygon,
-//! splitting concave polygons into convex parts, or keeps what lies outside
-//! an inverse clip.
+//! CPU clipping for clipping attachments.
+//!
+//! [`SkeletonClipping`] clips triangles against the world polygon of a
+//! [`ClippingAttachment`], from its slot through its end slot in draw order.
+//! A concave polygon is split into convex parts, unless the attachment is
+//! marked convex or inverse, in which case its convex hull is used. An
+//! inverse clip keeps what lies outside the polygon instead of inside.
+//! [`SkeletonRenderer`](crate::render::SkeletonRenderer) drives it; use it
+//! directly only when emitting geometry yourself.
 
 #![allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 
@@ -35,6 +41,8 @@ use crate::data::{Attachment, ClippingAttachment, SlotId};
 use crate::math::Triangulator;
 use crate::skeleton::Skeleton;
 
+/// Clipping state for one pass over a draw order. Buffers are reused
+/// between calls.
 #[derive(Debug, Default, Clone)]
 pub struct SkeletonClipping {
     triangulator: Triangulator,
@@ -124,40 +132,55 @@ impl SkeletonClipping {
         self.polygon_count = 1;
     }
 
-    /// Ends clipping if `slot` is the clip's end slot.
+    /// Ends clipping if `slot` is the clip's end slot. Call after each slot
+    /// in draw order, whether or not it drew.
     pub fn clip_end_slot(&mut self, slot: SlotId) {
         if self.active && self.end_slot == Some(slot) {
             self.clip_end();
         }
     }
 
+    /// Ends clipping unconditionally. Call at the end of the draw order.
     pub fn clip_end(&mut self) {
         self.active = false;
         self.polygon_count = 0;
     }
 
+    /// Whether a clip is active, so drawn geometry should go through
+    /// [`Self::clip_triangles`].
     #[must_use]
     pub fn is_clipping(&self) -> bool {
         self.active
     }
 
+    /// Clipped world positions from the last [`Self::clip_triangles`], as
+    /// interleaved `x, y`.
     #[must_use]
     pub fn clipped_vertices(&self) -> &[f32] {
         &self.clipped_vertices
     }
 
+    /// Triangle list indexing [`Self::clipped_vertices`].
     #[must_use]
     pub fn clipped_triangles(&self) -> &[u16] {
         &self.clipped_triangles
     }
 
+    /// UVs parallel to [`Self::clipped_vertices`], interpolated from the
+    /// input triangles.
     #[must_use]
     pub fn clipped_uvs(&self) -> &[f32] {
         &self.clipped_uvs
     }
 
-    /// Clips triangles (positions every `stride` floats) and their UVs into
-    /// the `clipped_*` buffers. Returns whether any triangle was clipped.
+    /// Clips a triangle list into the `clipped_*` buffers. Positions are read
+    /// every `stride` floats of `vertices`; `uvs` are always 2 floats per
+    /// vertex. Triangles fully inside the clip are copied through and those
+    /// fully outside are dropped. Returns whether any triangle was cut, and
+    /// always `true` for an inverse clip.
+    ///
+    /// Call only while [`Self::is_clipping`]. Panics if `triangles` indexes
+    /// past `vertices` or `uvs`.
     pub fn clip_triangles(
         &mut self,
         vertices: &[f32],
@@ -290,7 +313,8 @@ impl SkeletonClipping {
         clipped
     }
 
-    /// Clips positions only, for bounds.
+    /// As [`Self::clip_triangles`] with zeroed UVs, for callers that only
+    /// need positions. Allocates the UV buffer on each call.
     pub fn clip_triangles_positions(&mut self, vertices: &[f32], triangles: &[u16]) -> bool {
         let uvs = vec![0.0; vertices.len()];
         self.clip_triangles(vertices, triangles, &uvs, 2)
@@ -642,7 +666,7 @@ fn make_convex(polygon: &mut Vec<f32>, sorted: &mut Vec<f32>) {
     v.truncate(s - 2);
 }
 
-/// Whether the attachment clips, and its data.
+/// The clipping data of `attachment`, or `None` for any other kind.
 #[must_use]
 pub fn as_clipping(attachment: &Attachment) -> Option<&ClippingAttachment> {
     match attachment {

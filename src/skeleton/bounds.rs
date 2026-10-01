@@ -25,8 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! World-space polygons for the bounding boxes a skeleton shows, with
-//! hit tests and AABB queries.
+//! Hit testing: [`SkeletonBounds`] collects the world polygons of the
+//! bounding-box attachments a skeleton shows and answers point, segment and
+//! AABB queries against them.
 
 #![allow(clippy::many_single_char_names)] // spine-cpp short names preserved for diff parity.
 
@@ -55,7 +56,9 @@ impl BoundsPolygon {
 }
 
 /// Hit tests against the [`BoundingBoxAttachment`](crate::data::BoundingBoxAttachment)s
-/// a skeleton shows. Call [`Self::update`] after each pose change.
+/// a skeleton shows. Call [`Self::update`] after each
+/// [`Skeleton::update_world_transform`]; queries see the polygons from the
+/// last update. Coordinates are skeleton world space.
 #[derive(Debug, Default)]
 pub struct SkeletonBounds {
     /// Parallel to `polygons`.
@@ -75,8 +78,9 @@ impl SkeletonBounds {
     }
 
     /// Collects the world polygon of every bounding box shown by a slot
-    /// whose bone is active, in slot order. With `update_aabb`, also fits
-    /// the AABB to them; otherwise the AABB spans every finite coordinate.
+    /// whose bone is active, in slot order (not draw order). With
+    /// `update_aabb`, also fits the AABB to them; otherwise the AABB spans
+    /// every finite coordinate.
     pub fn update(&mut self, skeleton: &Skeleton, update_aabb: bool) {
         self.bounding_boxes.clear();
         let reused = self.polygons.len();

@@ -30,7 +30,22 @@
 //! [`SkeletonRenderer`] walks a skeleton's draw order and emits
 //! [`RenderCommand`]s: plain vertex, color and index buffers tagged with a
 //! blend mode and an opaque [`TextureId`] (the atlas page index). The
-//! renderer maps that id to its own GPU texture.
+//! renderer maps that id to its own GPU texture. Clipping attachments are
+//! applied on the CPU by [`SkeletonClipping`], so commands need no stencil.
+//!
+//! ```no_run
+//! use spine_runtime::render::SkeletonRenderer;
+//! use spine_runtime::skeleton::{Physics, Skeleton};
+//!
+//! fn draw(skeleton: &mut Skeleton, renderer: &mut SkeletonRenderer) {
+//!     skeleton.update_world_transform(Physics::Update);
+//!     for cmd in renderer.render(skeleton) {
+//!         // Upload cmd.positions, cmd.uvs, cmd.colors and cmd.indices, then
+//!         // draw with the texture for cmd.texture and cmd.blend_mode.
+//!         let _ = (cmd.num_vertices(), cmd.texture, cmd.blend_mode);
+//!     }
+//! }
+//! ```
 
 use crate::data::BlendMode;
 
@@ -61,7 +76,7 @@ impl TextureId {
 /// | `positions`  | `2 * vertices`  | Interleaved `x, y` in skeleton world space  |
 /// | `uvs`        | `2 * vertices`  | Interleaved `u, v` in atlas space (0..1)    |
 /// | `colors`     | `vertices`      | Packed `0xAARRGGBB`, not premultiplied      |
-/// | `dark_colors`| `vertices`      | Packed `0xAARRGGBB` for tint-black          |
+/// | `dark_colors`| `vertices`      | Packed `0xFFRRGGBB` for tint-black; black without one |
 /// | `indices`    | `indices`       | Triangle-list `u16` into this command       |
 /// | `slots`      | `vertices`      | Slot index; only with [`RenderOptions::vertex_ids`] |
 /// | `tags`       | `vertices`      | Attachment [`tag`](crate::data::Attachment::tag); only with `vertex_ids` |
@@ -94,14 +109,14 @@ pub struct RenderOptions {
 }
 
 impl RenderCommand {
-    /// `positions.len() / 2`.
+    /// Vertex count, `positions.len() / 2`.
     #[must_use]
     #[inline]
     pub fn num_vertices(&self) -> usize {
         self.positions.len() / 2
     }
 
-    /// `indices.len()`.
+    /// Index count, a multiple of 3.
     #[must_use]
     #[inline]
     pub fn num_indices(&self) -> usize {

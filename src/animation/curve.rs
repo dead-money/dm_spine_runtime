@@ -29,7 +29,12 @@
 //!
 //! Functions take the raw `frames` / `curves` slices of a
 //! [`CurveFrames`][crate::data::CurveFrames], so they also work on scratch
-//! buffers.
+//! buffers. Frames are laid out `[t0, values…, t1, values…]`; `curves` is
+//! laid out as described on [`BEZIER_SIZE`]. Slices that don't follow this
+//! layout panic on an out-of-bounds index.
+//!
+//! The blending functions take the mix parameters described in
+//! [`apply`][crate::animation::apply]: `alpha`, `from`, `add`, and `out`.
 
 // spine-cpp's short variable names, kept so the code diffs against it.
 #![allow(clippy::many_single_char_names)]
@@ -229,8 +234,9 @@ pub fn before_first_key(from: MixFrom, alpha: f32, current: f32, setup: f32) -> 
     }
 }
 
-/// `CurveTimeline1::getRelativeValue`: keyed values are offsets from
-/// `setup`. `current` is the property's value before this timeline.
+/// Blends a timeline whose keyed values are offsets from `setup`, such as
+/// rotation or translation. `current` is the property's value before this
+/// timeline.
 #[must_use]
 pub fn relative_value(
     frames: &[f32],
@@ -253,8 +259,8 @@ pub fn relative_value(
     }
 }
 
-/// `CurveTimeline1::getAbsoluteValue`: keyed values replace the property.
-/// `value`, when given, is used instead of the curve sample.
+/// Blends a timeline whose keyed values replace the property. `value`, when
+/// given, is used instead of the curve sample.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn absolute_value(
@@ -279,7 +285,9 @@ pub fn absolute_value(
     }
 }
 
-/// `CurveTimeline1::getScaleValue`: keyed values multiply setup.
+/// Blends a scale timeline, whose keyed values multiply `setup`. A
+/// non-additive blend takes the keyed value's sign, or with `out` the sign
+/// of the value it mixes from, so it doesn't pass through zero.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn scale_value(

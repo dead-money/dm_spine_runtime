@@ -30,7 +30,11 @@
 
 #![allow(clippy::many_single_char_names)]
 
-/// Reusable scratch for triangulating and decomposing polygons.
+/// Triangulates simple polygons and merges the triangles into convex pieces.
+///
+/// Holds scratch buffers that are reused across calls, so keep one around
+/// instead of creating one per polygon. Results borrow from it and are valid
+/// until the next call.
 #[derive(Debug, Default, Clone)]
 pub struct Triangulator {
     indices: Vec<i32>,
@@ -48,7 +52,11 @@ impl Triangulator {
         Self::default()
     }
 
-    /// Triangulates a simple polygon of `x, y` pairs. Returns vertex indices.
+    /// Triangulates a simple polygon given as interleaved `x, y` pairs.
+    ///
+    /// Returns three vertex indices per triangle. Expects Spine's clipping
+    /// winding: clockwise in y-up coordinates. Fewer than three vertices yield
+    /// no triangles.
     pub fn triangulate(&mut self, vertices: &[f32]) -> &[u16] {
         let mut vertex_count = (vertices.len() >> 1) as i32;
         let indices = &mut self.indices;
@@ -141,8 +149,9 @@ impl Triangulator {
         triangles
     }
 
-    /// Merges triangles into convex polygons, each closed by repeating its
-    /// first point.
+    /// Merges `triangles` (as returned by [`Self::triangulate`]) into convex
+    /// polygons of interleaved `x, y` pairs, each closed by repeating its first
+    /// point.
     ///
     /// # Panics
     ///
@@ -287,7 +296,8 @@ impl Triangulator {
     }
 
     /// Vertex offsets (index × 2) of each polygon from the last
-    /// [`Self::decompose`].
+    /// [`Self::decompose`] or [`Self::triangulate_convex`], without the closing
+    /// point.
     #[must_use]
     pub fn convex_polygon_indices(&self) -> &[Vec<u16>] {
         &self.convex_polygon_indices

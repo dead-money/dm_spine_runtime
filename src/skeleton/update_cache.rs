@@ -25,19 +25,24 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Update and reset cache entries built by `Skeleton::update_cache`.
+//! Update and reset cache entries built by
+//! [`Skeleton::update_cache`](crate::skeleton::Skeleton::update_cache).
 
 use crate::data::{BoneId, ConstraintId, SlotId};
 
-/// One step of `Skeleton::update_world_transform`, in order.
+/// One step of
+/// [`Skeleton::update_world_transform`](crate::skeleton::Skeleton::update_world_transform),
+/// in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateCacheEntry {
     /// Compute the bone's applied world transform.
     Bone(BoneId),
+    /// Apply the constraint.
     Constraint(ConstraintId),
 }
 
-/// An object whose constrained pose is copied from its pose each frame.
+/// An object whose constrained pose is copied from its pose at the start
+/// of each `update_world_transform`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetEntry {
     Bone(BoneId),

@@ -25,7 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Math primitives used throughout the runtime.
+//! Math primitives shared by the runtime.
+//!
+//! [`Color`] is the RGBA type used by slots, attachments and timelines.
+//! [`util`] holds degree-based trig and float constants computed as spine-cpp
+//! computes them, so rounding matches. [`Triangulator`] splits concave clipping
+//! polygons into convex pieces.
 
 pub mod color;
 pub mod triangulator;

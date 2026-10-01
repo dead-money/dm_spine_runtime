@@ -26,10 +26,14 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! [`AnimationState`]: plays animations on tracks with crossfades, queuing
-//! and events. Track entries live in a slab addressed by generation-checked
-//! [`EntryId`]s.
+//! and events.
 //!
-//! Keyframe events from each track's current entry are pushed to the
+//! Each track plays one [`TrackEntry`] at a time, crossfading from the
+//! entries it replaced, with more queued behind it. Higher tracks apply over
+//! lower ones. Entries are addressed by [`EntryId`] handles, which go stale
+//! when the entry is disposed.
+//!
+//! Keyframe events from each track's current entry are appended to the
 //! `events` out-parameter of [`AnimationState::apply`]. Lifecycle events
 //! (start, interrupt, end, complete, dispose) and all keyframe events,
 //! including those from entries mixing out, are collected with their entry
@@ -48,7 +52,8 @@ use crate::data::animation::PropertyId;
 use crate::data::{Animation, AnimationId, SkeletonData, Timeline};
 use crate::skeleton::Skeleton;
 
-/// Plays nothing; mixing to it fades a track back to the setup pose.
+/// An animation with no timelines. Mixing to it fades a track back to the
+/// setup pose; see [`AnimationState::set_empty_animation`].
 pub const EMPTY_ANIMATION_ID: AnimationId = AnimationId(u16::MAX);
 
 // Timeline modes. The low bits are a `MixFrom`; `HOLD` keeps a mixing-out
@@ -76,9 +81,13 @@ fn mix_from(mode: u8) -> MixFrom {
 pub enum Interpolation {
     #[default]
     Linear,
+    /// Smoothstep: slow at both ends.
     Smooth,
+    /// Quadratic ease-in.
     SlowFast,
+    /// Quadratic ease-out.
     FastSlow,
+    /// Circular ease-in-out.
     Circle,
 }
 
@@ -108,11 +117,20 @@ impl Interpolation {
 /// same entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
+    /// The entry became the track's current entry.
     Start,
+    /// Another entry replaced this one as current; it may still be mixing
+    /// out.
     Interrupt,
+    /// The entry is no longer applied: it was removed from its track,
+    /// finished mixing out, or reached its [`TrackEntry::track_end`].
     End,
+    /// The entry reached the end of its animation, once per loop when
+    /// looping.
     Complete,
+    /// The entry was freed. Its [`EntryId`] is stale.
     Dispose,
+    /// A keyframe event fired; see [`StateEvent::event`].
     Event,
 }
 
@@ -121,6 +139,8 @@ pub enum EventType {
 #[derive(Debug, Clone)]
 pub struct StateEvent {
     pub kind: EventType,
+    /// Already stale for [`EventType::End`] and [`EventType::Dispose`]:
+    /// the entry is disposed before the events are drained.
     pub entry: EntryId,
     pub track_index: usize,
     pub animation: AnimationId,
@@ -128,7 +148,9 @@ pub struct StateEvent {
     pub event: Option<Event>,
 }
 
-/// Handle to a track entry. Stale once the entry is disposed.
+/// Handle to a [`TrackEntry`] in an [`AnimationState`]. Once the entry is
+/// disposed the handle is stale and [`AnimationState::entry`] returns
+/// `None` for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId {
     index: u32,
@@ -136,37 +158,81 @@ pub struct EntryId {
 }
 
 /// Playback of one animation on a track. Times are in seconds.
+///
+/// Get one from [`AnimationState::set_animation`] or
+/// [`AnimationState::add_animation`] and adjust its fields through
+/// [`AnimationState::entry_mut`]. The links (`previous`, `next`,
+/// `mixing_from`, `mixing_to`) are maintained by the state; read them, don't
+/// write them.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct TrackEntry {
+    /// The animation played, or [`EMPTY_ANIMATION_ID`].
     pub animation: AnimationId,
     pub track_index: usize,
+    /// The entry this one is queued after. `None` once this entry is
+    /// current.
     pub previous: Option<EntryId>,
+    /// The entry queued to play after this one.
     pub next: Option<EntryId>,
+    /// The entry this one is crossfading from.
     pub mixing_from: Option<EntryId>,
+    /// The entry crossfading from this one.
     pub mixing_to: Option<EntryId>,
+    /// Repeats the animation between `animation_start` and `animation_end`.
     pub looping: bool,
-    /// Adds this entry's timeline values to lower tracks instead of mixing.
+    /// Adds this entry's values to lower tracks instead of mixing toward
+    /// them, for timelines that support it
+    /// ([`Timeline::is_additive`][crate::data::Timeline::is_additive]).
     pub additive: bool,
+    /// Plays the animation backward.
     pub reverse: bool,
+    /// Mixes rotation the shortest way every frame. Otherwise the direction
+    /// chosen on the first frame of a mix is kept, so a bone doesn't flip
+    /// direction mid-mix. Always on for additive entries.
     pub shortest_rotation: bool,
     keep_hold: bool,
+    /// While this entry mixes out, its keyframe events fire only while the
+    /// mix percentage is below this. 0 (the default) suppresses them.
     pub event_threshold: f32,
+    /// While this entry mixes out, the attachments it keys are kept only
+    /// while the mix percentage is below this. Default 0.
     pub mix_attachment_threshold: f32,
+    /// The attachments this entry keys are kept only while the alpha it
+    /// applies with is at least this. Default 0.
     pub alpha_attachment_threshold: f32,
+    /// While this entry mixes out, its draw order keys apply only while the
+    /// mix percentage is below this. Default 0.
     pub mix_draw_order_threshold: f32,
+    /// Animation time at which playback starts. Default 0.
     pub animation_start: f32,
+    /// Animation time at which playback ends or loops. Defaults to the
+    /// animation's duration.
     pub animation_end: f32,
+    /// Animation time last applied, or -1 before the first apply. Set it with
+    /// [`Self::set_animation_last`]; a direct write is overwritten by the next
+    /// [`AnimationState::update`].
     pub animation_last: f32,
     next_animation_last: f32,
+    /// Seconds before the entry starts. For a queued entry, the previous
+    /// entry's track time at which this one becomes current.
     pub delay: f32,
+    /// Seconds this entry has played, scaled by `time_scale`.
     pub track_time: f32,
     track_last: f32,
     next_track_last: f32,
+    /// Track time at which the entry ends if nothing is queued after it.
+    /// Defaults to `f32::MAX`; empty animations end when their mix does.
     pub track_end: f32,
+    /// Multiplies the delta this entry advances by.
     pub time_scale: f32,
+    /// Weight of this entry over lower tracks, 0 to 1.
     pub alpha: f32,
+    /// Seconds into the crossfade from `mixing_from`.
     pub mix_time: f32,
+    /// Length of the crossfade from the previous entry. Taken from
+    /// [`AnimationStateData::mix`] when the entry is created; 0 switches
+    /// immediately.
     pub mix_duration: f32,
     pub mix_interpolation: Interpolation,
     total_alpha: f32,
@@ -220,7 +286,8 @@ impl TrackEntry {
         }
     }
 
-    /// Time within the animation, wrapped when looping.
+    /// Time within the animation: track time offset by `animation_start`,
+    /// wrapped when looping and clamped to `animation_end` otherwise.
     #[must_use]
     pub fn animation_time(&self) -> f32 {
         if !self.looping {
@@ -233,12 +300,13 @@ impl TrackEntry {
         self.track_time % duration + self.animation_start
     }
 
-    /// Also resets the next frame's `animation_last`.
+    /// Sets `animation_last`, the time events fire from on the next apply.
     pub fn set_animation_last(&mut self, value: f32) {
         self.animation_last = value;
         self.next_animation_last = value;
     }
 
+    /// Whether track time has reached one full play of the animation.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.track_time >= self.animation_end - self.animation_start
@@ -259,6 +327,7 @@ impl TrackEntry {
         self.track_time
     }
 
+    /// Whether the entry has been applied at least once.
     #[must_use]
     pub fn was_applied(&self) -> bool {
         self.next_track_last != -1.0
@@ -269,7 +338,7 @@ impl TrackEntry {
         self.animation == EMPTY_ANIMATION_ID
     }
 
-    /// Mix percentage after easing, 0..=1.
+    /// Crossfade percentage after easing, 0..=1. 1 when there is no mix.
     #[must_use]
     pub fn mix(&self) -> f32 {
         if self.mix_duration == 0.0 {
@@ -285,7 +354,10 @@ impl TrackEntry {
         self.mix_interpolation.apply(mix).clamp(0.0, 1.0)
     }
 
-    /// Discards shortest-rotation history, eg after changing rotation direction.
+    /// Discards the rotation directions kept for mixing, so the next apply
+    /// picks the shortest way again. Useful when `alpha` changes or
+    /// animations start on other tracks, so bones don't rotate the long way
+    /// around.
     pub fn reset_rotation_directions(&mut self) {
         self.timelines_rotation.clear();
     }
@@ -333,8 +405,10 @@ struct Queued {
 
 /// Plays animations on tracks and poses a skeleton from them.
 ///
-/// For a skeleton that isn't drawn, [`Self::update`] and
-/// [`Self::apply_events`] keep its tracks and events going without posing it.
+/// Per frame, call [`Self::update`], then [`Self::apply`], then
+/// [`Skeleton::update_world_transform`]. For a skeleton that isn't drawn,
+/// [`Self::update`] and [`Self::apply_events`] keep its tracks and events
+/// going without posing it.
 pub struct AnimationState {
     data: Arc<AnimationStateData>,
     skeleton_data: Arc<SkeletonData>,
@@ -355,6 +429,8 @@ pub struct AnimationState {
 }
 
 impl AnimationState {
+    /// A state with no tracks. Every skeleton it applies to must use the same
+    /// [`SkeletonData`] as `data`.
     #[must_use]
     pub fn new(data: Arc<AnimationStateData>) -> Self {
         Self {
@@ -381,17 +457,19 @@ impl AnimationState {
         &self.data
     }
 
-    /// The entry playing on a track.
+    /// The current entry on a track.
     #[must_use]
     pub fn track(&self, track_index: usize) -> Option<EntryId> {
         self.tracks.get(track_index).copied().flatten()
     }
 
+    /// The current entry on each track, indexed by track.
     #[must_use]
     pub fn tracks(&self) -> &[Option<EntryId>] {
         &self.tracks
     }
 
+    /// The entry `id` names, or `None` if `id` is stale.
     #[must_use]
     pub fn entry(&self, id: EntryId) -> Option<&TrackEntry> {
         let slot = self.slots.get(id.index as usize)?;
@@ -402,6 +480,7 @@ impl AnimationState {
         }
     }
 
+    /// The entry `id` names, or `None` if `id` is stale.
     pub fn entry_mut(&mut self, id: EntryId) -> Option<&mut TrackEntry> {
         let slot = self.slots.get_mut(id.index as usize)?;
         if slot.generation == id.generation {
@@ -412,7 +491,13 @@ impl AnimationState {
     }
 
     /// Sets the entry's mix duration and delay. `delay <= 0` is relative to
-    /// when the previous entry completes, minus the mix.
+    /// when the previous entry completes, minus the mix, as in
+    /// [`Self::add_animation`].
+    ///
+    /// # Panics
+    ///
+    /// If no entry occupies `id`'s slot. A stale `id` whose slot was reused
+    /// changes the entry now in it.
     pub fn set_mix_duration(&mut self, id: EntryId, mix_duration: f32, mut delay: f32) {
         let previous_complete = self.e(id).previous.map(|p| self.e(p).track_complete());
         if delay <= 0.0 {
@@ -423,7 +508,7 @@ impl AnimationState {
         e.delay = delay;
     }
 
-    /// Lifecycle and keyframe events since the last call.
+    /// Lifecycle and keyframe events queued since the last call, in order.
     pub fn drain_events(&mut self) -> Vec<StateEvent> {
         std::mem::take(&mut self.drained)
     }
@@ -547,7 +632,10 @@ impl AnimationState {
         }
     }
 
-    /// Advances every track by `delta` seconds.
+    /// Advances every track by `delta` seconds, scaled by [`Self::time_scale`]
+    /// and each entry's `time_scale`.
+    /// Moves queued entries to current when their delay passes and ends
+    /// entries that finished mixing out.
     pub fn update(&mut self, delta: f32) {
         let delta = delta * self.time_scale;
         for i in 0..self.tracks.len() {
@@ -647,9 +735,12 @@ impl AnimationState {
         false
     }
 
-    /// Poses the skeleton from every track. Keyframe events from each
-    /// track's current entry are pushed to `events`. Returns whether any
-    /// track was applied.
+    /// Poses the skeleton from every track, lowest first. Keyframe events from
+    /// each track's current entry are appended to `events`. Returns whether
+    /// any track was applied.
+    ///
+    /// World transforms are not updated; call
+    /// [`Skeleton::update_world_transform`] afterward.
     pub fn apply(&mut self, skeleton: &mut Skeleton, events: &mut Vec<Event>) -> bool {
         if self.animations_changed {
             self.animations_changed();
@@ -1223,6 +1314,7 @@ impl AnimationState {
         }
     }
 
+    /// Removes every entry from every track. The skeleton keeps its last pose.
     pub fn clear_tracks(&mut self) {
         let old = self.drain_disabled;
         self.drain_disabled = true;
@@ -1234,6 +1326,8 @@ impl AnimationState {
         self.drain();
     }
 
+    /// Removes every entry from a track. The skeleton keeps its last pose; use
+    /// [`Self::set_empty_animation`] to mix back to setup instead.
     pub fn clear_track(&mut self, track_index: usize) {
         let Some(current) = self.track(track_index) else {
             return;
@@ -1306,7 +1400,10 @@ impl AnimationState {
         }
     }
 
-    /// Plays `animation` on a track now, mixing from what was playing.
+    /// Plays `animation` on a track now, mixing from the current entry and
+    /// discarding anything queued. A current entry for the same animation
+    /// that was never applied is replaced without mixing from it. Returns the
+    /// new entry.
     pub fn set_animation(
         &mut self,
         track_index: usize,
@@ -1336,7 +1433,10 @@ impl AnimationState {
         entry
     }
 
+    /// [`Self::set_animation`] by animation name.
+    ///
     /// # Errors
+    ///
     /// [`AnimationNotFound`] if the data has no animation with that name.
     pub fn set_animation_by_name(
         &mut self,
@@ -1348,8 +1448,11 @@ impl AnimationState {
         Ok(self.set_animation(track_index, id, looping))
     }
 
-    /// Queues `animation` after the track's last entry. `delay <= 0` is
-    /// relative to when the previous entry completes, minus the mix.
+    /// Queues `animation` after the track's last entry and returns the new
+    /// entry. A positive `delay` is seconds after the previous entry starts;
+    /// `delay <= 0` is relative to when the previous entry completes, minus
+    /// the mix duration. On an empty track the entry becomes current now and
+    /// starts after a positive `delay`.
     pub fn add_animation(
         &mut self,
         track_index: usize,
@@ -1386,7 +1489,10 @@ impl AnimationState {
         entry
     }
 
+    /// [`Self::add_animation`] by animation name.
+    ///
     /// # Errors
+    ///
     /// [`AnimationNotFound`] if the data has no animation with that name.
     pub fn add_animation_by_name(
         &mut self,
@@ -1399,7 +1505,8 @@ impl AnimationState {
         Ok(self.add_animation(track_index, id, looping, delay))
     }
 
-    /// Mixes the track back to the setup pose over `mix_duration`.
+    /// Mixes the track back to the setup pose over `mix_duration` seconds,
+    /// then ends the entry.
     pub fn set_empty_animation(&mut self, track_index: usize, mix_duration: f32) -> EntryId {
         let entry = self.set_animation(track_index, EMPTY_ANIMATION_ID, false);
         let e = self.e_mut(entry);
@@ -1408,6 +1515,9 @@ impl AnimationState {
         entry
     }
 
+    /// Queues a mix back to the setup pose over `mix_duration` seconds, as
+    /// [`Self::add_animation`] queues. With `delay <= 0` the mix finishes
+    /// `-delay` seconds before the previous entry completes.
     pub fn add_empty_animation(
         &mut self,
         track_index: usize,
@@ -1424,6 +1534,7 @@ impl AnimationState {
         entry
     }
 
+    /// [`Self::set_empty_animation`] on every track that has an entry.
     pub fn set_empty_animations(&mut self, mix_duration: f32) {
         let old = self.drain_disabled;
         self.drain_disabled = true;

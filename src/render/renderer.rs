@@ -25,14 +25,14 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Walks the applied draw order and emits batched [`RenderCommand`]s,
-//! clipping as it goes.
+//! [`SkeletonRenderer`]: walks the applied draw order and emits batched
+//! [`RenderCommand`]s, clipping as it goes.
 //!
 //! Adjacent slots sharing texture, blend mode, color and dark color are
 //! merged while the batch stays under 65535 indices, as spine-cpp's
-//! `batchCommands` does; [`RenderOptions`] can drop the color condition.
-//! Commands and their buffers are reused between calls, so steady-state
-//! rendering doesn't allocate.
+//! `batchCommands` does; [`RenderOptions::merge_colors`] drops the color
+//! condition. Commands and their buffers are reused between calls, so
+//! steady-state rendering doesn't allocate.
 
 use crate::data::attachment::quad_corner::{BLX, BLY, BRX, BRY, ULX, ULY, URX, URY};
 use crate::data::{Attachment, BlendMode};
@@ -45,6 +45,10 @@ const QUAD_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 /// Turns a posed skeleton into [`RenderCommand`]s. Reuse one across frames;
 /// its buffers persist between calls.
+///
+/// Only region and mesh attachments draw. A slot is skipped when its color
+/// or its attachment's color has alpha 0, when its bone is inactive, or when
+/// the attachment has no resolved texture region.
 #[derive(Debug, Default)]
 pub struct SkeletonRenderer {
     commands: Vec<RenderCommand>,
@@ -68,11 +72,13 @@ struct Draw<'a> {
 }
 
 impl SkeletonRenderer {
+    /// A renderer with default [`RenderOptions`], which match spine-cpp.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// A renderer with the given options.
     #[must_use]
     pub fn with_options(options: RenderOptions) -> Self {
         Self {
@@ -86,23 +92,26 @@ impl SkeletonRenderer {
         self.options
     }
 
+    /// Takes effect on the next render.
     pub fn set_options(&mut self, options: RenderOptions) {
         self.options = options;
     }
 
-    /// Commands from the last [`Self::render`].
+    /// Commands from the last [`Self::render`] or [`Self::render_unbatched`].
     #[must_use]
     pub fn commands(&self) -> &[RenderCommand] {
         &self.commands[..self.len]
     }
 
     /// Emits commands from the skeleton's current world transforms, so call
-    /// it after updating them.
+    /// it after [`Skeleton::update_world_transform`]. The returned slice is
+    /// valid until the next render call.
     pub fn render(&mut self, skeleton: &Skeleton) -> &[RenderCommand] {
         self.render_with(skeleton, true)
     }
 
-    /// One command per drawn slot, for debugging.
+    /// As [`Self::render`], but with one command per drawn slot, for
+    /// debugging.
     pub fn render_unbatched(&mut self, skeleton: &Skeleton) -> &[RenderCommand] {
         self.render_with(skeleton, false)
     }

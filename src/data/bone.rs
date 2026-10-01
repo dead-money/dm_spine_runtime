@@ -33,6 +33,7 @@ use crate::math::Color;
 /// How a bone inherits its parent's world transform.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Inherit {
+    /// Rotation, scale, shear and reflection.
     #[default]
     Normal,
     OnlyTranslation,
@@ -42,7 +43,8 @@ pub enum Inherit {
 }
 
 impl Inherit {
-    /// Wire value used by both the binary and JSON formats.
+    /// Decodes the wire value shared by the binary and JSON formats; `None`
+    /// if out of range.
     #[must_use]
     pub fn from_index(v: u32) -> Option<Self> {
         Some(match v {
@@ -58,6 +60,9 @@ impl Inherit {
 
 /// A bone's local transform. Used for the setup pose, the unconstrained
 /// pose animations write, and the constrained pose constraints write.
+///
+/// Translation is in the parent's space, in skeleton units. Rotation and
+/// shear are in degrees.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoneLocal {
     pub x: f32,
@@ -85,25 +90,32 @@ impl Default for BoneLocal {
     }
 }
 
+/// Setup-pose bone, owned by [`SkeletonData`](crate::data::SkeletonData).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoneData {
+    /// Position in [`SkeletonData::bones`](crate::data::SkeletonData::bones).
     pub index: BoneId,
     pub name: String,
+    /// `None` only for the root bone.
     pub parent: Option<BoneId>,
+    /// Skeleton units. Used by IK, path and physics constraints.
     pub length: f32,
     pub setup: BoneLocal,
     /// Active only while a skin listing this bone is applied.
     pub skin_required: bool,
 
-    // Nonessential.
+    /// Nonessential: editor display color.
     pub color: Color,
+    /// Nonessential: editor icon name and display.
     pub icon: String,
     pub icon_size: f32,
     pub icon_rotation: f32,
+    /// Nonessential: shown in the editor.
     pub visible: bool,
 }
 
 impl BoneData {
+    /// A bone at the origin with identity transform.
     #[must_use]
     pub fn new(index: BoneId, name: impl Into<String>, parent: Option<BoneId>) -> Self {
         Self {

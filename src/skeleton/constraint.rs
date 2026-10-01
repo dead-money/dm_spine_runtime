@@ -25,7 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Runtime constraints, one per [`ConstraintData`] in the same order.
+//! Runtime constraint state, one [`Constraint`] per [`ConstraintData`] in
+//! the same order.
+//!
+//! Each constraint holds a [`Posed`] of its data's pose type, the values
+//! constraint timelines animate. The solvers themselves run
+//! inside [`Skeleton::update_world_transform`](crate::skeleton::Skeleton::update_world_transform).
 
 use crate::data::{
     ConstraintData, IkConstraintPose, PathConstraintPose, PhysicsConstraintPose, SliderPose,
@@ -33,6 +38,8 @@ use crate::data::{
 };
 use crate::skeleton::pose::Posed;
 
+/// A constraint instance. The variant always matches the
+/// [`ConstraintData`] at the same index.
 #[derive(Debug, Clone)]
 pub enum Constraint {
     Ik(IkConstraint),
@@ -42,16 +49,20 @@ pub enum Constraint {
     Slider(Slider),
 }
 
+/// Rotates one or two bones so the chain reaches a target bone.
 #[derive(Debug, Clone)]
 pub struct IkConstraint {
     pub posed: Posed<IkConstraintPose>,
 }
 
+/// Copies transform properties from a source bone to other bones.
 #[derive(Debug, Clone)]
 pub struct TransformConstraint {
     pub posed: Posed<TransformConstraintPose>,
 }
 
+/// Positions, rotates and optionally scales bones along a path attachment.
+/// Also carries per-constraint scratch buffers so updates don't allocate.
 #[derive(Debug, Clone, Default)]
 pub struct PathConstraint {
     pub posed: Posed<PathConstraintPose>,
@@ -63,7 +74,8 @@ pub struct PathConstraint {
     pub(crate) segments: [f32; 10],
 }
 
-/// Spring simulation state carried between frames.
+/// Moves a bone with a damped spring simulation. Holds the simulation state
+/// carried between frames.
 #[derive(Debug, Clone, Default)]
 pub struct PhysicsConstraint {
     pub posed: Posed<PhysicsConstraintPose>,
@@ -91,7 +103,12 @@ pub struct PhysicsConstraint {
 }
 
 impl PhysicsConstraint {
-    /// Clears simulation state, as at load or on a physics reset.
+    /// Clears simulation state, as on [`Physics::Reset`] or a physics reset
+    /// timeline. The next update restarts from the bone's current pose.
+    /// `time` is the [`Skeleton::time`] to step from.
+    ///
+    /// [`Physics::Reset`]: crate::skeleton::Physics::Reset
+    /// [`Skeleton::time`]: crate::skeleton::Skeleton::time
     pub fn reset(&mut self, time: f32) {
         self.remaining = 0.0;
         self.last_time = time;
@@ -110,7 +127,8 @@ impl PhysicsConstraint {
         self.scale_velocity = 0.0;
     }
 
-    /// Moves the simulation by `(x, y)` without adding inertia.
+    /// Moves the simulation by `(x, y)` world units without adding inertia,
+    /// for teleporting a skeleton.
     pub fn translate(&mut self, x: f32, y: f32) {
         self.ux -= x;
         self.uy -= y;
@@ -118,7 +136,8 @@ impl PhysicsConstraint {
         self.cy -= y;
     }
 
-    /// Rotates the simulation around `(x, y)` without adding inertia.
+    /// Rotates the simulation by `degrees` around world point `(x, y)`
+    /// without adding inertia.
     pub fn rotate(&mut self, x: f32, y: f32, degrees: f32) {
         let r = degrees * crate::math::util::DEG_RAD;
         let (cos, sin) = (r.cos(), r.sin());
@@ -128,12 +147,15 @@ impl PhysicsConstraint {
     }
 }
 
+/// Applies an animation to the skeleton at a time set by the slider's pose
+/// or driven by a bone.
 #[derive(Debug, Clone)]
 pub struct Slider {
     pub posed: Posed<SliderPose>,
 }
 
 impl Constraint {
+    /// A constraint in its data's setup pose.
     #[must_use]
     pub fn new(data: &ConstraintData) -> Self {
         match data {
@@ -158,6 +180,11 @@ impl Constraint {
         }
     }
 
+    /// Resets the unconstrained pose to `data`'s setup pose. Physics
+    /// simulation state is left alone.
+    ///
+    /// # Panics
+    /// If `data` is a different constraint kind.
     pub fn setup_pose(&mut self, data: &ConstraintData) {
         match (self, data) {
             (Self::Ik(c), ConstraintData::Ik(d)) => c.posed.pose = d.setup,

@@ -29,6 +29,10 @@
 
 #![allow(clippy::many_single_char_names)]
 
+/// RGBA color, each channel nominally in `[0, 1]`.
+///
+/// The fields are public and unchecked; the constructor and mutators clamp.
+/// [`Color::default`] is transparent black, not white.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
     pub r: f32,
@@ -57,7 +61,7 @@ impl Color {
         a: 0.0,
     };
 
-    /// Clamps each channel to `[0, 1]`.
+    /// Creates a color with each channel clamped to `[0, 1]`.
     #[must_use]
     pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
         let mut c = Self { r, g, b, a };
@@ -117,7 +121,7 @@ impl Color {
         self.clamp()
     }
 
-    /// Clamp each channel to `[0, 1]`.
+    /// Clamps each channel to `[0, 1]`.
     pub fn clamp(&mut self) -> &mut Self {
         self.r = self.r.clamp(0.0, 1.0);
         self.g = self.g.clamp(0.0, 1.0);

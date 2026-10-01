@@ -6,6 +6,11 @@ pre-1.0, any `0.x` release may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded the API docs for docs.rs: module overviews, a crate-level starting
+  point, and contracts on the public types and methods.
+
 ## [0.2.1] - 2026-10-01
 
 ### Fixed

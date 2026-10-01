@@ -36,13 +36,16 @@ use crate::data::{
 
 /// The setup pose and all stateless data needed to animate a skeleton.
 ///
-/// Load once, wrap in an `Arc`, and share across `Skeleton`s. Fields are
-/// public; the loaders establish the invariants, nothing enforces them
-/// afterwards.
+/// Load once with [`SkeletonBinary`](crate::load::SkeletonBinary) or
+/// [`SkeletonJson`](crate::load::SkeletonJson), wrap in an `Arc`, and share
+/// across [`Skeleton`](crate::skeleton::Skeleton)s. Fields are public; the
+/// loaders establish the invariants, nothing enforces them afterwards.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SkeletonData {
     pub name: String,
+    /// Spine editor version that exported the data.
     pub version: String,
+    /// Export hash; changes when the data changes.
     pub hash: String,
 
     /// Parents precede children; the root bone is first.
@@ -57,7 +60,9 @@ pub struct SkeletonData {
     pub skin_keys: SkinKeys,
     /// Index of the default skin in [`Self::skins`], if any.
     pub default_skin: Option<SkinId>,
+    /// Indexed by [`EventId`](crate::data::EventId).
     pub events: Vec<EventData>,
+    /// Indexed by [`AnimationId`](crate::data::AnimationId).
     pub animations: Vec<Animation>,
 
     /// Every constraint in update order.
@@ -66,7 +71,8 @@ pub struct SkeletonData {
     /// Every data [`Attachment`], indexed by [`AttachmentId`].
     pub attachments: Vec<Attachment>,
 
-    /// Setup-pose bounding box, in skeleton space.
+    /// Setup-pose bounding box: bottom-left corner and size, in skeleton
+    /// units.
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -75,9 +81,11 @@ pub struct SkeletonData {
     /// scale; JSON defaults it to 100.
     pub reference_scale: f32,
 
-    // Nonessential: populated only when exported with nonessential data.
+    /// Nonessential: dopesheet frame rate.
     pub fps: f32,
+    /// Nonessential: editor image folder.
     pub images_path: String,
+    /// Nonessential: editor audio folder.
     pub audio_path: String,
 }
 
@@ -89,26 +97,31 @@ impl SkeletonData {
         self.bones.iter().find(|b| b.name == name)
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_slot(&self, name: &str) -> Option<&SlotData> {
         self.slots.iter().find(|s| s.name == name)
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_skin(&self, name: &str) -> Option<&Arc<Skin>> {
         self.skins.iter().find(|s| s.name == name)
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_event(&self, name: &str) -> Option<&EventData> {
         self.events.iter().find(|e| e.name == name)
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_animation(&self, name: &str) -> Option<&Animation> {
         self.animations.iter().find(|a| a.name == name)
     }
 
+    /// Linear scan by name.
     #[must_use]
     pub fn find_constraint(&self, name: &str) -> Option<ConstraintId> {
         self.constraints
@@ -136,8 +149,10 @@ impl SkeletonData {
         }
     }
 
-    /// Interns setup attachment names and attachment timeline names. Loaders
-    /// call it once the skins and animations are in.
+    /// Interns setup attachment names and attachment timeline names into
+    /// [`Self::skin_keys`]. Loaders call it once the skins and animations
+    /// are in; call it again after changing setup attachment names or
+    /// attachment timelines by hand.
     pub fn intern_attachment_keys(&mut self) {
         let keys = &mut self.skin_keys;
         let mut intern = |slot: SlotId, name: Option<&str>| {

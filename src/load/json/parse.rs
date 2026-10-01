@@ -82,27 +82,38 @@ const CURVE_BEZIER: f32 = 2.0;
 /// Errors produced while parsing a `.json` skeleton file.
 #[derive(Debug, Error)]
 pub enum JsonError {
+    /// The input is not valid JSON.
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// `skeleton.spine` is set and doesn't start with `4.3`.
     #[error("skeleton version mismatch: file reports {found:?}, runtime targets {expected:?}")]
     UnsupportedVersion { found: String, expected: String },
 
+    /// A required field is absent. `path` locates it, e.g. `slots[3].bone`.
     #[error("missing required field {path:?}")]
     MissingField { path: String },
 
+    /// A field holds the wrong JSON type, e.g. an array where an object was
+    /// expected.
     #[error("field {path:?} has unexpected type: {message}")]
     BadType { path: String, message: String },
 
+    /// An enum-like string (blend mode, constraint type, timeline name, ...)
+    /// is not one Spine 4.3 defines.
     #[error("unknown {entity} value: {value:?}")]
     UnknownValue { entity: &'static str, value: String },
 
+    /// A name refers to a bone, slot, skin, constraint, event, attachment or
+    /// animation that doesn't exist.
     #[error("named entity not found: {entity} {name:?}")]
     NotFound { entity: &'static str, name: String },
 
+    /// A color string is too short or isn't hex.
     #[error("invalid color string {value:?}: {message}")]
     InvalidColor { value: String, message: String },
 
+    /// The [`AttachmentLoader`] failed.
     #[error("attachment loader error: {0}")]
     AttachmentLoader(#[from] AttachmentLoaderError),
 }
@@ -118,8 +129,11 @@ struct LinkedMesh {
     inherit_timelines: bool,
 }
 
-/// Parser for `.json` skeleton exports. `read_slice`, `read_str` and
-/// `read_value` consume it.
+/// Parser for Spine 4.3 `.json` skeleton exports.
+///
+/// Build one with [`with_loader`](Self::with_loader), optionally set
+/// [`with_scale`](Self::with_scale), then call one of the `read_*` methods,
+/// which consume the parser. Missing optional fields take Spine's defaults.
 pub struct SkeletonJson<'loader> {
     loader: &'loader mut dyn AttachmentLoader,
     scale: f32,
@@ -127,7 +141,8 @@ pub struct SkeletonJson<'loader> {
 }
 
 impl<'loader> SkeletonJson<'loader> {
-    /// Build a parser that resolves attachments through `loader`.
+    /// Creates a parser that creates attachments through `loader`, with scale
+    /// `1.0`.
     pub fn with_loader(loader: &'loader mut dyn AttachmentLoader) -> Self {
         Self {
             loader,
@@ -136,14 +151,15 @@ impl<'loader> SkeletonJson<'loader> {
         }
     }
 
-    /// Scale applied to positions, lengths, and vertices at load (default `1.0`).
+    /// Sets the factor applied to positions, lengths, sizes and vertices at
+    /// load (default `1.0`). Rotations, scales and mixes are unaffected.
     #[must_use]
     pub fn with_scale(mut self, scale: f32) -> Self {
         self.scale = scale;
         self
     }
 
-    /// Parse a JSON skeleton from a byte slice.
+    /// Parses a JSON skeleton from UTF-8 bytes.
     ///
     /// # Errors
     /// Returns [`JsonError`] on malformed JSON, schema violations, version
@@ -153,7 +169,7 @@ impl<'loader> SkeletonJson<'loader> {
         self.read_value(root)
     }
 
-    /// Parse a JSON skeleton from a string.
+    /// Parses a JSON skeleton from a string.
     ///
     /// # Errors
     /// Returns [`JsonError`] on malformed JSON, schema violations, version
@@ -163,7 +179,7 @@ impl<'loader> SkeletonJson<'loader> {
         self.read_value(root)
     }
 
-    /// Parse an already-deserialised JSON value.
+    /// Parses an already-deserialized JSON value.
     ///
     /// # Errors
     /// Returns [`JsonError`] on schema violations, version mismatch, or
