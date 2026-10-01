@@ -407,18 +407,47 @@ const SPINEBOY: (&str, &str) = (
     "spineboy/export/spineboy.atlas",
 );
 
+const RAPTOR: (&str, &str) = (
+    "raptor/export/raptor-pro.skel",
+    "raptor/export/raptor.atlas",
+);
+
 /// Event-heavy scripts beyond the fixtures', checked only against full
 /// applies of themselves.
-const EVENT_SCRIPTS: &[&str] = &[
-    "set:0:walk:1;step:90;dump;step:47;dump",
-    "mix:0.4;set:0:walk:1;threshold:0:0.5;step:25;set:0:run:1;threshold:0:1;step:30;dump;\
-     set:0:walk:1;step:40;dump",
-    "mix:0.2;set:0:run:1;add:0:jump:0:0.5;add:0:walk:1:0;add:0:idle:1:1.5;step:200;dump",
-    "add:0:walk:1:0.25;step:30;addempty:0:0.3:0.5;add:0:run:1:0.2;step:80;dump;empty:0:0;step:5;dump",
-    "mix:0.3;set:0:walk:1;reverse:0:1;threshold:0:1;step:50;set:0:run:1;reverse:0:1;step:40;dump;\
-     set:0:jump:0;step:70;dump",
-    "set:0:idle:1;set:1:walk:1;alpha:1:0.6;step:70;dump;empty:1:0.4;step:30;dump",
-    "mix:0.5;set:0:walk:1;shortest:0:1;step:20;set:0:death:0;step:40;dump;set:0:run:1;step:40;dump",
+const EVENT_SCRIPTS: &[((&str, &str), &str)] = &[
+    (SPINEBOY, "set:0:walk:1;step:90;dump;step:47;dump"),
+    (
+        SPINEBOY,
+        "mix:0.4;set:0:walk:1;threshold:0:0.5;step:25;set:0:run:1;threshold:0:1;step:30;dump;\
+         set:0:walk:1;step:40;dump",
+    ),
+    (
+        SPINEBOY,
+        "mix:0.2;set:0:run:1;add:0:jump:0:0.5;add:0:walk:1:0;add:0:idle:1:1.5;step:200;dump",
+    ),
+    (
+        SPINEBOY,
+        "add:0:walk:1:0.25;step:30;addempty:0:0.3:0.5;add:0:run:1:0.2;step:80;dump;\
+         empty:0:0;step:5;dump",
+    ),
+    (
+        SPINEBOY,
+        "mix:0.3;set:0:walk:1;reverse:0:1;threshold:0:1;step:50;set:0:run:1;reverse:0:1;step:40;\
+         dump;set:0:jump:0;step:70;dump",
+    ),
+    (
+        SPINEBOY,
+        "set:0:idle:1;set:1:walk:1;alpha:1:0.6;step:70;dump;empty:1:0.4;step:30;dump",
+    ),
+    (
+        SPINEBOY,
+        "mix:0.5;set:0:walk:1;shortest:0:1;step:20;set:0:death:0;step:40;dump;set:0:run:1;\
+         step:40;dump",
+    ),
+    (
+        RAPTOR,
+        "mix:0.4;set:0:roar:1;set:1:jump:1;step:20;set:1:walk:1;step:30;dump;step:30;dump",
+    ),
 ];
 
 /// Full applies on these steps, `apply_events` on the rest.
@@ -470,11 +499,10 @@ fn apply_events_matches_full_apply() {
         let label = path.file_stem().unwrap().to_string_lossy().into_owned();
         cases.push((label, load(&fx), fx.script));
     }
-    let spineboy = load_rig(SPINEBOY.0, SPINEBOY.1);
-    for (i, script) in EVENT_SCRIPTS.iter().enumerate() {
+    for (i, ((skel, atlas), script)) in EVENT_SCRIPTS.iter().enumerate() {
         cases.push((
             format!("events-{i}"),
-            Arc::clone(&spineboy),
+            load_rig(skel, atlas),
             (*script).to_string(),
         ));
     }
