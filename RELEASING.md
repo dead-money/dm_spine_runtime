@@ -7,13 +7,6 @@ How `spine_runtime` gets to crates.io.
 `rust-version` in `Cargo.toml` tracks recent stable Rust; we don't hold the code
 to older compilers. Bump it when the crate starts using something newer.
 
-## Licensing
-
-Cleared for crates.io on 2026-10-01, alongside the other Spine runtime ports
-already published there. Every release ships `LICENSE` (the Spine Runtimes
-License verbatim) and the license header in each source file. Developers who
-build with the crate need a Spine Editor license; players of their games don't.
-
 ## CI
 
 `ci.yml` runs on every push to `main` and every PR, all on hosted runners:
