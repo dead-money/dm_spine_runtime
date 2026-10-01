@@ -1,10 +1,10 @@
-# dm_spine_runtime
+# spine_runtime
 
-[![CI](https://github.com/dead-money/dm_spine_runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/dead-money/dm_spine_runtime/actions/workflows/ci.yml)
+[![CI](https://github.com/dead-money/spine_runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/dead-money/spine_runtime/actions/workflows/ci.yml)
 
-A native Rust port of the [Spine](https://esotericsoftware.com/) 4.3 runtime. You load `.skel` or `.json` skeletons with their `.atlas`, pose them, play and mix animations, solve constraints, and get back draw commands your own renderer can consume.
+An unofficial, native Rust port of the [Spine](https://esotericsoftware.com/) 4.3 runtime. You load `.skel` or `.json` skeletons with their `.atlas`, pose them, play and mix animations, solve constraints, and get back draw commands your own renderer can consume.
 
-The crate is renderer-agnostic. It's built for Dead Money's own game projects and was mostly written by AI agents under human direction, as a literal port of Esoteric Software's [spine-cpp](https://github.com/EsotericSoftware/spine-runtimes) reference runtime. For Bevy 0.18, see the sibling crate [`dm_spine_bevy`](https://github.com/dead-money/dm_spine_bevy).
+The crate is renderer-agnostic. It's built for Dead Money's own game projects and was mostly written by AI agents under human direction, as a literal port of Esoteric Software's [spine-cpp](https://github.com/EsotericSoftware/spine-runtimes) reference runtime. For Bevy 0.18, see the sibling crate [`spine_bevy`](https://github.com/dead-money/spine_bevy).
 
 ## You need a Spine Editor license
 
@@ -21,18 +21,18 @@ The Spine editor is licensed separately. This runtime reads what the editor expo
 
 ```toml
 [dependencies]
-dm_spine_runtime = { git = "https://github.com/dead-money/dm_spine_runtime" }
+spine_runtime = { git = "https://github.com/dead-money/spine_runtime" }
 ```
 
 The crate isn't on crates.io yet.
 
 ```rust
 use std::sync::Arc;
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary, SkeletonJson};
-use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
-use dm_spine_runtime::render::SkeletonRenderer;
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary, SkeletonJson};
+use spine_runtime::animation::{AnimationState, AnimationStateData};
+use spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::render::SkeletonRenderer;
 
 // Parse the atlas and skeleton. Both loaders produce the same SkeletonData.
 let atlas = Atlas::parse(&std::fs::read_to_string("spineboy.atlas")?)?;
@@ -61,7 +61,7 @@ for dt in frame_deltas {
     animation.apply(&mut skeleton, &mut events);
     skeleton.update_world_transform(Physics::Update);
     let commands = renderer.render(&skeleton);
-    // Upload `commands` to your renderer. dm_spine_bevy shows one way.
+    // Upload `commands` to your renderer. spine_bevy shows one way.
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

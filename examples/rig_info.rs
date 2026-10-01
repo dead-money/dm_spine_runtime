@@ -1,7 +1,7 @@
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::ConstraintData;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::ConstraintData;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::skeleton::{Physics, Skeleton};
 use std::sync::Arc;
 fn main() {
     let dir = std::env::args().nth(1).unwrap();
@@ -51,8 +51,8 @@ fn main() {
     let mut sk = Skeleton::new(Arc::clone(&sd));
     sk.set_skin_by_name(&format!("{rig}01")).ok();
     sk.update_world_transform(Physics::None);
-    let mut state = dm_spine_runtime::animation::AnimationState::new(Arc::new(
-        dm_spine_runtime::animation::AnimationStateData::new(Arc::clone(&sd)),
+    let mut state = spine_runtime::animation::AnimationState::new(Arc::new(
+        spine_runtime::animation::AnimationStateData::new(Arc::clone(&sd)),
     ));
     state.set_animation_by_name(0, &anim, true).unwrap();
     state.update(0.3);
@@ -60,10 +60,8 @@ fn main() {
     sk.update_world_transform(Physics::None);
     let (mut active, mut live, mut bone_props) = (0, 0, 0);
     for (i, c) in sk.constraints.iter().enumerate() {
-        if let (
-            dm_spine_runtime::skeleton::Constraint::Transform(t),
-            ConstraintData::Transform(d),
-        ) = (c, &sd.constraints[i])
+        if let (spine_runtime::skeleton::Constraint::Transform(t), ConstraintData::Transform(d)) =
+            (c, &sd.constraints[i])
         {
             if !sk.constraints_active[i] {
                 continue;

@@ -17,11 +17,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::{Attachment, BoneData};
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::{Attachment, BoneData};
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::SkeletonRenderer;
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 fn env_str(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())

@@ -33,8 +33,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 
 fn examples_root() -> PathBuf {
     common::examples_root()
@@ -110,7 +110,7 @@ fn pick_atlas(skel: &Path, atlases: &[PathBuf]) -> Option<PathBuf> {
         .cloned()
 }
 
-fn load(atlas_path: &Path, skel_path: &Path) -> dm_spine_runtime::data::SkeletonData {
+fn load(atlas_path: &Path, skel_path: &Path) -> spine_runtime::data::SkeletonData {
     let atlas_text = std::fs::read_to_string(atlas_path)
         .unwrap_or_else(|e| panic!("read atlas {}: {e}", atlas_path.display()));
     let atlas = Atlas::parse(&atlas_text)
@@ -240,7 +240,7 @@ fn rejects_other_versions() {
     assert!(
         matches!(
             err,
-            dm_spine_runtime::load::BinaryError::UnsupportedVersion { .. }
+            spine_runtime::load::BinaryError::UnsupportedVersion { .. }
         ),
         "unexpected error: {err}"
     );

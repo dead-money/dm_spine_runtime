@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// spine_capture: dumps spine-cpp 4.3 state as JSON for the dm_spine_runtime
+// spine_capture: dumps spine-cpp 4.3 state as JSON for the spine_runtime
 // goldens, and times spine-cpp for the benchmark comparison.
 //
 // usage:

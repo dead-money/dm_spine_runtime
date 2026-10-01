@@ -31,7 +31,7 @@
 //! An atlas is a text file describing one or more texture pages and the
 //! rectangular regions within them that skeletons reference. This module only
 //! parses the metadata; actual texture pixels are loaded by the renderer
-//! (e.g. `dm_spine_bevy` resolves `AtlasPage::name` to a `Handle<Image>`).
+//! (e.g. `spine_bevy` resolves `AtlasPage::name` to a `Handle<Image>`).
 //!
 //! # Supported features
 //!

@@ -27,7 +27,7 @@
 
 //! Native Rust port of the Spine 4.2 runtime.
 //!
-//! Renderer-agnostic. Bevy integration lives in the sibling `dm_spine_bevy` crate.
+//! Renderer-agnostic. Bevy integration lives in the sibling `spine_bevy` crate.
 
 pub mod animation;
 pub mod atlas;

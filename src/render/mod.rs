@@ -26,7 +26,7 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Render-command emission — the boundary between the core Spine
-//! runtime and any downstream renderer (e.g. [`dm_spine_bevy`]).
+//! runtime and any downstream renderer (e.g. [`spine_bevy`]).
 //!
 //! This module owns two things:
 //!
@@ -45,7 +45,7 @@
 //! GPU-side texture handle it owns. Vertex/index/color buffers are
 //! plain `Vec<_>` — the consumer copies or re-wraps as needed.
 //!
-//! [`dm_spine_bevy`]: https://github.com/deadmoney/dm_spine_bevy
+//! [`spine_bevy`]: https://github.com/dead-money/spine_bevy
 
 use crate::data::BlendMode;
 

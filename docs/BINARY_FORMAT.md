@@ -12,7 +12,7 @@ reference implementations are:
   maintains — authoritative when in doubt).
 - `spine-ts/spine-core/src/SkeletonBinary.ts` (TypeScript port; often easier
   to read).
-- `dm_spine_runtime/src/load/binary/parse.rs` (Rust port, this project;
+- `spine_runtime/src/load/binary/parse.rs` (Rust port, this project;
   verified against every 4.3 example export).
 
 Wherever this document cites line numbers, they refer to the 4.3
@@ -1232,4 +1232,4 @@ Run against the full 4.3 example set (`spine-runtimes/examples/*/export/*.skel`)
   / slot / attachment / constraint / path / physics / slider timeline types).
 - `spine-cpp/src/spine/SkeletonBinary.cpp` — authoritative loader.
 - `spine-ts/spine-core/src/SkeletonBinary.ts` — TypeScript port.
-- `dm_spine_runtime/src/load/binary/parse.rs` — this project's Rust port.
+- `spine_runtime/src/load/binary/parse.rs` — this project's Rust port.
