@@ -34,12 +34,12 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::{AttachmentRef, SkeletonData, Skin};
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::{RenderCommand, RenderOptions, SkeletonRenderer};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::animation::{AnimationState, AnimationStateData};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::{AttachmentRef, SkeletonData, Skin};
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::{RenderCommand, RenderOptions, SkeletonRenderer};
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 fn load(atlases: &[PathBuf], skel: &Path) -> Arc<SkeletonData> {
     let mut text = String::new();

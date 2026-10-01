@@ -37,10 +37,10 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::animation::{AnimationState, AnimationStateData};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 fn examples_dir() -> PathBuf {
     common::examples_root()
@@ -91,11 +91,8 @@ fn all_animations_apply_without_panic() {
                 let mut sk = Skeleton::new(Arc::clone(&data));
                 let state_data = Arc::new(AnimationStateData::new(Arc::clone(&data)));
                 let mut state = AnimationState::new(state_data);
-                let _ = state.set_animation(
-                    0,
-                    dm_spine_runtime::data::AnimationId(anim_idx as u16),
-                    true,
-                );
+                let _ =
+                    state.set_animation(0, spine_runtime::data::AnimationId(anim_idx as u16), true);
 
                 for t in [0.0_f32, 0.1, 0.333, 0.666, 0.999].iter().copied() {
                     let time = if duration > 0.0 { t * duration } else { 0.0 };

@@ -36,10 +36,10 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
 use serde::Deserialize;
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 const TOLERANCE: f32 = 1e-4;
 
@@ -108,8 +108,8 @@ fn load_skeleton(atlas_path: &Path, skel_path: &Path) -> Skeleton {
 
 /// Update cache as the capture prints it: `bone:<name>`, `ik:<name>`, ...
 fn update_cache_names(sk: &Skeleton) -> Vec<String> {
-    use dm_spine_runtime::data::ConstraintData;
-    use dm_spine_runtime::skeleton::UpdateCacheEntry;
+    use spine_runtime::data::ConstraintData;
+    use spine_runtime::skeleton::UpdateCacheEntry;
     let data = sk.data();
     sk.update_cache_entries()
         .iter()
@@ -133,11 +133,7 @@ fn close(a: f32, b: f32) -> bool {
     (a - b).abs() <= TOLERANCE || (a - b).abs() <= TOLERANCE * a.abs().max(b.abs())
 }
 
-fn check_bone(
-    rig_label: &str,
-    expected: &BoneFixture,
-    actual: &dm_spine_runtime::skeleton::BonePose,
-) {
+fn check_bone(rig_label: &str, expected: &BoneFixture, actual: &spine_runtime::skeleton::BonePose) {
     let fields: [(&str, f32, f32); 13] = [
         ("a", expected.a, actual.a),
         ("b", expected.b, actual.b),
@@ -168,7 +164,7 @@ fn check_bone(
 fn first_bone_mismatch(
     rig_label: &str,
     expected: &BoneFixture,
-    actual: &dm_spine_runtime::skeleton::BonePose,
+    actual: &spine_runtime::skeleton::BonePose,
 ) -> Option<String> {
     let fields: [(&str, f32, f32); 13] = [
         ("a", expected.a, actual.a),
@@ -231,7 +227,7 @@ fn setup_pose_matches_spine_cpp_on_every_captured_rig() {
         );
         // The capture validates local transforms constraints left stale.
         for i in 0..sk.bones.len() {
-            sk.validate_local_transform(dm_spine_runtime::data::BoneId(i as u16));
+            sk.validate_local_transform(spine_runtime::data::BoneId(i as u16));
         }
 
         let mut mismatches = 0usize;

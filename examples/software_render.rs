@@ -31,7 +31,7 @@
 // `SkeletonRenderer::commands()` and rasterizes each `RenderCommand` to a
 // PNG — no GPU, no windowing, no render backend. Useful to confirm the
 // runtime's output is structurally correct independent of any engine
-// integration (e.g. dm_spine_bevy).
+// integration (e.g. spine_bevy).
 //
 // Keep it simple:
 // - Scanline barycentric triangle fill
@@ -55,12 +55,12 @@ use std::sync::Arc;
 
 use image::{Rgba, RgbaImage};
 
-use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::BlendMode;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::animation::{AnimationState, AnimationStateData};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::BlendMode;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::SkeletonRenderer;
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 const FIXED_STEP: f32 = 1.0 / 60.0;
 

@@ -39,11 +39,11 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::SlotId;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::SlotId;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::SkeletonRenderer;
+use spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton};
 
 fn examples_dir() -> PathBuf {
     common::examples_root()

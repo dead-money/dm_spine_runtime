@@ -1,10 +1,10 @@
-# dm_spine_runtime
+# spine_runtime
 
 Full-native Rust port of the Spine 4.3 runtime. The upgrade from 4.2 is tracked in `docs/SPINE_4_3_UPGRADE.md`; the last 4.2 state is tagged `v0.1.0`. The goal is to replace spine-godot's spine-cpp in `~/deadmoney/hommlet`, where it's too slow.
 
-- **This crate** (`~/deadmoney/dm_spine_runtime/`) is the core runtime: data types, loaders, skeleton pose, animation state, constraints, clipping, bounds, render-command emission. **No GPU or windowing deps.**
+- **This crate** (`~/deadmoney/spine_runtime/`) is the core runtime: data types, loaders, skeleton pose, animation state, constraints, clipping, bounds, render-command emission. **No GPU or windowing deps.**
 - **`~/deadmoney/hommlet/`** is the primary consumer, reached through a C-ABI crate under its `Native/`, the same pattern as `Native/sorting`. The engine-facing work lives there; this crate stays engine-agnostic.
-- **`~/deadmoney/dm_spine_bevy/`** is the Bevy integration and a secondary consumer. It depends on this crate via `path = "../dm_spine_runtime"` and stays on the 4.2 API until hommlet ships on 4.3; don't block runtime work on it.
+- **`~/deadmoney/spine_bevy/`** is the Bevy integration and a secondary consumer. It depends on this crate via `path = "../spine_runtime"` and stays on the 4.2 API until hommlet ships on 4.3; don't block runtime work on it.
 - **`~/deadmoney/spine-runtimes/`** is the upstream reference. **Read-only.** Never edit.
 
 `main` + `git log --first-parent` is truth for what landed.
@@ -104,4 +104,4 @@ The 4.2 port is tagged `v0.1.0`. The 4.3 port has reached parity, passed its per
 - `cargo fmt`: format.
 - `cargo bench --bench frame`: per-frame anim / world / render ns per rig. `HOMMLET_SPINE_ASSETS=../hommlet/Assets/Spine` adds hommlet's creature rigs.
 - `tools/spine_capture/bench_compare.sh`: the same rigs, timed on both this crate and spine-cpp, side by side. `make -C tools/spine_capture` first.
-- Visual: `cargo run --example software_render` (CPU rasterizer to PNG). `dm_spine_bevy`'s examples work only against the 4.2 tag until it's updated.
+- Visual: `cargo run --example software_render` (CPU rasterizer to PNG). `spine_bevy`'s examples work only against the 4.2 tag until it's updated.

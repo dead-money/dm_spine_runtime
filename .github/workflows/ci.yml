@@ -19,10 +19,10 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout dm_spine_runtime
+      - name: Checkout spine_runtime
         uses: actions/checkout@v6
         with:
-          path: dm_spine_runtime
+          path: spine_runtime
 
       # Goldens + render_smoke load rigs from a sibling spine-runtimes/
       # clone; mirror the repo-layout assumption documented in CLAUDE.md.
@@ -42,20 +42,20 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: dm_spine_runtime
+          workspaces: spine_runtime
 
       - name: cargo fmt
-        working-directory: dm_spine_runtime
+        working-directory: spine_runtime
         run: cargo fmt --all --check
 
       - name: cargo clippy
-        working-directory: dm_spine_runtime
+        working-directory: spine_runtime
         run: cargo clippy --all-targets
 
       - name: cargo test
-        working-directory: dm_spine_runtime
+        working-directory: spine_runtime
         run: cargo test --all-targets
 
       - name: Build capture harness against pinned spine-cpp
-        working-directory: dm_spine_runtime/tools/spine_capture
+        working-directory: spine_runtime/tools/spine_capture
         run: make -j4 SPINE_RUNTIMES="$GITHUB_WORKSPACE/spine-runtimes"

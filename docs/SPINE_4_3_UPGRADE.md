@@ -1,6 +1,6 @@
 # Spine 4.3 upgrade plan
 
-Upgrade `dm_spine_runtime` from Spine 4.2 to 4.3. Target is `upstream/4.3` at the tip (`ba17cf88b` at time of writing), not the `deadmoney/4.7` branch in the local `spine-runtimes` checkout, which is 232 commits behind it. Example exports in both are `4.3.75-beta`.
+Upgrade `spine_runtime` from Spine 4.2 to 4.3. Target is `upstream/4.3` at the tip (`ba17cf88b` at time of writing), not the `deadmoney/4.7` branch in the local `spine-runtimes` checkout, which is 232 commits behind it. Example exports in both are `4.3.75-beta`.
 
 4.3 is not an incremental release for a port. It replaces the bone/slot/constraint model with a pose system, unifies constraints into one ordered list, rewrites the Transform constraint, replaces `MixBlend`/`MixDirection` in every timeline, reworks `AnimationState` hold/additive logic, moves UVs into `Sequence`, adds a Slider constraint, and changes the binary and JSON formats in most sections. 4.3 loaders reject 4.2 files. Expect to touch most of the crate. Rough size is 5–7k lines changed out of about 21.6k for parity, plus the hommlet-facing work in Phases 6–8.
 
@@ -38,7 +38,7 @@ Settled 2026-09-30.
 
 ## Goal
 
-**Primary goal: replace spine-godot's spine-cpp in `../hommlet` with this runtime.** That makes hommlet the primary consumer and makes performance a gated requirement. `dm_spine_bevy` is a secondary goal: it gets updated after hommlet ships on the new runtime, and it doesn't block any phase here.
+**Primary goal: replace spine-godot's spine-cpp in `../hommlet` with this runtime.** That makes hommlet the primary consumer and makes performance a gated requirement. `spine_bevy` is a secondary goal: it gets updated after hommlet ships on the new runtime, and it doesn't block any phase here.
 
 **spine-cpp is the behavioral reference, not the quality bar.** Its `HashMap` is a linked list with O(n) lookups; replacing it in our fork was a measurable win. Port math, algorithms, and order of operations literally, because the goldens depend on them. Containers, lookups, and allocation strategy are ours to do properly: `Vec` indexing by typed id, real hash maps or dense tables, reused scratch buffers, and no per-frame allocation in the hot path.
 
@@ -259,7 +259,7 @@ The Godot and C# work is tracked in hommlet, in a research memo that supersedes 
 - Update the README, the CLAUDE.md status section, and the `Cargo.toml` description to say 4.3. Update the `LICENSE` header year to match upstream's 4.3 header.
 - CI checks out `spine-runtimes` at `ref: 4.3`.
 - Tag `v0.2.0`.
-- `dm_spine_bevy` (secondary, after hommlet ships):
+- `spine_bevy` (secondary, after hommlet ships):
   - setup-pose and `AnimationState::track` renames, and apply-signature fallout
   - expose `TrackEntry::additive` / `mix_interpolation`
   - use the per-vertex streams if they're useful

@@ -84,20 +84,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
-name = "dm_spine_runtime"
-version = "0.1.0"
-dependencies = [
- "approx",
- "glam",
- "image",
- "pretty_assertions",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -531,6 +517,20 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+
+[[package]]
+name = "spine_runtime"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "glam",
+ "image",
+ "pretty_assertions",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "syn"

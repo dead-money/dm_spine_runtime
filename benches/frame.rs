@@ -40,11 +40,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
+use spine_runtime::animation::{AnimationState, AnimationStateData};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::SkeletonRenderer;
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 fn examples_root() -> PathBuf {
     std::env::var_os("SPINE_EXAMPLES").map_or_else(
@@ -145,7 +145,7 @@ fn bench_rig(rig: &Rig, frames: u32) -> Result<(), String> {
         vertices += renderer
             .render(&skeleton)
             .iter()
-            .map(dm_spine_runtime::render::RenderCommand::num_vertices)
+            .map(spine_runtime::render::RenderCommand::num_vertices)
             .sum::<usize>();
         let t3 = Instant::now();
         anim_ns += (t1 - t0).as_nanos();
@@ -154,7 +154,7 @@ fn bench_rig(rig: &Rig, frames: u32) -> Result<(), String> {
     }
     let f = f64::from(frames.max(1));
     println!(
-        "{{\"runtime\": \"dm_spine_runtime\", \"atlas\": {:?}, \"skel\": {:?}, \"animation\": {:?}, \"skin\": {:?}, \
+        "{{\"runtime\": \"spine_runtime\", \"atlas\": {:?}, \"skel\": {:?}, \"animation\": {:?}, \"skin\": {:?}, \
          \"frames\": {frames}, \"anim_ns\": {:.1}, \"world_ns\": {:.1}, \"render_ns\": {:.1}, \"vertices\": {}}}",
         rig.atlas,
         rig.skel.display().to_string(),

@@ -33,14 +33,14 @@ mod common;
 
 use std::sync::Arc;
 
-use dm_spine_runtime::animation::{
+use serde::Deserialize;
+use spine_runtime::animation::{
     AnimationState, AnimationStateData, EMPTY_ANIMATION_ID, EventType, Interpolation,
 };
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::{BoneId, SkeletonData};
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
-use serde::Deserialize;
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::{BoneId, SkeletonData};
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 const TOLERANCE: f32 = 1e-3;
 
@@ -111,7 +111,7 @@ fn run(data: &Arc<SkeletonData>, script: &str) -> (Vec<Skeleton>, Vec<String>) {
     let mut frames = Vec::new();
     let mut events = Vec::new();
     let mut keyframes = Vec::new();
-    let anim_name = |id: dm_spine_runtime::data::AnimationId| {
+    let anim_name = |id: spine_runtime::data::AnimationId| {
         if id == EMPTY_ANIMATION_ID {
             "<empty>".to_string()
         } else {

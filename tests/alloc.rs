@@ -37,12 +37,12 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use dm_spine_runtime::animation::{AnimationState, AnimationStateData};
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::SlotId;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::{RenderOptions, SkeletonRenderer};
-use dm_spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton, SkeletonBounds};
+use spine_runtime::animation::{AnimationState, AnimationStateData};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::SlotId;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::{RenderOptions, SkeletonRenderer};
+use spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton, SkeletonBounds};
 
 struct Counting;
 

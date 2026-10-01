@@ -33,9 +33,9 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::data::SkeletonData;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary, SkeletonJson};
+use spine_runtime::atlas::Atlas;
+use spine_runtime::data::SkeletonData;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary, SkeletonJson};
 
 /// A skin's name and its `(slot, placeholder, attachment)` entries.
 type SkinEntries = (String, Vec<(u16, String, String)>);
@@ -300,11 +300,11 @@ fn json_matches_binary_on_every_example() {
                 .cloned()
                 .map(|mut c| {
                     match &mut c {
-                        dm_spine_runtime::data::ConstraintData::Ik(ik) if ik.bones.len() == 1 => {
+                        spine_runtime::data::ConstraintData::Ik(ik) if ik.bones.len() == 1 => {
                             ik.setup.bend_direction = 0;
                         }
                         // Nonessential; only the binary export carries it.
-                        dm_spine_runtime::data::ConstraintData::Slider(slider) => slider.max = 0.0,
+                        spine_runtime::data::ConstraintData::Slider(slider) => slider.max = 0.0,
                         _ => {}
                     }
                     c
@@ -368,6 +368,6 @@ fn rejects_other_versions() {
         .unwrap_err();
     assert!(matches!(
         err,
-        dm_spine_runtime::load::JsonError::UnsupportedVersion { .. }
+        spine_runtime::load::JsonError::UnsupportedVersion { .. }
     ));
 }

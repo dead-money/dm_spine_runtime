@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Diffs [`SkeletonRenderer::render`][dm_spine_runtime::render::SkeletonRenderer::render]
+//! Diffs [`SkeletonRenderer::render`][spine_runtime::render::SkeletonRenderer::render]
 //! output against per-rig fixtures captured from spine-cpp's
 //! `SkeletonRenderer` (see `tools/spine_capture/capture_render.sh`).
 //!
@@ -52,11 +52,11 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::render::SkeletonRenderer;
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
 use serde::Deserialize;
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::render::SkeletonRenderer;
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 #[derive(Debug, Deserialize)]
 struct RenderFixture {

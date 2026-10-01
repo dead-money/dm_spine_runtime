@@ -40,11 +40,11 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dm_spine_runtime::animation::MixFrom;
-use dm_spine_runtime::atlas::Atlas;
-use dm_spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
-use dm_spine_runtime::skeleton::{Physics, Skeleton};
 use serde::Deserialize;
+use spine_runtime::animation::MixFrom;
+use spine_runtime::atlas::Atlas;
+use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
+use spine_runtime::skeleton::{Physics, Skeleton};
 
 const TOLERANCE: f32 = 1e-3;
 
@@ -131,7 +131,7 @@ fn collect_fixture_samples() -> Vec<(String, String, String, Vec<PathBuf>)> {
     out
 }
 
-fn load_skeleton(sample: &Path) -> Arc<dm_spine_runtime::data::SkeletonData> {
+fn load_skeleton(sample: &Path) -> Arc<spine_runtime::data::SkeletonData> {
     let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(sample).unwrap()).unwrap();
     let atlas_src = std::fs::read_to_string(common::example_path(&fx.source_atlas)).unwrap();
     let atlas = Atlas::parse(&atlas_src).unwrap();
@@ -152,7 +152,7 @@ fn close(a: f32, b: f32) -> bool {
 fn first_bone_mismatch(
     label: &str,
     expected: &BoneFixture,
-    actual: &dm_spine_runtime::skeleton::BonePose,
+    actual: &spine_runtime::skeleton::BonePose,
 ) -> Option<String> {
     let fields: [(&str, f32, f32); 13] = [
         ("a", expected.a, actual.a),
@@ -184,7 +184,7 @@ fn first_bone_mismatch(
 }
 
 #[allow(dead_code)]
-fn check_bone(label: &str, expected: &BoneFixture, actual: &dm_spine_runtime::skeleton::BonePose) {
+fn check_bone(label: &str, expected: &BoneFixture, actual: &spine_runtime::skeleton::BonePose) {
     let fields: [(&str, f32, f32); 13] = [
         ("a", expected.a, actual.a),
         ("b", expected.b, actual.b),
@@ -231,7 +231,7 @@ fn animation_samples_match_spine_cpp() {
     for (rig, variant, anim_name, samples) in &groups {
         let data = load_skeleton(&samples[0]);
         let anim_id = match data.animations.iter().position(|a| a.name == *anim_name) {
-            Some(i) => dm_spine_runtime::data::AnimationId(i as u16),
+            Some(i) => spine_runtime::data::AnimationId(i as u16),
             None => panic!("no animation `{anim_name}` in {rig}-{variant}"),
         };
 
@@ -256,7 +256,7 @@ fn animation_samples_match_spine_cpp() {
             );
             sk.update_world_transform(Physics::None);
             for i in 0..sk.bones.len() {
-                sk.validate_local_transform(dm_spine_runtime::data::BoneId(i as u16));
+                sk.validate_local_transform(spine_runtime::data::BoneId(i as u16));
             }
 
             let label = format!("{rig}-{variant}/{anim_name}@{:.4}s", fx.time);
