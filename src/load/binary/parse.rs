@@ -2004,7 +2004,7 @@ pub(crate) fn timeline_duration(anim: &Animation) -> f32 {
             | Timeline::Attachment { frames, .. }
             | Timeline::Event { frames, .. } => frames.last().copied().unwrap_or(0.0),
 
-            Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 2),
+            Timeline::Deform { curves, .. } => last_time_stride(&curves.frames, 1),
 
             // Time, packed index and mode, delay.
             Timeline::Sequence { frames, .. } => last_time_stride(frames, 3),

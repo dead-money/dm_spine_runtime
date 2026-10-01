@@ -161,6 +161,25 @@ fn loads_every_example_skeleton_json() {
     );
 }
 
+/// alien-pro's death animation ends on a deform key, so its duration comes
+/// from the deform timeline (one float per frame).
+#[test]
+fn duration_includes_last_deform_key() {
+    let root = examples_root().join("alien/export");
+    let atlas = root.join("alien.atlas");
+    for sd in [
+        load_json(&atlas, &root.join("alien-pro.json")),
+        load_skel(&atlas, &root.join("alien-pro.skel")),
+    ] {
+        let death = sd.animations.iter().find(|a| a.name == "death").unwrap();
+        assert!(
+            (death.duration - 2.166_666_7).abs() < 1e-5,
+            "{}",
+            death.duration
+        );
+    }
+}
+
 #[test]
 fn spineboy_pro_json_has_expected_structure() {
     let root = examples_root().join("spineboy/export");
