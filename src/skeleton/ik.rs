@@ -210,7 +210,9 @@ fn sign(v: f32) -> f32 {
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::many_single_char_names,
-    clippy::similar_names
+    clippy::similar_names,
+    // f32::midpoint rounds once in f64; spine-cpp's (a + b) * 0.5 rounds the sum in f32.
+    clippy::manual_midpoint
 )]
 pub(crate) fn apply2(
     bones: &mut [Bone],

@@ -537,7 +537,7 @@ mod tests {
         let a = Animation::new("walk", 1.5);
         assert_eq!(a.name, "walk");
         assert_eq!(a.duration, 1.5);
-        assert!(a.timelines.is_empty());
+        assert_eq!(a.timelines, []);
     }
 
     #[test]

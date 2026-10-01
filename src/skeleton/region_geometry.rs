@@ -120,7 +120,7 @@ impl RegionGeometry {
         let (uvs, world) = (&self.region_uvs, &self.world);
         let mut best = None;
         let mut best_min = f32::MIN;
-        for t in self.triangles.chunks_exact(3) {
+        for t in self.triangles.as_chunks::<3>().0 {
             let (i0, i1, i2) = (usize::from(t[0]), usize::from(t[1]), usize::from(t[2]));
             let (u0, v0) = (uvs[i0 * 2], uvs[i0 * 2 + 1]);
             let (u1, v1) = (uvs[i1 * 2], uvs[i1 * 2 + 1]);

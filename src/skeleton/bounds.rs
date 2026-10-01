@@ -57,7 +57,9 @@ impl BoundsPolygon {
     /// [`Self::vertices`].
     pub fn iter_vertices(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
         self.vertices[..self.count]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|xy| (xy[0], xy[1]))
     }
 }
@@ -387,7 +389,7 @@ mod tests {
     fn new_is_empty() {
         let b = SkeletonBounds::new();
         assert!(b.polygons().is_empty());
-        assert!(b.bounding_boxes().is_empty());
+        assert_eq!(b.bounding_boxes(), []);
     }
 
     #[test]
