@@ -25,6 +25,8 @@ pre-1.0, any `0.x` release may contain breaking changes.
 - `RenderOptions` per-vertex slot and tag streams and merging across colors;
   `RegionGeometry` for mapping region points.
 - `AnimationState::pose`, an event-free re-apply of the current tracks.
+- `AnimationState::apply_events`, an apply that fires events and advances
+  track bookkeeping without posing a skeleton.
 
 ## [0.1.0] - 2026-04-23
 

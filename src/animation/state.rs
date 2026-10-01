@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
-use crate::animation::apply::{apply_timeline, set_attachment_by_key};
+use crate::animation::apply::{apply_timeline, set_attachment_by_key, timeline_events};
 use crate::animation::curve::{curve_value1, search, sign};
 use crate::animation::{AnimationStateData, Event, MixFrom};
 use crate::data::animation::PropertyId;
@@ -329,9 +329,8 @@ struct Queued {
 
 /// Plays animations on tracks and poses a skeleton from them.
 ///
-/// For a skeleton that isn't drawn, [`Self::update`] and [`Self::apply`]
-/// alone keep its tracks and events going; skip the world transform and
-/// rendering until it's visible again.
+/// For a skeleton that isn't drawn, [`Self::update`] and
+/// [`Self::apply_events`] keep its tracks and events going without posing it.
 pub struct AnimationState {
     data: Arc<AnimationStateData>,
     skeleton_data: Arc<SkeletonData>,
@@ -650,7 +649,27 @@ impl AnimationState {
         if self.animations_changed {
             self.animations_changed();
         }
-        let applied = self.apply_tracks(skeleton, Some(events));
+        let applied = self.apply_tracks(Some(skeleton), Some(events));
+        self.drain();
+        applied
+    }
+
+    /// Fires keyframe events and advances every entry exactly as
+    /// [`Self::apply`] would, without posing a skeleton: for skeletons whose
+    /// events and lifecycle matter but which aren't being drawn. Returns
+    /// whether any track was applied.
+    ///
+    /// Rotation mixing history depends on the pose, so every applied entry
+    /// drops it as [`TrackEntry::reset_rotation_directions`] does, and the
+    /// next [`Self::apply`] picks rotation directions afresh, as on an
+    /// entry's first frame. A property keyed only by entries that ended
+    /// meanwhile keeps the value the last [`Self::apply`] gave it; reset the
+    /// skeleton to its setup pose before resuming if that matters.
+    pub fn apply_events(&mut self, events: &mut Vec<Event>) -> bool {
+        if self.animations_changed {
+            self.animations_changed();
+        }
+        let applied = self.apply_tracks(None, Some(events));
         self.drain();
         applied
     }
@@ -664,7 +683,7 @@ impl AnimationState {
             self.stash_modes(false);
             self.animations_changed();
         }
-        let applied = self.apply_tracks(skeleton, None);
+        let applied = self.apply_tracks(Some(skeleton), None);
         if pending {
             self.stash_modes(true);
             self.animations_changed = true;
@@ -702,16 +721,19 @@ impl AnimationState {
     }
 
     /// `events` is `None` when posing: no events, and entries keep their
-    /// last-applied times, rotation history and total alpha.
+    /// last-applied times, rotation history and total alpha. `skeleton` is
+    /// `None` for events only.
     fn apply_tracks(
         &mut self,
-        skeleton: &mut Skeleton,
+        mut skeleton: Option<&mut Skeleton>,
         mut events: Option<&mut Vec<Event>>,
     ) -> bool {
         let record = events.is_some();
-        let sd = Arc::clone(skeleton.data());
+        let sd = Arc::clone(&self.skeleton_data);
         debug_assert!(
-            Arc::ptr_eq(&sd, &self.skeleton_data),
+            skeleton
+                .as_deref()
+                .is_none_or(|skeleton| Arc::ptr_eq(skeleton.data(), &sd)),
             "skeleton uses other data"
         );
         let mut applied = false;
@@ -724,7 +746,7 @@ impl AnimationState {
 
             let mut alpha = self.e(cur).alpha;
             if self.e(cur).mixing_from.is_some() {
-                alpha *= self.apply_mixing_from(cur, skeleton, &sd, record);
+                alpha *= self.apply_mixing_from(cur, skeleton.as_deref_mut(), &sd, record);
             } else {
                 let c = self.e(cur);
                 if c.track_time >= c.track_end && c.next.is_none() {
@@ -744,82 +766,25 @@ impl AnimationState {
             };
             let mut event_buf = std::mem::take(&mut self.events);
 
-            if i == 0 && alpha == 1.0 {
-                for t in &anim.timelines {
-                    if let Timeline::Attachment { .. } = t {
-                        self.apply_attachment_timeline(
-                            t,
-                            skeleton,
-                            &sd,
-                            apply_time,
-                            MixFrom::Setup,
-                            true,
-                        );
-                    } else {
-                        let mut ev = (record && !reverse).then_some(&mut event_buf);
-                        apply_timeline(
-                            skeleton,
-                            &sd,
-                            t,
-                            animation_last,
-                            apply_time,
-                            &mut ev,
-                            alpha,
-                            MixFrom::Setup,
-                            false,
-                            false,
-                            false,
-                        );
-                    }
-                }
+            if let Some(skeleton) = skeleton.as_deref_mut() {
+                self.apply_entry(
+                    i,
+                    cur,
+                    skeleton,
+                    &sd,
+                    alpha,
+                    animation_last,
+                    apply_time,
+                    record,
+                    (record && !reverse).then_some(&mut event_buf),
+                );
             } else {
-                let c = self.e(cur);
-                let retain = alpha >= c.alpha_attachment_threshold;
-                let add = c.additive;
-                let shortest = add || c.shortest_rotation;
-                let n = anim.timelines.len();
-                let first_frame = !shortest && c.timelines_rotation.len() != n << 1;
-                let mut rotation = self.take_rotation(cur, record);
-                if first_frame {
-                    rotation.clear();
-                    rotation.resize(n << 1, 0.0);
-                }
-                let modes = std::mem::take(&mut self.e_mut(cur).timeline_mode);
-                for (ii, t) in anim.timelines.iter().enumerate() {
-                    let from = mix_from(modes[ii]);
-                    if !shortest && matches!(t, Timeline::Rotate { .. }) {
-                        apply_rotate_timeline(
-                            t,
-                            skeleton,
-                            &sd,
-                            apply_time,
-                            alpha,
-                            from,
-                            &mut rotation,
-                            ii << 1,
-                            first_frame,
-                        );
-                    } else if let Timeline::Attachment { .. } = t {
-                        self.apply_attachment_timeline(t, skeleton, &sd, apply_time, from, retain);
-                    } else {
-                        let mut ev = (record && !reverse).then_some(&mut event_buf);
-                        apply_timeline(
-                            skeleton,
-                            &sd,
-                            t,
-                            animation_last,
-                            apply_time,
-                            &mut ev,
-                            alpha,
-                            from,
-                            add,
-                            false,
-                            false,
-                        );
+                if !reverse {
+                    for t in &anim.timelines {
+                        timeline_events(t, animation_last, apply_time, &mut event_buf);
                     }
                 }
-                self.e_mut(cur).timeline_mode = modes;
-                self.put_rotation(cur, rotation, record);
+                self.e_mut(cur).reset_rotation_directions();
             }
             self.events = event_buf;
             let Some(events) = events.as_deref_mut() else {
@@ -835,16 +800,109 @@ impl AnimationState {
             c.next_track_last = c.track_time;
         }
 
-        // Restore setup attachments the timelines mixed out without keying.
-        let setup_state = self.unkeyed_state + ATTACH_SETUP;
-        for s in 0..skeleton.slots.len() {
-            if skeleton.slots[s].attachment_state == setup_state {
-                let key = sd.slots[s].attachment_key;
-                set_attachment_by_key(skeleton, crate::data::SlotId(s as u16), key, false);
+        if let Some(skeleton) = skeleton {
+            // Restore setup attachments the timelines mixed out without keying.
+            let setup_state = self.unkeyed_state + ATTACH_SETUP;
+            for s in 0..skeleton.slots.len() {
+                if skeleton.slots[s].attachment_state == setup_state {
+                    let key = sd.slots[s].attachment_key;
+                    set_attachment_by_key(skeleton, crate::data::SlotId(s as u16), key, false);
+                }
             }
         }
         self.unkeyed_state += 2;
         applied
+    }
+
+    /// Applies a track's current entry at `alpha`.
+    fn apply_entry(
+        &mut self,
+        track: usize,
+        cur: EntryId,
+        skeleton: &mut Skeleton,
+        sd: &SkeletonData,
+        alpha: f32,
+        animation_last: f32,
+        apply_time: f32,
+        record: bool,
+        mut events: Option<&mut Vec<Event>>,
+    ) {
+        let anim = animation(sd, self.e(cur).animation);
+        if track == 0 && alpha == 1.0 {
+            for t in &anim.timelines {
+                if let Timeline::Attachment { .. } = t {
+                    self.apply_attachment_timeline(
+                        t,
+                        skeleton,
+                        sd,
+                        apply_time,
+                        MixFrom::Setup,
+                        true,
+                    );
+                } else {
+                    apply_timeline(
+                        skeleton,
+                        sd,
+                        t,
+                        animation_last,
+                        apply_time,
+                        &mut events,
+                        alpha,
+                        MixFrom::Setup,
+                        false,
+                        false,
+                        false,
+                    );
+                }
+            }
+            return;
+        }
+        let c = self.e(cur);
+        let retain = alpha >= c.alpha_attachment_threshold;
+        let add = c.additive;
+        let shortest = add || c.shortest_rotation;
+        let n = anim.timelines.len();
+        let first_frame = !shortest && c.timelines_rotation.len() != n << 1;
+        let mut rotation = self.take_rotation(cur, record);
+        if first_frame {
+            rotation.clear();
+            rotation.resize(n << 1, 0.0);
+        }
+        let modes = std::mem::take(&mut self.e_mut(cur).timeline_mode);
+        for (ii, t) in anim.timelines.iter().enumerate() {
+            let from = mix_from(modes[ii]);
+            if !shortest && matches!(t, Timeline::Rotate { .. }) {
+                apply_rotate_timeline(
+                    t,
+                    skeleton,
+                    sd,
+                    apply_time,
+                    alpha,
+                    from,
+                    &mut rotation,
+                    ii << 1,
+                    first_frame,
+                );
+            } else if let Timeline::Attachment { .. } = t {
+                self.apply_attachment_timeline(t, skeleton, sd, apply_time, from, retain);
+            } else {
+                apply_timeline(
+                    skeleton,
+                    sd,
+                    t,
+                    animation_last,
+                    apply_time,
+                    &mut events,
+                    alpha,
+                    from,
+                    add,
+                    false,
+                    false,
+                );
+            }
+        }
+        self.e_mut(cur).timeline_mode = modes;
+        self.put_rotation(cur, rotation, record);
     }
 
     fn take_rotation(&mut self, entry: EntryId, record: bool) -> Vec<f32> {
@@ -867,13 +925,13 @@ impl AnimationState {
     fn apply_mixing_from(
         &mut self,
         to: EntryId,
-        skeleton: &mut Skeleton,
+        mut skeleton: Option<&mut Skeleton>,
         sd: &Arc<SkeletonData>,
         record: bool,
     ) -> f32 {
         let from = self.e(to).mixing_from.expect("mixing from");
         let from_mix = if self.e(from).mixing_from.is_some() {
-            self.apply_mixing_from(from, skeleton, sd, record)
+            self.apply_mixing_from(from, skeleton.as_deref_mut(), sd, record)
         } else {
             1.0
         };
@@ -903,10 +961,13 @@ impl AnimationState {
         };
         let use_events = record && !reverse && mix < f.event_threshold;
 
-        let mut rotation = self.take_rotation(from, record);
-        if first_frame {
-            rotation.clear();
-            rotation.resize(n << 1, 0.0);
+        let mut rotation = Vec::new();
+        if skeleton.is_some() {
+            rotation = self.take_rotation(from, record);
+            if first_frame {
+                rotation.clear();
+                rotation.resize(n << 1, 0.0);
+            }
         }
         let modes = std::mem::take(&mut self.e_mut(from).timeline_mode);
         let hold_mix = std::mem::take(&mut self.e_mut(from).timeline_hold_mix);
@@ -930,6 +991,12 @@ impl AnimationState {
                 alpha_mix
             };
             total_alpha += alpha;
+            let Some(skeleton) = skeleton.as_deref_mut() else {
+                if use_events {
+                    timeline_events(t, animation_last, apply_time, &mut event_buf);
+                }
+                continue;
+            };
             if !shortest && matches!(t, Timeline::Rotate { .. }) {
                 apply_rotate_timeline(
                     t,
@@ -977,7 +1044,11 @@ impl AnimationState {
             f.timeline_mode = modes;
             f.timeline_hold_mix = hold_mix;
         }
-        self.put_rotation(from, rotation, record);
+        if skeleton.is_some() {
+            self.put_rotation(from, rotation, record);
+        } else {
+            self.e_mut(from).reset_rotation_directions();
+        }
         if !record {
             return mix;
         }

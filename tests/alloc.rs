@@ -26,7 +26,7 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Steady-state frames must not allocate: update, apply, world transform and
-//! render run with reused buffers once warmed up.
+//! render run with reused buffers once warmed up, as do events-only frames.
 
 // A counting global allocator needs `unsafe`; the library itself has none.
 #![allow(unsafe_code)]
@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use spine_runtime::animation::{AnimationState, AnimationStateData};
 use spine_runtime::atlas::Atlas;
-use spine_runtime::data::SlotId;
+use spine_runtime::data::{SkeletonData, SlotId};
 use spine_runtime::load::{AtlasAttachmentLoader, SkeletonBinary};
 use spine_runtime::render::{RenderOptions, SkeletonRenderer};
 use spine_runtime::skeleton::{Physics, RegionGeometry, Skeleton, SkeletonBounds};
@@ -65,17 +65,32 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> usize {
+fn load(rig: &str, skel: &str) -> Arc<SkeletonData> {
     let dir = common::examples_root().join(rig).join("export");
     let atlas =
         Atlas::parse(&std::fs::read_to_string(dir.join(format!("{rig}.atlas"))).unwrap()).unwrap();
     let mut loader = AtlasAttachmentLoader::new(&atlas);
     let bytes = std::fs::read(dir.join(format!("{skel}.skel"))).unwrap();
-    let data = Arc::new(
+    Arc::new(
         SkeletonBinary::with_loader(&mut loader)
             .read(&bytes)
             .unwrap(),
-    );
+    )
+}
+
+/// Frames in one loop of `anim` at 60 Hz.
+fn loop_frames(data: &SkeletonData, anim: &str) -> usize {
+    let duration = data
+        .animations
+        .iter()
+        .find(|a| a.name == anim)
+        .unwrap()
+        .duration;
+    (duration * 60.0).ceil() as usize
+}
+
+fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> usize {
+    let data = load(rig, skel);
     let mut skeleton = Skeleton::new(Arc::clone(&data));
     let mut state = AnimationState::new(Arc::new(AnimationStateData::new(Arc::clone(&data))));
     state.set_animation_by_name(0, anim, true).unwrap();
@@ -88,13 +103,7 @@ fn allocations_per_loop(rig: &str, skel: &str, anim: &str, physics: Physics) -> 
     let mut geometry = RegionGeometry::new();
     let mut events = Vec::with_capacity(64);
     let mut state_events = Vec::with_capacity(64);
-    let duration = data
-        .animations
-        .iter()
-        .find(|a| a.name == anim)
-        .unwrap()
-        .duration;
-    let frames = (duration * 60.0).ceil() as usize;
+    let frames = loop_frames(&data, anim);
     let mut run = |n: usize| {
         for _ in 0..n {
             state.update(1.0 / 60.0);
@@ -142,5 +151,32 @@ fn steady_state_frames_do_not_allocate() {
             n, 0,
             "{rig}/{anim}: {n} allocations in one loop of steady-state frames"
         );
+        let n = event_allocations_per_loop(rig, skel, anim);
+        assert_eq!(
+            n, 0,
+            "{rig}/{anim}: {n} allocations in one loop of events-only frames"
+        );
     }
+}
+
+fn event_allocations_per_loop(rig: &str, skel: &str, anim: &str) -> usize {
+    let data = load(rig, skel);
+    let mut state = AnimationState::new(Arc::new(AnimationStateData::new(Arc::clone(&data))));
+    state.set_animation_by_name(0, anim, true).unwrap();
+    let mut events = Vec::with_capacity(64);
+    let mut state_events = Vec::with_capacity(64);
+    let frames = loop_frames(&data, anim);
+    let mut run = |n: usize| {
+        for _ in 0..n {
+            state.update(1.0 / 60.0);
+            events.clear();
+            state.apply_events(&mut events);
+            state_events.clear();
+            state.drain_events_into(&mut state_events);
+        }
+    };
+    run(frames * 6);
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    run(frames);
+    ALLOCATIONS.load(Ordering::Relaxed) - before
 }

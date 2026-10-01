@@ -977,6 +977,18 @@ pub(crate) fn set_attachment_by_key(
         .set_attachment(attachment, timeline);
 }
 
+/// Pushes the events `t` keys in `(last_time, time]` when it's an event
+/// timeline, without touching a skeleton.
+pub(crate) fn timeline_events(t: &Timeline, last_time: f32, time: f32, events: &mut Vec<Event>) {
+    if let Timeline::Event {
+        frames,
+        events: keys,
+    } = t
+    {
+        fire_events(frames, keys, last_time, time, events);
+    }
+}
+
 /// `EventTimeline::apply`: pushes events keyed in `(last_time, time]`.
 fn fire_events(
     frames: &[f32],
