@@ -1,0 +1,14 @@
+# cargo-release configuration. `cargo release <level|version>` bumps the
+# version, stamps CHANGELOG.md, commits, tags vX.Y.Z, and pushes. The tag
+# triggers .github/workflows/release.yml, which publishes; nothing publishes
+# from this machine.
+
+publish = false
+tag = true
+tag-name = "v{{version}}"
+push = true
+allow-branch = ["main"]
+
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+]

@@ -26,13 +26,13 @@
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! `SkeletonBounds` — collects every visible
-//! [`BoundingBoxAttachment`], computes its world-space polygon, and
+//! [`BoundingBoxAttachment`][crate::data::BoundingBoxAttachment], computes its world-space polygon, and
 //! exposes hit-testing + coarse AABB queries.
 //!
 //! Literal port of `spine-cpp/src/spine/SkeletonBounds.cpp` (~230
 //! LOC). Used by gameplay code (projectile hits, click-to-select,
 //! spatial culling) — orthogonal to rendering, shares the
-//! [`Skeleton::compute_world_vertices`] helper.
+//! `Skeleton::compute_world_vertices` helper.
 
 #![allow(clippy::many_single_char_names)] // spine-cpp short names preserved for diff parity.
 
@@ -63,7 +63,7 @@ impl BoundsPolygon {
 }
 
 /// Hit-test + AABB helper over a `Skeleton`'s active
-/// [`BoundingBoxAttachment`]s. Recompute with [`Self::update`] every
+/// [`BoundingBoxAttachment`][crate::data::BoundingBoxAttachment]s. Recompute with [`Self::update`] every
 /// frame the skeleton pose changes.
 #[derive(Debug, Default)]
 pub struct SkeletonBounds {

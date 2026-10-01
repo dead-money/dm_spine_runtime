@@ -1,0 +1,71 @@
+name: Release
+
+# Publishes to crates.io when cargo-release pushes a vX.Y.Z tag (see
+# RELEASING.md). While Cargo.toml has `publish = false`, `cargo publish` refuses
+# and this run fails.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # crates.io Trusted Publishing (OIDC)
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  publish:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout spine_runtime
+        uses: actions/checkout@v6
+        with:
+          path: spine_runtime
+
+      - name: Checkout spine-runtimes (upstream)
+        uses: actions/checkout@v6
+        with:
+          repository: EsotericSoftware/spine-runtimes
+          # Same pin as ci.yml.
+          ref: ba17cf88b198c6531c6c51d8d4e1e4b3c3ab47dd
+          path: spine-runtimes
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo test
+        working-directory: spine_runtime
+        run: cargo test --all-targets
+
+      # Makes a re-run of the tag idempotent and lets the manual first publish
+      # be tagged after the fact.
+      - name: Check if version already published
+        id: check
+        working-directory: spine_runtime
+        run: |
+          ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H 'User-Agent: spine_runtime-release' \
+            "https://crates.io/api/v1/crates/spine_runtime/$ver")
+          if [ "$code" = "200" ]; then
+            echo "spine_runtime $ver is already on crates.io; skipping publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to crates.io (Trusted Publishing)
+        if: steps.check.outputs.skip != 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: cargo publish
+        if: steps.check.outputs.skip != 'true'
+        working-directory: spine_runtime
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THE SPINE RUNTIMES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Native Rust port of the Spine 4.2 runtime.
+//! Native Rust port of the Spine 4.3 runtime.
 //!
 //! Renderer-agnostic. Bevy integration lives in the sibling `spine_bevy` crate.
 

@@ -68,7 +68,7 @@ pub struct SkeletonData {
     pub constraints: Vec<ConstraintData>,
 
     /// Flat store for every [`Attachment`] referenced by any skin. Skins
-    /// hold [`AttachmentId`][crate::data::AttachmentId] indices into this
+    /// hold [`AttachmentId`] indices into this
     /// vector — keeps the struct-of-arrays invariant.
     pub attachments: Vec<Attachment>,
 

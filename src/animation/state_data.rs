@@ -30,7 +30,7 @@
 //! Ports `spine::AnimationStateData` — a (from, to) → mix-duration table with
 //! a default fallback. Typical setup at load time: write per-transition
 //! overrides for natural-looking animation swaps ("walk → idle ≈ 0.2s",
-//! "walk → jump ≈ 0.1s"), falling back to [`Self::default_mix`] otherwise.
+//! "walk → jump ≈ 0.1s"), falling back to [`AnimationStateData::default_mix`] otherwise.
 
 use std::collections::HashMap;
 use std::sync::Arc;

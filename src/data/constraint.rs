@@ -27,7 +27,7 @@
 
 //! Setup-pose data for the five constraint kinds. 4.3 keeps them in one
 //! ordered list: list position is update order, and skins and timelines
-//! index into it with [`ConstraintId`].
+//! index into it with [`ConstraintId`][crate::data::ConstraintId].
 
 use crate::data::{AnimationId, BoneId, SlotId};
 
