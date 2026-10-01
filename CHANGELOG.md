@@ -6,6 +6,8 @@ pre-1.0, any `0.x` release may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-01
+
 ### Changed
 
 - **Breaking:** targets Spine 4.3. Binary and JSON loaders accept only 4.3

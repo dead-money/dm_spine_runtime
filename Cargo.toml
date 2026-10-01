@@ -11,9 +11,6 @@ repository = "https://github.com/dead-money/spine_runtime"
 documentation = "https://docs.rs/spine_runtime"
 categories = ["game-development", "graphics"]
 keywords = ["spine", "2d", "animation", "skeletal"]
-# Not cleared for crates.io until Esoteric Software signs off on publishing a
-# spine-cpp derivative there. Flipping this is the only gate; see RELEASING.md.
-publish = false
 # The tests need the sibling spine-runtimes checkout and can't run from the
 # published crate.
 exclude = [
