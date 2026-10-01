@@ -178,7 +178,7 @@ fn main() {
         let light = cmd.colors.first().copied().unwrap_or(0xffff_ffff);
         let lc = unpack_argb(light);
 
-        for tri in cmd.indices.chunks_exact(3) {
+        for tri in cmd.indices.as_chunks::<3>().0 {
             let i0 = tri[0] as usize;
             let i1 = tri[1] as usize;
             let i2 = tri[2] as usize;

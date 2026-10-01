@@ -1548,9 +1548,9 @@ fn apply_rotate_timeline(
     }
     let mut diff = r2 - r1;
     diff -= (diff / 360.0 - 0.5).ceil() * 360.0;
-    let total;
-    if diff == 0.0 {
-        total = rotation[i];
+
+    let total = if diff == 0.0 {
+        rotation[i]
     } else {
         let (last_total, last_diff) = if first_frame {
             (0.0, diff)
@@ -1575,8 +1575,8 @@ fn apply_rotate_timeline(
             t += 360.0 * sign(last_total);
         }
         rotation[i] = t;
-        total = t;
-    }
+        t
+    };
     rotation[i + 1] = diff;
     pose.rotation = r1 + total * alpha;
 }

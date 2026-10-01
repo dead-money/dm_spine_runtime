@@ -170,7 +170,7 @@ impl SkeletonClipping {
         let mut index: u16 = 0;
 
         if self.inverse {
-            for tri in triangles.chunks_exact(3) {
+            for tri in triangles.as_chunks::<3>().0 {
                 let (t0, t1, t2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
                 let (x1, y1) = (vertices[t0 * stride], vertices[t0 * stride + 1]);
                 let (x2, y2) = (vertices[t1 * stride], vertices[t1 * stride + 1]);
@@ -226,7 +226,7 @@ impl SkeletonClipping {
         }
 
         let mut clipped = false;
-        for tri in triangles.chunks_exact(3) {
+        for tri in triangles.as_chunks::<3>().0 {
             let (t0, t1, t2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
             let (x1, y1) = (vertices[t0 * stride], vertices[t0 * stride + 1]);
             let (u1, v1) = (uvs[t0 << 1], uvs[(t0 << 1) + 1]);
@@ -655,7 +655,9 @@ mod tests {
     use super::*;
 
     fn area(v: &[f32], tris: &[u16]) -> f32 {
-        tris.chunks_exact(3)
+        tris.as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| {
                 let p = |i: u16| (v[i as usize * 2], v[i as usize * 2 + 1]);
                 let ((ax, ay), (bx, by), (cx, cy)) = (p(t[0]), p(t[1]), p(t[2]));

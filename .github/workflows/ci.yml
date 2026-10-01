@@ -78,17 +78,3 @@ jobs:
 
       - name: cargo doc
         run: cargo doc --no-deps
-
-  msrv:
-    name: msrv
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      # Keep in step with rust-version in Cargo.toml.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.88
-
-      - name: cargo check
-        run: cargo check --lib

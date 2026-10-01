@@ -162,7 +162,7 @@ impl Triangulator {
 
         let mut fan_base_index: i32 = -1;
         let mut last_winding = 0;
-        for tri in triangles.chunks_exact(3) {
+        for tri in triangles.as_chunks::<3>().0 {
             let (t1, t2, t3) = (tri[0] << 1, tri[1] << 1, tri[2] << 1);
             let (x1, y1) = (vertices[t1 as usize], vertices[t1 as usize + 1]);
             let (x2, y2) = (vertices[t2 as usize], vertices[t2 as usize + 1]);
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(tris.len(), 6);
 
         let mut total = 0.0f32;
-        for chunk in tris.chunks_exact(3) {
+        for chunk in tris.as_chunks::<3>().0 {
             let (a, b, c) = (chunk[0], chunk[1], chunk[2]);
             assert!(a < 4 && b < 4 && c < 4);
             assert!(a != b && b != c && a != c);
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(tris.len(), 12);
 
         let mut total = 0.0f32;
-        for chunk in tris.chunks_exact(3) {
+        for chunk in tris.as_chunks::<3>().0 {
             let area = triangle_area(&verts, chunk[0], chunk[1], chunk[2]);
             assert!(
                 area < 0.0,

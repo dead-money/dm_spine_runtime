@@ -2,7 +2,7 @@
 name = "spine_runtime"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.99"
 authors = ["Brandon Reinhart <brandon@deadmoney.gg>"]
 description = "Unofficial native Rust port of the Spine 4.3 runtime. Renderer-agnostic."
 license-file = "LICENSE"
