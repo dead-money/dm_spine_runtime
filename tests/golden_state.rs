@@ -102,8 +102,33 @@ fn load(fx: &Fixture) -> Arc<SkeletonData> {
     )
 }
 
-/// Runs the script, returning `(frames, events)` in the fixture's shape.
-fn run(data: &Arc<SkeletonData>, script: &str) -> (Vec<Skeleton>, Vec<String>) {
+/// Every live entry's fields, reached from the tracks.
+fn trace_entries(state: &AnimationState, trace: &mut Vec<String>) {
+    for &track in state.tracks() {
+        let mut from = track;
+        while let Some(id) = from {
+            let e = state.entry(id).unwrap();
+            trace.push(format!("{id:?} {e:?}"));
+            from = e.mixing_from;
+        }
+        let mut next = track.and_then(|id| state.entry(id).unwrap().next);
+        while let Some(id) = next {
+            let e = state.entry(id).unwrap();
+            trace.push(format!("{id:?} {e:?}"));
+            next = e.next;
+        }
+    }
+}
+
+/// Runs the script, returning `(frames, events)` in the fixture's shape and
+/// a trace of every drained event, keyframe event and entry state. With
+/// `pose`, [`AnimationState::pose`] runs between every update, apply and
+/// command.
+fn run(
+    data: &Arc<SkeletonData>,
+    script: &str,
+    pose: bool,
+) -> (Vec<Skeleton>, Vec<String>, Vec<String>) {
     let mut skeleton = Skeleton::new(Arc::clone(data));
     skeleton.setup_pose();
     let mut state_data = AnimationStateData::new(Arc::clone(data));
@@ -111,6 +136,7 @@ fn run(data: &Arc<SkeletonData>, script: &str) -> (Vec<Skeleton>, Vec<String>) {
     let mut frames = Vec::new();
     let mut events = Vec::new();
     let mut keyframes = Vec::new();
+    let mut trace = Vec::new();
     let anim_name = |id: spine_runtime::data::AnimationId| {
         if id == EMPTY_ANIMATION_ID {
             "<empty>".to_string()
@@ -163,8 +189,17 @@ fn run(data: &Arc<SkeletonData>, script: &str) -> (Vec<Skeleton>, Vec<String>) {
             "step" => {
                 for _ in 0..f[1].parse::<usize>().unwrap() {
                     state.update(1.0 / 60.0);
+                    if pose {
+                        state.pose(&mut skeleton);
+                    }
                     state.apply(&mut skeleton, &mut keyframes);
+                    if pose {
+                        state.pose(&mut skeleton);
+                        state.pose(&mut skeleton);
+                    }
                     skeleton.update_world_transform(Physics::None);
+                    trace.extend(keyframes.drain(..).map(|k| format!("{k:?}")));
+                    trace_entries(state, &mut trace);
                 }
             }
             "dump" => {
@@ -176,7 +211,12 @@ fn run(data: &Arc<SkeletonData>, script: &str) -> (Vec<Skeleton>, Vec<String>) {
             }
             other => panic!("unknown command {other}"),
         }
+        if pose {
+            state.pose(&mut skeleton);
+        }
+        trace_entries(state, &mut trace);
         for e in state.drain_events() {
+            trace.push(format!("{e:?}"));
             let kind = match e.kind {
                 EventType::Start => "start",
                 EventType::Interrupt => "interrupt",
@@ -193,7 +233,7 @@ fn run(data: &Arc<SkeletonData>, script: &str) -> (Vec<Skeleton>, Vec<String>) {
             events.push(s);
         }
     }
-    (frames, events)
+    (frames, events, trace)
 }
 
 fn check_frame(label: &str, sk: &Skeleton, fx: &Frame) -> Option<String> {
@@ -268,7 +308,7 @@ fn animation_state_scenarios_match_spine_cpp() {
         let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let label = path.file_stem().unwrap().to_string_lossy().into_owned();
         let data = load(&fx);
-        let (frames, events) = run(&data, &fx.script);
+        let (frames, events, _) = run(&data, &fx.script, false);
         if events != fx.events {
             failures.push(format!(
                 "{label}: events\n    want {:?}\n    got  {events:?}",
@@ -284,4 +324,27 @@ fn animation_state_scenarios_match_spine_cpp() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn pose_leaves_events_and_entries_unchanged() {
+    let files = common::json_files(std::path::Path::new("tests/fixtures/state"));
+    assert!(!files.is_empty(), "no state fixtures; run capture_state.sh");
+    for path in &files {
+        let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let label = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let data = load(&fx);
+        let (_, events, trace) = run(&data, &fx.script, false);
+        let (frames, posed_events, posed_trace) = run(&data, &fx.script, true);
+        assert_eq!(events, posed_events, "{label}: events");
+        assert_eq!(trace.len(), posed_trace.len(), "{label}: trace length");
+        for (i, (want, got)) in trace.iter().zip(&posed_trace).enumerate() {
+            assert_eq!(want, got, "{label}: trace #{i}");
+        }
+        for (i, (sk, want)) in frames.iter().zip(&fx.frames).enumerate() {
+            if let Some(msg) = check_frame(&format!("{label}#{i}"), sk, want) {
+                panic!("{msg}");
+            }
+        }
+    }
 }
