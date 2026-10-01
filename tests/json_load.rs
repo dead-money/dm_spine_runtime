@@ -172,7 +172,11 @@ fn duration_includes_last_deform_key() {
         load_skel(&atlas, &root.join("alien-pro.skel")),
     ] {
         let death = sd.animations.iter().find(|a| a.name == "death").unwrap();
-        assert!((death.duration - 2.166_666_7).abs() < 1e-5, "{}", death.duration);
+        assert!(
+            (death.duration - 2.166_666_7).abs() < 1e-5,
+            "{}",
+            death.duration
+        );
     }
 }
 
