@@ -24,7 +24,7 @@ This release reads **Spine 4.3** exports, binary (`.skel`) or JSON, each paired 
 spine_runtime = { git = "https://github.com/dead-money/spine_runtime" }
 ```
 
-The crate isn't on crates.io yet. It needs Rust 1.88 or newer.
+The crate isn't on crates.io yet. It needs Rust 1.99 or newer.
 
 ```rust
 use std::sync::Arc;

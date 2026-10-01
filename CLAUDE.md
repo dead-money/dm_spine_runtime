@@ -83,7 +83,7 @@ Goldens diff against JSON dumps captured from `spine-cpp` by `tools/spine_captur
 - **Merge PRs with a merge commit, never squash or rebase.** Full commit history is the record. Separate ideas land as separate commits and stay that way on `main`. `gh pr merge --merge --delete-branch`.
 - **Use targeted verification.** `cargo check` while iterating, `cargo test --test golden_pose` (or the relevant suite) for the affected area. Run the full `cargo test` + `cargo clippy --all-targets` before opening a PR. Flag pre-existing failures by name; don't silence them.
 - **PR bodies and commit messages are terse.** A sentence or two on what changed and why. No "## Summary" / "## Test plan" / "## Changes" scaffolding, no bulleted self-recaps, no boilerplate checklists. Same discipline as comments: say what the diff can't say, then stop.
-- **Keep `CHANGELOG.md`'s `[Unreleased]` current** for user-visible changes. Publishing is gated by `publish = false` pending Esoteric's OK; `RELEASING.md` has the release process. `rust-version` (1.88) and CI's `msrv` job move together.
+- **Keep `CHANGELOG.md`'s `[Unreleased]` current** for user-visible changes. Publishing is gated by `publish = false` pending Esoteric's OK; `RELEASING.md` has the release process. `rust-version` tracks recent stable; bump it rather than avoiding newer Rust.
 
 ## Status
 

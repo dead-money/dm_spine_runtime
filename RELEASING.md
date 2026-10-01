@@ -2,6 +2,11 @@
 
 How `spine_runtime` gets to crates.io. **It isn't cleared to publish yet.**
 
+## Rust version
+
+`rust-version` in `Cargo.toml` tracks recent stable Rust; we don't hold the code
+to older compilers. Bump it when the crate starts using something newer.
+
 ## The gate
 
 `publish = false` in `Cargo.toml` blocks every path to crates.io: `cargo
@@ -21,8 +26,6 @@ package` and `doc` checks, and the release workflow.
   `spine-runtimes` at the commit pinned there; bump it together with the
   fixtures and the harness.
 - **doc**: `cargo doc` with `-D warnings`, so docs.rs links don't break.
-- **msrv**: `cargo check --lib` on Rust 1.88. Keep it in step with
-  `rust-version`.
 
 The published crate leaves out `tests/` and `tools/`, which need a sibling
 `spine-runtimes` checkout and can't run from crates.io.
