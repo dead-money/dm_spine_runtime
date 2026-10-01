@@ -24,7 +24,7 @@ The Spine editor is licensed separately. This runtime reads what the editor expo
 spine_runtime = { git = "https://github.com/dead-money/spine_runtime" }
 ```
 
-The crate isn't on crates.io yet.
+The crate isn't on crates.io yet. It needs Rust 1.88 or newer.
 
 ```rust
 use std::sync::Arc;
