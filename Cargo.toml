@@ -22,7 +22,6 @@ exclude = [
   "CLAUDE.md",
   "RELEASING.md",
   "release.toml",
-  "docs/SPINE_4_3_UPGRADE.md",
 ]
 
 [dependencies]
